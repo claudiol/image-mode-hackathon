@@ -1,0 +1,37 @@
+# Global settings for all AWS Hack-a-Thon infrastructure hosts
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 5
+    StrictHostKeyChecking ask
+
+# 1. THE BASTION TRANSIT GATEWAY (Public Subnet)
+Host bastion
+    HostName 10.20.101.167
+    User ec2-user
+    IdentityFile ~/.ssh/aws_bastion_key
+
+# =======================================================
+# PRIVATE BACKEND HOSTS (Routed automatically via Bastion)
+# =======================================================
+
+# 2. RED HAT SATELLITE HOST
+Host satellite
+    HostName 10.20.1.129
+    User ec2-user
+    IdentityFile ~/.ssh/aws_bastion_key
+    ProxyJump bastion
+
+# 3. RED HAT IDENTITY MANAGEMENT (IdM) HOST
+Host idm
+    HostName <INTERNAL_IDM_PRIVATE_IP>
+    User ec2-user
+    IdentityFile ~/.ssh/aws_bastion_key
+    ProxyJump bastion
+
+# 4. JENKINS BUILD ENGINE HOST
+Host jenkins
+    HostName <INTERNAL_JENKINS_PRIVATE_IP>
+    User ec2-user
+    IdentityFile ~/.ssh/aws_bastion_key
+    ProxyJump bastion
+

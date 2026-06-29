@@ -1,0 +1,6 @@
+[idm_servers]
+10.20.2.112
+[satellite]
+10.20.1.154
+[aap_server]
+10.20.2.60

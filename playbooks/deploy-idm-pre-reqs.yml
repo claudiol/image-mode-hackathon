@@ -1,0 +1,167 @@
+---
+- name: Prepare RHEL Instance on AWS for Identity Management (IdM) Installation
+  hosts: idm_servers
+  become: true
+  gather_facts: true  # Explicitly gathers EC2 instance facts dynamically
+  vars:
+    idm_fqdn: "idm.redhat.local"
+    idm_short_name: "idm"
+    aws_dns_resolver: "10.20.0.2"
+
+  tasks:
+    - name: PHASE 1 | Configure AWS RHUI Repositories
+      block:
+        - name: Ensure AWS RHUI client configuration packages are present
+          ansible.builtin.dnf:
+            name:
+              - rh-amazon-rhui-client
+            state: present
+          ignore_errors: true
+
+    - name: PHASE 2 | Hostname and Cloud-Init Network Hardening
+      block:
+        - name: Enforce persistent target Fully Qualified Domain Name (FQDN)
+          ansible.builtin.hostname:
+            name: "{{ idm_fqdn }}"
+
+        - name: Ensure cloud-init preserves our custom hostname across system reboots
+          ansible.builtin.lineinfile:
+            path: /etc/cloud/cloud.cfg
+            regexp: '^preserve_hostname:'
+            line: 'preserve_hostname: true'
+            state: present
+
+    - name: PHASE 3 | Remediate Name Service Switch and Host Configuration Loop
+      block:
+        - name: Strip myhostname plugin out of nsswitch configuration
+          ansible.builtin.lineinfile:
+            path: /etc/nsswitch.conf
+            regexp: '^hosts:\s+files\s+dns\s+myhostname'
+            line: 'hosts:      files dns'
+            state: present
+          register: nsswitch_updated
+
+        - name: Restart NetworkManager to commit interface abstraction parameters
+          ansible.builtin.service:
+            name: NetworkManager
+            state: restarted
+          when: nsswitch_updated.changed
+
+        - name: Hardcode explicit local hosts database structure using dynamic EC2 IPv4 fact
+          ansible.builtin.copy:
+            dest: /etc/hosts
+            content: |
+              127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+              ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+              {{ ansible_default_ipv4.address }} {{ idm_fqdn }} {{ idm_short_name }}
+            owner: root
+            group: root
+            mode: '0644'
+
+    - name: PHASE 4 | Provision and Enable IPv6 Loopback Capability
+      block:
+        - name: Append IPv6 enabling parameters to kernel configurations
+          ansible.posix.sysctl:
+            name: "{{ item.name }}"
+            value: "{{ item.value }}"
+            sysctl_file: /etc/sysctl.conf
+            state: present
+            reload: true
+          loop:
+            - { name: 'net.ipv6.conf.lo.disable_ipv6', value: '0' }
+            - { name: 'net.ipv6.conf.all.disable_ipv6', value: '0' }
+            - { name: 'net.ipv6.conf.default.disable_ipv6', value: '0' }
+
+        - name: Force bind IPv6 address mapping directly to loopback interface card
+          ansible.builtin.command: ip -6 addr add ::1/128 dev lo
+          register: ipv6_bind
+          failed_when: false
+          changed_when: "'File exists' not in ipv6_bind.stderr"
+
+    - name: PHASE 5 | Pre-inject Directory Server Transaction Optimizations
+      block:
+        - name: Structure the layout directory for customization scripts
+          ansible.builtin.file:
+            path: /tmp/idm_fix
+            state: directory
+            mode: '0755'
+
+        - name: Create LDAP schema optimization script
+          ansible.builtin.copy:
+            dest: /tmp/idm_fix/enable_plugins.ldif
+            content: |
+              dn: cn=config
+              changetype: modify
+              replace: nsslapd-dynamic-plugins
+              nsslapd-dynamic-plugins: on
+            mode: '0644'
+
+    - name: PHASE 6 | Install Identity Management Server Packages
+      block:
+        - name: Install Identity Management Server and integrated DNS binaries natively
+          ansible.builtin.dnf:
+            name:
+              - ipa-server
+              - ipa-server-dns
+            state: present
+
+    - name: PHASE 7 | Post-Install Split-Horizon and Cache Remediation Setup
+      block:
+        - name: Pin NetworkManager interface connection to force loopback over AWS DHCP overrides
+          community.general.nmcli:
+            conn_name: "cloud-init ens5"
+            dns4:
+              - "127.0.0.1"
+              - "{{ aws_dns_resolver }}"
+            dns4_ignore_auto: true
+            state: present
+          ignore_errors: true
+
+        - name: Ensure local firewall engine is installed and active
+          ansible.builtin.dnf:
+            name: firewalld
+            state: present
+
+        - name: Start and enable firewalld service
+          ansible.builtin.service:
+            name: firewalld
+            state: started
+            enabled: true
+
+        - name: Open required TCP ports permanently in firewalld
+          ansible.posix.firewalld:
+            port: "{{ item }}/tcp"
+            permanent: true
+            state: enabled
+            immediate: true
+          loop: [80, 443, 389, 636, 88, 464, 53]
+
+        - name: Open required UDP ports permanently in firewalld
+          ansible.posix.firewalld:
+            port: "{{ item }}/udp"
+            permanent: true
+            state: enabled
+            immediate: true
+          loop: [88, 464, 53, 123]
+
+    - name: PHASE 8 | Execute FreeIPA Server Installation via Inline Template
+      ansible.builtin.shell: |
+        ipa-server-install \
+          --hostname={{ idm_fqdn }} \
+          --ip-address={{ ansible_default_ipv4.address }} \
+          -n aws.redhat.local \
+          -r AWS.REDHAT.LOCAL \
+          -p DM_Secret_Pass123 \
+          -a Admin_Secret_Pass123 \
+          --setup-dns \
+          --forwarder={{ aws_dns_resolver }} \
+          --no-dnssec-validation \
+          --unattended
+      args:
+        creates: /etc/ipa/default.conf
+      register: ipa_installer_output
+
+    - name: Log Installer Output
+      ansible.builtin.debug:
+        var: ipa_installer_output.stdout_lines
+      when: ipa_installer_output.changed
