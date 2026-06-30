@@ -1,0 +1,78 @@
+---
+controller_templates:
+
+  - name: Build Image
+
+    organization: Image Mode Lab
+
+    project: Image Mode CI/CD
+
+    inventory: Image Builders
+
+    playbook: playbooks/build-image.yml
+
+    execution_environment: Image Mode EE
+
+    credentials:
+      - AWS Machine Credential
+      - Registry Credential
+
+  - name: Push Image
+
+    organization: Image Mode Lab
+
+    project: Image Mode CI/CD
+
+    inventory: Image Builders
+
+    playbook: playbooks/push-image.yml
+
+    execution_environment: Image Mode EE
+
+    credentials:
+      - Registry Credential
+
+  - name: Deploy Development
+
+    organization: Image Mode Lab
+
+    project: Image Mode CI/CD
+
+    inventory: Image Mode Development
+
+    playbook: playbooks/deploy-image-mode.yml
+
+    execution_environment: Image Mode EE
+
+    credentials:
+      - AWS Machine Credential
+
+  - name: Validate Host
+
+    organization: Image Mode Lab
+
+    project: Image Mode CI/CD
+
+    inventory: Image Mode Development
+
+    playbook: playbooks/validate-image.yml
+
+    execution_environment: Image Mode EE
+
+    credentials:
+      - AWS Machine Credential
+
+  - name: Rollback
+
+    organization: Image Mode Lab
+
+    project: Image Mode CI/CD
+
+    inventory: Image Mode Development
+
+    playbook: playbooks/rollback-image-mode.yml
+
+    execution_environment: Image Mode EE
+
+    credentials:
+      - AWS Machine Credential
