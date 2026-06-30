@@ -25,8 +25,33 @@
       - tar
       - firewalld
 
-  vars_files:
-    - files/vars-aap-vault.yml
+  pre_tasks:
+    - name: Load AAP vault variables
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/files/vars-aap-vault.yml"
+      no_log: true
+
+    - name: Validate required vault variables are loaded
+      ansible.builtin.assert:
+        that:
+          - aap_org_id is defined
+          - aap_activation_key is defined
+          - postgresql_admin_username is defined
+          - postgresql_admin_password is defined
+          - registry_username is defined
+          - registry_password is defined
+          - gateway_admin_username is defined
+          - gateway_admin_password is defined
+          - gateway_pg_password is defined
+          - controller_admin_password is defined
+          - controller_pg_password is defined
+          - hub_admin_password is defined
+          - hub_pg_password is defined
+          - eda_admin_password is defined
+          - eda_pg_password is defined
+          - automationmetrics_pg_password is defined
+          - automationmetrics_controller_read_pg_password is defined
+        fail_msg: "Required AAP vault variables were not loaded. Check {{ playbook_dir }}/files/vars-aap-vault.yml"
 
   tasks:
     - name: PHASE 0 | Prepare RHSM repo management
@@ -181,7 +206,7 @@
 
         - name: Copy base inventory from project files directory
           ansible.builtin.copy:
-            src: files/inventory
+            src: "{{ playbook_dir }}/files/inventory"
             dest: "{{ aap_installer_dir }}/inventory"
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
