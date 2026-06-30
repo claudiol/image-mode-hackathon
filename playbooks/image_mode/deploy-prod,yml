@@ -1,0 +1,11 @@
+---
+- name: Deploy Image Mode image to production
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Placeholder - deploy production
+      ansible.builtin.debug:
+        msg:
+          - "Deploy Image Mode image to production placeholder."

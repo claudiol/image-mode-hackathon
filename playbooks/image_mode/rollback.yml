@@ -1,0 +1,12 @@
+---
+- name: Rollback Image Mode host
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Placeholder - rollback
+      ansible.builtin.debug:
+        msg:
+          - "Rollback placeholder."
+          - "Future tasks will perform bootc rollback and reboot if required."

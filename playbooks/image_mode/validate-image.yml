@@ -1,0 +1,15 @@
+---
+- name: Validate Image Mode host
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Show OS release
+      ansible.builtin.command: cat /etc/os-release
+      register: os_release
+      changed_when: false
+
+    - name: Display validation output
+      ansible.builtin.debug:
+        var: os_release.stdout_lines
