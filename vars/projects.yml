@@ -7,4 +7,4 @@ controller_projects:
     scm_branch: "configure-aap-image-mode-ci-cd-workflow"
     credential: "Git Credential"
     scm_update_on_launch: true
-    update_project: trueßß
+    update_project: true
