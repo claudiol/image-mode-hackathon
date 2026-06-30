@@ -1,5 +1,5 @@
 ---
 controller_organizations:
-
   - name: "Image Mode Lab"
-    description: "RHEL Image Mode CI/CD Lab"
+    description: "AAP Image Mode CI/CD lab organization"
+    state: present
