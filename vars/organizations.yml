@@ -1,0 +1,5 @@
+---
+controller_organizations:
+
+  - name: "Image Mode Lab"
+    description: "RHEL Image Mode CI/CD Lab"
