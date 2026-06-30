@@ -20,6 +20,10 @@
     - ../vars/workflow_job_templates.yml
 
   pre_tasks:
+    - name: Set AAP controller IP from inventory group
+      ansible.builtin.set_fact:
+        aap_controller_ip: "{{ groups['aap_server'][0] }}"
+
     - name: Build preferred AAP controller endpoint list
       ansible.builtin.set_fact:
         aap_controller_endpoint_candidates:
@@ -58,8 +62,8 @@
       ansible.builtin.fail:
         msg:
           - "AAP controller is not reachable using DNS or IP."
-          - "Tried: https://{{ aap_fqdn }}"
-          - "Tried: https://{{ aap_controller_ip }}"
+          - "Tried DNS: https://{{ aap_fqdn }}"
+          - "Tried IP: https://{{ aap_controller_ip }}"
       when: controller_hostname is not defined or controller_hostname | length == 0
 
     - name: Show selected AAP controller endpoint
