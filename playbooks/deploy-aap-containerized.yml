@@ -26,7 +26,7 @@
       - firewalld
 
   vars_files:
-    - files/vars-aap-vault.yml
+    - vars-aap-vault.yml
 
   tasks:
     - name: PHASE 0 | Prepare RHSM repo management
@@ -46,12 +46,6 @@
             regexp: '^manage_repos\s*='
             line: 'manage_repos = 1'
             state: present
-
-        - name: Check current RHSM registration status
-          ansible.builtin.command: subscription-manager status
-          register: rhsm_status
-          changed_when: false
-          failed_when: false
 
     - name: PHASE 1 | Register and enable AAP repos
       block:
@@ -98,17 +92,15 @@
             state: present
 
     - name: PHASE 3 | Configure IPv4-only hosts resolution
-      block:
-        - name: Configure /etc/hosts with IPv4-only AAP FQDN
-          ansible.builtin.copy:
-            dest: /etc/hosts
-            content: |
-              127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
-              ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
-              {{ ansible_default_ipv4.address }} {{ aap_fqdn }} {{ aap_short_name }}
-            owner: root
-            group: root
-            mode: "0644"
+      ansible.builtin.copy:
+        dest: /etc/hosts
+        content: |
+          127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+          ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+          {{ ansible_default_ipv4.address }} {{ aap_fqdn }} {{ aap_short_name }}
+        owner: root
+        group: root
+        mode: "0644"
 
     - name: PHASE 4 | Install required packages
       ansible.builtin.dnf:
@@ -163,7 +155,7 @@
           ansible.builtin.set_fact:
             aap_installer_dir: "{{ (installer_dirs.files | sort(attribute='path') | last).path }}"
 
-    - name: PHASE 7 | Copy and update AAP containerized inventory
+    - name: PHASE 7 | Generate AAP containerized inventory
       block:
         - name: Get ec2-user UID
           ansible.builtin.command: id -u "{{ aap_run_user }}"
@@ -179,46 +171,50 @@
           ansible.builtin.set_fact:
             aap_run_user_home: "{{ aap_run_user_passwd.stdout.split(':')[5] }}"
 
-        - name: Copy base inventory from project files directory
+        - name: Write clean AAP installer inventory
           ansible.builtin.copy:
-            src: files/inventory
             dest: "{{ aap_installer_dir }}/inventory"
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
             mode: "0600"
+            content: |
+              [automationgateway]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
 
-        - name: Replace placeholder hostname with target AAP FQDN
-          ansible.builtin.replace:
-            path: "{{ aap_installer_dir }}/inventory"
-            regexp: 'aap\.example\.com'
-            replace: "{{ aap_fqdn }}"
+              [automationcontroller]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
 
-        - name: Force installer inventory to connect over IPv4
-          ansible.builtin.blockinfile:
-            path: "{{ aap_installer_dir }}/inventory"
-            marker: "# {mark} ANSIBLE MANAGED IPV4 CONNECTION"
-            insertafter: BOF
-            block: |
-              ansible_host={{ ansible_default_ipv4.address }}
+              [automationhub]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+
+              [automationeda]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+
+              [database]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+
+              [redis]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+
+              [automationmetrics]
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+
+              [all:vars]
+              redis_mode=standalone
+
               routable_hostname={{ ansible_default_ipv4.address }}
-              ansible_user={{ aap_run_user }}
-              ansible_user_uid={{ aap_run_user_uid.stdout }}
-              ansible_user_dir={{ aap_run_user_home }}
-              ansible_become=true
 
-        - name: Ensure automation gateway public URL uses FQDN
-          ansible.builtin.lineinfile:
-            path: "{{ aap_installer_dir }}/inventory"
-            regexp: '^automationgateway_main_url='
-            line: "automationgateway_main_url=https://{{ aap_fqdn }}"
-            insertafter: EOF
+              automationgateway_main_url=https://{{ aap_fqdn }}
+              gateway_hostname={{ aap_fqdn }}
 
-        - name: Append required secret variables to inventory
-          ansible.builtin.blockinfile:
-            path: "{{ aap_installer_dir }}/inventory"
-            marker: "# {mark} ANSIBLE MANAGED AAP SECRETS"
-            insertafter: EOF
-            block: |
+              gateway_pg_host={{ aap_fqdn }}
+              controller_pg_host={{ aap_fqdn }}
+              hub_pg_host={{ aap_fqdn }}
+              eda_pg_host={{ aap_fqdn }}
+
+              automationmetrics_pg_host={{ aap_fqdn }}
+              automationmetrics_controller_read_pg_host={{ aap_fqdn }}
+
               postgresql_admin_username={{ postgresql_admin_username }}
               postgresql_admin_password={{ postgresql_admin_password }}
 
@@ -249,6 +245,17 @@
             group: "{{ aap_run_user }}"
             recurse: true
 
+        - name: Validate generated AAP installer inventory
+          ansible.builtin.shell: |
+            ansible-inventory -i inventory --host "{{ aap_fqdn }}" \
+              > "{{ aap_run_user_home }}/aap-generated-inventory-check.json"
+          args:
+            chdir: "{{ aap_installer_dir }}"
+            executable: /bin/bash
+          become: true
+          become_user: "{{ aap_run_user }}"
+          changed_when: false
+
     - name: PHASE 8 | Check if AAP Gateway is already responding
       ansible.builtin.uri:
         url: "https://{{ aap_fqdn }}/api/gateway/v1/status/"
@@ -263,8 +270,12 @@
 
     - name: PHASE 8 | Run AAP 2.7 containerized installer as ec2-user
       ansible.builtin.shell: |
+        whoami > "{{ aap_run_user_home }}/aap-installer-whoami.txt"
+        id >> "{{ aap_run_user_home }}/aap-installer-whoami.txt"
+
         ansible-playbook -i inventory ansible.containerized_installer.install \
           > "{{ aap_run_user_home }}/aap-containerized-installer.log" 2>&1
+
         echo $? > "{{ aap_run_user_home }}/aap-containerized-installer.rc"
       args:
         chdir: "{{ aap_installer_dir }}"
@@ -273,6 +284,8 @@
       become_user: "{{ aap_run_user }}"
       environment:
         HOME: "{{ aap_run_user_home }}"
+        USER: "{{ aap_run_user }}"
+        LOGNAME: "{{ aap_run_user }}"
       changed_when: true
       when: existing_aap_gateway.status not in [200, 401, 403]
 
@@ -316,3 +329,5 @@
               - "AAP Gateway URL: https://{{ aap_fqdn }}"
               - "Admin username: {{ gateway_admin_username }}"
               - "Installer log: /home/ec2-user/aap-containerized-installer.log"
+              - "Inventory check: /home/ec2-user/aap-generated-inventory-check.json"
+              - "Installer user check: /home/ec2-user/aap-installer-whoami.txt"
