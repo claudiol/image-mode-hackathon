@@ -2,77 +2,65 @@
 controller_templates:
 
   - name: Build Image
-
-    organization: Image Mode Lab
-
-    project: Image Mode CI/CD
-
-    inventory: Image Builders
-
-    playbook: playbooks/build-image.yml
-
-    execution_environment: Image Mode EE
-
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Builders"
+    playbook: "playbooks/image_mode/build-image.yml"
+    execution_environment: "Image Mode EE"
     credentials:
-      - AWS Machine Credential
-      - Registry Credential
+      - "AWS Machine Credential"
+      - "Registry Credential"
 
-  - name: Push Image
-
-    organization: Image Mode Lab
-
-    project: Image Mode CI/CD
-
-    inventory: Image Builders
-
-    playbook: playbooks/push-image.yml
-
-    execution_environment: Image Mode EE
-
+  - name: Publish Image
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Builders"
+    playbook: "playbooks/image_mode/publish-image.yml"
+    execution_environment: "Image Mode EE"
     credentials:
-      - Registry Credential
+      - "Registry Credential"
 
   - name: Deploy Development
-
-    organization: Image Mode Lab
-
-    project: Image Mode CI/CD
-
-    inventory: Image Mode Development
-
-    playbook: playbooks/deploy-image-mode.yml
-
-    execution_environment: Image Mode EE
-
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Development"
+    playbook: "playbooks/image_mode/deploy-dev.yml"
+    execution_environment: "Image Mode EE"
     credentials:
-      - AWS Machine Credential
+      - "AWS Machine Credential"
 
-  - name: Validate Host
-
-    organization: Image Mode Lab
-
-    project: Image Mode CI/CD
-
-    inventory: Image Mode Development
-
-    playbook: playbooks/validate-image.yml
-
-    execution_environment: Image Mode EE
-
+  - name: Deploy Production
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Production"
+    playbook: "playbooks/image_mode/deploy-prod.yml"
+    execution_environment: "Image Mode EE"
     credentials:
-      - AWS Machine Credential
+      - "AWS Machine Credential"
+
+  - name: Bootc Update
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Development"
+    playbook: "playbooks/image_mode/bootc-update.yml"
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "AWS Machine Credential"
+
+  - name: Validate Image
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Development"
+    playbook: "playbooks/image_mode/validate-image.yml"
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "AWS Machine Credential"
 
   - name: Rollback
-
-    organization: Image Mode Lab
-
-    project: Image Mode CI/CD
-
-    inventory: Image Mode Development
-
-    playbook: playbooks/rollback-image-mode.yml
-
-    execution_environment: Image Mode EE
-
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Development"
+    playbook: "playbooks/image_mode/rollback.yml"
+    execution_environment: "Image Mode EE"
     credentials:
-      - AWS Machine Credential
+      - "AWS Machine Credential"
