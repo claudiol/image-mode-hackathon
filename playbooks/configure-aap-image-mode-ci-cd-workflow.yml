@@ -19,6 +19,53 @@
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
 
+  pre_tasks:
+    - name: Build preferred AAP controller endpoint list
+      ansible.builtin.set_fact:
+        aap_controller_endpoint_candidates:
+          - "https://{{ aap_fqdn }}"
+          - "https://{{ aap_controller_ip }}"
+
+    - name: Check available AAP controller endpoints
+      ansible.builtin.uri:
+        url: "{{ item }}/api/gateway/v1/status/"
+        validate_certs: false
+        status_code:
+          - 200
+          - 401
+          - 403
+        timeout: 10
+      loop: "{{ aap_controller_endpoint_candidates }}"
+      register: aap_endpoint_checks
+      failed_when: false
+      changed_when: false
+
+    - name: Select first reachable AAP controller endpoint
+      ansible.builtin.set_fact:
+        controller_hostname: >-
+          {{
+            (
+              aap_endpoint_checks.results
+              | selectattr('status', 'defined')
+              | selectattr('status', 'in', [200, 401, 403])
+              | map(attribute='item')
+              | list
+              | first
+            )
+          }}
+
+    - name: Fail if no AAP controller endpoint is reachable
+      ansible.builtin.fail:
+        msg:
+          - "AAP controller is not reachable using DNS or IP."
+          - "Tried: https://{{ aap_fqdn }}"
+          - "Tried: https://{{ aap_controller_ip }}"
+      when: controller_hostname is not defined or controller_hostname | length == 0
+
+    - name: Show selected AAP controller endpoint
+      ansible.builtin.debug:
+        msg: "Using AAP controller endpoint: {{ controller_hostname }}"
+
   roles:
     - infra.aap_configuration.controller_organizations
     - infra.aap_configuration.controller_credentials
