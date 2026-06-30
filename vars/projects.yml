@@ -1,0 +1,16 @@
+---
+controller_projects:
+
+  - name: Image Mode CI/CD
+
+    organization: "Image Mode Lab"
+
+    scm_type: git
+
+    scm_url: "https://github.com/company/image-mode-cicd.git"
+
+    scm_branch: main
+
+    scm_update_on_launch: true
+
+    update_project: true
