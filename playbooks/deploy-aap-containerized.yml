@@ -30,7 +30,7 @@
       - firewalld
 
   vars_files:
-    - vars-aap-vault.yml
+    - files/vars-aap-vault.yml
 
   tasks:
     - name: PHASE 0 | Prepare RHSM repo management
