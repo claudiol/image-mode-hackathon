@@ -11,7 +11,6 @@
   vars_files:
     - vars/secrets.yml
     - vars/organizations.yml
-    - vars/inventories.yml
     - vars/hosts.yml
     - vars/credentials.yml
     - vars/execution_environments.yml
@@ -106,9 +105,41 @@
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
 
-        - name: Configure AAP inventories
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_inventories
+        - name: Ensure Image Builders inventory exists
+          ansible.controller.inventory:
+            name: "Image Builders"
+            description: "Hosts used to build Image Mode images"
+            organization: "Image Mode Lab"
+            state: present
+            variables: {}
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Ensure Image Mode Development inventory exists
+          ansible.controller.inventory:
+            name: "Image Mode Development"
+            description: "Development Image Mode hosts"
+            organization: "Image Mode Lab"
+            state: present
+            variables: {}
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Ensure Image Mode Production inventory exists
+          ansible.controller.inventory:
+            name: "Image Mode Production"
+            description: "Production Image Mode hosts"
+            organization: "Image Mode Lab"
+            state: present
+            variables: {}
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
 
         - name: Configure AAP hosts
           ansible.builtin.include_role:
