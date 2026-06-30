@@ -1,0 +1,12 @@
+---
+- name: Perform bootc update
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Placeholder - bootc update
+      ansible.builtin.debug:
+        msg:
+          - "Bootc update placeholder."
+          - "Future tasks will run bootc switch or bootc upgrade."

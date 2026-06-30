@@ -1,0 +1,12 @@
+---
+- name: Build Image Mode image
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Placeholder - build image
+      ansible.builtin.debug:
+        msg:
+          - "Build Image Mode image placeholder."
+          - "Future tasks will build the bootc/image-mode container image."
