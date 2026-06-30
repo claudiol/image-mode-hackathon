@@ -1,0 +1,5 @@
+---
+controller_hostname: "https://aap.demo.lab.com"
+controller_username: "admin"
+controller_password: "{{ gateway_admin_password }}"
+controller_validate_certs: false
