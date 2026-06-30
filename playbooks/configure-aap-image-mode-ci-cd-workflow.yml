@@ -9,18 +9,22 @@
     - ansible.controller
 
   vars_files:
-    - vars/aap-auth.yml
-    - vars/image-mode-inventory.yml
-    - vars/image-mode-credentials.yml
-    - vars/image-mode-projects.yml
-    - vars/image-mode-job-templates.yml
-    - vars/image-mode-workflows.yml
+    - ../vars/secrets.yml
+    - ../vars/organizations.yml
+    - ../vars/inventories.yml
+    - ../vars/hosts.yml
+    - ../vars/credentials.yml
+    - ../vars/execution_environments.yml
+    - ../vars/projects.yml
+    - ../vars/job_templates.yml
+    - ../vars/workflow_job_templates.yml
 
   roles:
     - infra.aap_configuration.controller_organizations
     - infra.aap_configuration.controller_credentials
     - infra.aap_configuration.controller_inventories
     - infra.aap_configuration.controller_hosts
+    - infra.aap_configuration.controller_execution_environments
     - infra.aap_configuration.controller_projects
     - infra.aap_configuration.controller_job_templates
     - infra.aap_configuration.controller_workflow_job_templates
