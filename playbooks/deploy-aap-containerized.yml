@@ -13,6 +13,10 @@
     aap_installer_url: "https://aap-containerized-installers.s3.us-east-1.amazonaws.com/2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
     aap_installer_tarball: "{{ aap_work_dir }}/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
 
+    aap_manifest_src: "files/manifest_AAP.zip"
+    aap_manifest_dest: "/home/{{ aap_run_user }}/manifest_AAP.zip"
+    aap_activation_playbook: "/home/{{ aap_run_user }}/activate-aap-manifest.yml"
+
     aap_repos:
       - ansible-automation-platform-2.7-for-rhel-10-x86_64-rpms
 
@@ -26,7 +30,7 @@
       - firewalld
 
   vars_files:
-    - vars-aap-vault.yml
+    - files/vars-aap-vault.yml
 
   tasks:
     - name: PHASE 0 | Prepare RHSM repo management
@@ -201,7 +205,6 @@
 
               [all:vars]
               redis_mode=standalone
-
               routable_hostname={{ ansible_default_ipv4.address }}
 
               automationgateway_main_url=https://{{ aap_fqdn }}
@@ -307,27 +310,89 @@
         - existing_aap_gateway.status not in [200, 401, 403]
         - aap_installer_rc != "0"
 
-    - name: PHASE 9 | Post-install validation
-      block:
-        - name: Wait for AAP Gateway to become available
-          ansible.builtin.uri:
-            url: "https://{{ aap_fqdn }}/api/gateway/v1/status/"
-            validate_certs: false
-            status_code:
-              - 200
-              - 401
-              - 403
-          register: aap_gateway_health
-          retries: 20
-          delay: 30
-          until: aap_gateway_health.status in [200, 401, 403]
+    - name: PHASE 9 | Wait for AAP Gateway to become available
+      ansible.builtin.uri:
+        url: "https://{{ aap_fqdn }}/api/gateway/v1/status/"
+        validate_certs: false
+        status_code:
+          - 200
+          - 401
+          - 403
+      register: aap_gateway_health
+      retries: 20
+      delay: 30
+      until: aap_gateway_health.status in [200, 401, 403]
 
-        - name: Display AAP access information
-          ansible.builtin.debug:
-            msg:
-              - "AAP 2.7 containerized install completed."
-              - "AAP Gateway URL: https://{{ aap_fqdn }}"
-              - "Admin username: {{ gateway_admin_username }}"
-              - "Installer log: /home/ec2-user/aap-containerized-installer.log"
-              - "Inventory check: /home/ec2-user/aap-generated-inventory-check.json"
-              - "Installer user check: /home/ec2-user/aap-installer-whoami.txt"
+    - name: PHASE 10 | Activate AAP using manifest_AAP.zip
+      block:
+        - name: Copy AAP manifest to EC2 host
+          ansible.builtin.copy:
+            src: "{{ aap_manifest_src }}"
+            dest: "{{ aap_manifest_dest }}"
+            owner: "{{ aap_run_user }}"
+            group: "{{ aap_run_user }}"
+            mode: "0600"
+
+        - name: Write AAP manifest activation playbook
+          ansible.builtin.copy:
+            dest: "{{ aap_activation_playbook }}"
+            owner: "{{ aap_run_user }}"
+            group: "{{ aap_run_user }}"
+            mode: "0600"
+            content: |
+              ---
+              - name: Activate AAP with manifest
+                hosts: localhost
+                gather_facts: false
+                connection: local
+                tasks:
+                  - name: Upload AAP subscription manifest
+                    ansible.controller.license:
+                      controller_host: "https://{{ aap_fqdn }}"
+                      controller_username: "{{ gateway_admin_username }}"
+                      controller_password: "{{ gateway_admin_password }}"
+                      validate_certs: false
+                      manifest: "{{ aap_manifest_dest }}"
+
+        - name: Run AAP manifest activation playbook
+          ansible.builtin.shell: |
+            ansible-playbook "{{ aap_activation_playbook }}" \
+              > "{{ aap_run_user_home }}/aap-manifest-activation.log" 2>&1
+
+            echo $? > "{{ aap_run_user_home }}/aap-manifest-activation.rc"
+          args:
+            executable: /bin/bash
+          become: true
+          become_user: "{{ aap_run_user }}"
+          environment:
+            HOME: "{{ aap_run_user_home }}"
+            USER: "{{ aap_run_user }}"
+            LOGNAME: "{{ aap_run_user }}"
+            ANSIBLE_COLLECTIONS_PATH: "{{ aap_installer_dir }}/collections:/usr/share/ansible/collections:{{ aap_run_user_home }}/.ansible/collections"
+          changed_when: true
+          no_log: true
+
+        - name: Read AAP manifest activation return code
+          ansible.builtin.slurp:
+            src: "{{ aap_run_user_home }}/aap-manifest-activation.rc"
+          register: aap_manifest_activation_rc_raw
+
+        - name: Set AAP manifest activation return code fact
+          ansible.builtin.set_fact:
+            aap_manifest_activation_rc: "{{ aap_manifest_activation_rc_raw.content | b64decode | trim }}"
+
+        - name: Fail if AAP manifest activation failed
+          ansible.builtin.fail:
+            msg: "AAP manifest activation failed. Check {{ aap_run_user_home }}/aap-manifest-activation.log"
+          when: aap_manifest_activation_rc != "0"
+
+    - name: PHASE 11 | Display AAP access information
+      ansible.builtin.debug:
+        msg:
+          - "AAP 2.7 containerized install completed."
+          - "AAP Gateway URL: https://{{ aap_fqdn }}"
+          - "Admin username: {{ gateway_admin_username }}"
+          - "Installer log: /home/ec2-user/aap-containerized-installer.log"
+          - "Manifest activation log: /home/ec2-user/aap-manifest-activation.log"
+          - "Inventory check: /home/ec2-user/aap-generated-inventory-check.json"
+          - "Installer user check: /home/ec2-user/aap-installer-whoami.txt"
