@@ -195,16 +195,18 @@ Important points:
 
 | Phase | Automated Task |
 | --- | --- |
-| **PHASE 0** | Removes AWS RHUI packages and prepares RHSM repo management. |
-| **PHASE 1** | Registers the host with Red Hat and enables AAP 2.7 repositories. |
-| **PHASE 2** | Sets persistent AAP hostname and configures `cloud-init`. |
-| **PHASE 3** | Configures IPv4-only `/etc/hosts` resolution for the AAP FQDN. |
-| **PHASE 4** | Installs required packages such as `ansible-core`, `podman`, and `firewalld`. |
-| **PHASE 5** | Starts firewalld and opens required service ports. |
-| **PHASE 6** | Downloads and extracts the AAP 2.7 containerized installer bundle. |
-| **PHASE 7** | Generates a clean AAP installer inventory and validates its resolved variables. |
-| **PHASE 8** | Runs the AAP installer as `ec2-user` and records the return code. |
-| **PHASE 9** | Validates AAP Gateway availability and prints access details. |
+| **PHASE 0**  | Removes AWS RHUI packages and prepares RHSM repo management. |
+| **PHASE 1**  | Registers the host with Red Hat and enables AAP 2.7 repositories. |
+| **PHASE 2**  | Sets persistent AAP hostname and configures `cloud-init`. |
+| **PHASE 3**  | Configures IPv4-only `/etc/hosts` resolution for the AAP FQDN. |
+| **PHASE 4**  | Installs required packages such as `ansible-core`, `podman`, and `firewalld`. |
+| **PHASE 5**  | Starts firewalld and opens required service ports. |
+| **PHASE 6**  | Downloads and extracts the AAP 2.7 containerized installer bundle. |
+| **PHASE 7**  | Generates a clean AAP installer inventory and validates its resolved variables. |
+| **PHASE 8**  | Runs the AAP installer as `ec2-user` and records the return code. |
+| **PHASE 9**  | Validates AAP Gateway availability and prints access details. | 
+| **PHASE 10** | Copies the manifest_AAP.zip subscription manifest to the target host and activates the AAP subscription. |
+| **PHASE 11** | Displays the AAP Gateway URL, administrator username, and the locations of the installation and activation logs. |
 
 ---
 
