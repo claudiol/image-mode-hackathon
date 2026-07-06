@@ -1,16 +1,29 @@
 ---
-- name: Deploy RHEL image mode update
+- name: Deploy RHEL image mode update to production
   hosts: image_mode_hosts
   become: true
-  serial: 5
+  serial: "{{ image_mode_prod_serial | default(5) }}"
 
   vars:
-    image_ref: quay.io/example/rhel-bootc:prod
+    image_ref: "{{ image_mode_registry_image }}:{{ image_mode_image_tag | default('prod') }}"
 
   tasks:
+    - name: Show target Image Mode image
+      ansible.builtin.debug:
+        msg: "Deploying production image: {{ image_ref }}"
+
+    - name: Login to Quay registry
+      containers.podman.podman_login:
+        registry: "{{ quay_registry_host | default('quay.io') }}"
+        username: "{{ quay_registry_username }}"
+        password: "{{ quay_registry_password }}"
+      no_log: true
+
     - name: Switch host to target image
       ansible.builtin.command:
-        cmd: bootc switch {{ image_ref }}
+        cmd: "bootc switch {{ image_ref }}"
+      register: bootc_switch
+      changed_when: true
 
     - name: Reboot into new image
       ansible.builtin.reboot:
