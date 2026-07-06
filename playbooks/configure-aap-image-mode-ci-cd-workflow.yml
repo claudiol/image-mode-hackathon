@@ -11,12 +11,14 @@
   vars_files:
     - ../vars/secrets.yml
     - ../vars/organizations.yml
+    - ../vars/credential_types.yml
     - ../vars/hosts.yml
     - ../vars/credentials.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
+
   pre_tasks:
     - name: Set AAP controller IP from inventory group or vars file
       ansible.builtin.set_fact:
@@ -25,10 +27,15 @@
             (
               groups['aap_server'][0]
               if groups['aap_server'] is defined and groups['aap_server'] | length > 0
-              else aap_controller_ip
+              else aap_controller_ip | default('')
             )
             | regex_replace('^_', '')
           }}
+
+    - name: Fail if AAP controller IP could not be resolved
+      ansible.builtin.fail:
+        msg: "AAP controller IP could not be resolved. Add [aap_server] to inventory or define aap_controller_ip in vars/secrets.yml."
+      when: resolved_aap_controller_ip | length == 0
 
     - name: Build preferred AAP controller endpoint list
       ansible.builtin.set_fact:
@@ -62,6 +69,7 @@
               | list
               | first
             )
+            | default('')
           }}
 
     - name: Fail if no AAP controller endpoint is reachable
@@ -70,12 +78,11 @@
           - "AAP controller is not reachable using DNS or IP."
           - "Tried DNS: https://{{ aap_fqdn }}"
           - "Tried IP: https://{{ resolved_aap_controller_ip }}"
-      when: controller_host is not defined or controller_host | length == 0
+      when: controller_host | length == 0
 
     - name: Set controller connection variables
       ansible.builtin.set_fact:
         controller_hostname: "{{ controller_host }}"
-        controller_oauthtoken: ""
         controller_validate_certs: false
         aap_hostname: "{{ controller_host }}"
         aap_username: "{{ controller_username }}"
@@ -100,6 +107,10 @@
 
     - name: Configure AAP Image Mode CI/CD objects
       block:
+        - name: Configure AAP credential types
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_credential_types
+
         - name: Configure AAP credentials
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
