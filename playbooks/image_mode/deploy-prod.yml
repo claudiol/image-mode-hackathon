@@ -1,0 +1,31 @@
+---
+- name: Deploy RHEL image mode update
+  hosts: image_mode_hosts
+  become: true
+  serial: 5
+
+  vars:
+    image_ref: quay.io/example/rhel-bootc:prod
+
+  tasks:
+    - name: Switch host to target image
+      ansible.builtin.command:
+        cmd: bootc switch {{ image_ref }}
+
+    - name: Reboot into new image
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+
+    - name: Wait for host
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Verify booted image
+      ansible.builtin.command:
+        cmd: bootc status
+      register: bootc_status
+      changed_when: false
+
+    - name: Display bootc status
+      ansible.builtin.debug:
+        var: bootc_status.stdout_lines
