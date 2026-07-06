@@ -9,8 +9,8 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
-      - "Red Hat Registry Credential"
-      - "Quay Registry Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
 
   - name: Publish Image
     organization: "Image Mode Lab"
@@ -20,7 +20,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
-      - "Quay Registry Credential"
+      - "Image Mode Quay Registry Credential"
 
   - name: Deploy Development
     organization: "Image Mode Lab"
@@ -30,7 +30,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
-      - "Quay Registry Credential"
+      - "Image Mode Quay Registry Credential"
 
   - name: Deploy Production
     organization: "Image Mode Lab"
@@ -69,4 +69,4 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
-      - "Quay Registry Credential"
+      - "Image Mode Quay Registry Credential"
