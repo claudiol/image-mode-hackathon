@@ -50,7 +50,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
-      - "Quay Registry Credential"
+      - "Image Mode Quay Registry Credential"
 
   - name: Validate Image
     organization: "Image Mode Lab"
