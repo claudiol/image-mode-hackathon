@@ -9,15 +9,14 @@
     - ansible.controller
 
   vars_files:
-    - vars/secrets.yml
-    - vars/organizations.yml
-    - vars/hosts.yml
-    - vars/credentials.yml
-    - vars/execution_environments.yml
-    - vars/projects.yml
-    - vars/job_templates.yml
-    - vars/workflow_job_templates.yml
-
+    - ../vars/secrets.yml
+    - ../vars/organizations.yml
+    - ../vars/hosts.yml
+    - ../vars/credentials.yml
+    - ../vars/execution_environments.yml
+    - ../vars/projects.yml
+    - ../vars/job_templates.yml
+    - ../vars/workflow_job_templates.yml
   pre_tasks:
     - name: Set AAP controller IP from inventory group or vars file
       ansible.builtin.set_fact:
