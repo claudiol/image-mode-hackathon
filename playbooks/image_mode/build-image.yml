@@ -1,12 +1,29 @@
 ---
-- name: Build Image Mode image
-  hosts: all
-  gather_facts: true
+- name: Build RHEL image mode bootc image
+  hosts: image_builders
   become: true
 
+  vars:
+    image_name: registry.redhat.io/rhel10/rhel-bootc:latest
+    image_tag: "{{ lookup('pipe', 'date +%Y%m%d%H%M') }}"
+    image_ref: "{{ image_name }}:{{ image_tag }}"
+
   tasks:
-    - name: Placeholder - build image
+    - name: Build bootc image
+      ansible.builtin.command:
+        cmd: podman build -t {{ image_ref }} .
+        chdir: /runner/project
+
+    - name: Login to registry
+      containers.podman.podman_login:
+        registry: quay.io
+        username: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+
+    - name: Push image
+      ansible.builtin.command:
+        cmd: podman push {{ image_ref }}
+
+    - name: Show published image
       ansible.builtin.debug:
-        msg:
-          - "Build Image Mode image placeholder."
-          - "Future tasks will build the bootc/image-mode container image."
+        msg: "Published image: {{ image_ref }}"
