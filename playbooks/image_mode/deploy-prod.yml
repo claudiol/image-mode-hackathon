@@ -2,7 +2,7 @@
 - name: Deploy RHEL image mode update to production
   hosts: image_mode_hosts
   become: true
-  serial: "{{ image_mode_prod_serial | default(5) }}"
+  serial: 5
 
   vars:
     image_ref: "{{ image_mode_registry_image }}:{{ image_mode_image_tag | default('prod') }}"
@@ -10,7 +10,9 @@
   tasks:
     - name: Show target Image Mode image
       ansible.builtin.debug:
-        msg: "Deploying production image: {{ image_ref }}"
+        msg:
+          - "Deploying Image Mode production image:"
+          - "{{ image_ref }}"
 
     - name: Login to Quay registry
       containers.podman.podman_login:
@@ -19,21 +21,21 @@
         password: "{{ quay_registry_password }}"
       no_log: true
 
-    - name: Switch host to target image
+    - name: Switch host to target Image Mode image
       ansible.builtin.command:
         cmd: "bootc switch {{ image_ref }}"
-      register: bootc_switch
+      register: bootc_switch_result
       changed_when: true
 
-    - name: Reboot into new image
+    - name: Reboot into new Image Mode deployment
       ansible.builtin.reboot:
         reboot_timeout: 900
 
-    - name: Wait for host
+    - name: Wait for host after reboot
       ansible.builtin.wait_for_connection:
         timeout: 300
 
-    - name: Verify booted image
+    - name: Verify bootc status
       ansible.builtin.command:
         cmd: bootc status
       register: bootc_status
