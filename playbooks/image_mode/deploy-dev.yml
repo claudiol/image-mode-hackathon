@@ -3,9 +3,45 @@
   hosts: all
   gather_facts: true
   become: true
+  serial: "{{ image_mode_deploy_serial | default(1) }}"
+
+  vars:
+    image_name: "{{ image_mode_registry_image | default('quay.io/philip860/rhel9-image-mode') }}"
+    image_tag: "{{ image_mode_image_tag | default('dev') }}"
+    image_ref: "{{ image_name }}:{{ image_tag }}"
 
   tasks:
-    - name: Placeholder - deploy development
+    - name: Show target Image Mode image
       ansible.builtin.debug:
-        msg:
-          - "Deploy Image Mode image to development placeholder."
+        msg: "Deploying Image Mode image: {{ image_ref }}"
+
+    - name: Login to container registry
+      containers.podman.podman_login:
+        registry: "{{ registry_host | default('quay.io') }}"
+        username: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+      no_log: true
+
+    - name: Switch host to new Image Mode image
+      ansible.builtin.command:
+        cmd: "bootc switch {{ image_ref }}"
+      register: bootc_switch_result
+      changed_when: true
+
+    - name: Reboot into new Image Mode deployment
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+
+    - name: Wait for host to return
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Check bootc status
+      ansible.builtin.command:
+        cmd: bootc status
+      register: bootc_status
+      changed_when: false
+
+    - name: Display bootc status
+      ansible.builtin.debug:
+        var: bootc_status.stdout_lines
