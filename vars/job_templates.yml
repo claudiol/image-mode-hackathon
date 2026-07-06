@@ -9,7 +9,8 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
-      - "Registry Credential"
+      - "Red Hat Registry Credential"
+      - "Quay Registry Credential"
 
   - name: Publish Image
     organization: "Image Mode Lab"
@@ -18,7 +19,8 @@ controller_templates:
     playbook: "playbooks/image_mode/publish-image.yml"
     execution_environment: "Image Mode EE"
     credentials:
-      - "Registry Credential"
+      - "AWS Machine Credential"
+      - "Quay Registry Credential"
 
   - name: Deploy Development
     organization: "Image Mode Lab"
@@ -28,6 +30,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
+      - "Quay Registry Credential"
 
   - name: Deploy Production
     organization: "Image Mode Lab"
@@ -37,6 +40,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
+      - "Quay Registry Credential"
 
   - name: Bootc Update
     organization: "Image Mode Lab"
@@ -46,6 +50,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
+      - "Quay Registry Credential"
 
   - name: Validate Image
     organization: "Image Mode Lab"
@@ -64,3 +69,4 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
+      - "Quay Registry Credential"
