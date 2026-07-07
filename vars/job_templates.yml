@@ -1,10 +1,24 @@
 ---
 controller_templates:
 
+  - name: Deploy Quay
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "quay"
+    playbook: "playbooks/deploy-quay.yml"
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "AWS Machine Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+
+
   - name: Build Image
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Builders"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "image_builder"
     playbook: "playbooks/image_mode/build-image.yml"
     execution_environment: "Image Mode EE"
     credentials:
@@ -12,59 +26,71 @@ controller_templates:
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
 
+
   - name: Publish Image
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Builders"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "image_builder"
     playbook: "playbooks/image_mode/publish-image.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
       - "Image Mode Quay Registry Credential"
 
+
   - name: Deploy Development
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Development"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "development"
     playbook: "playbooks/image_mode/deploy-dev.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
       - "Image Mode Quay Registry Credential"
 
+
   - name: Deploy Production
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Production"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "production"
     playbook: "playbooks/image_mode/deploy-prod.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
       - "Image Mode Quay Registry Credential"
 
+
   - name: Bootc Update
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Development"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "development"
     playbook: "playbooks/image_mode/bootc-update.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
       - "Image Mode Quay Registry Credential"
 
+
   - name: Validate Image
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Development"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "development"
     playbook: "playbooks/image_mode/validate-image.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS Machine Credential"
 
+
   - name: Rollback
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Development"
+    inventory: "Image Mode Lab Infrastructure"
+    limit: "development"
     playbook: "playbooks/image_mode/rollback.yml"
     execution_environment: "Image Mode EE"
     credentials:
