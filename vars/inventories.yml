@@ -1,5 +1,10 @@
 ---
 controller_inventories:
+  - name: "Image Mode Lab Infrastructure"
+    description: "Image Mode Lab inventory"
+    organization: "Image Mode Lab"
+    variables: {}
+
   - name: "Image Builders"
     description: "Hosts used to build Image Mode images"
     organization: "Image Mode Lab"
@@ -14,3 +19,16 @@ controller_inventories:
     description: "Production Image Mode hosts"
     organization: "Image Mode Lab"
     variables: {}
+
+controller_inventory_sources:
+  - name: "Terraform Inventory Source"
+    description: "Imports Terraform-generated inventory.ini"
+    organization: "Image Mode Lab"
+    inventory: "Image Mode Lab Infrastructure"
+    source: "scm"
+    source_project: "Image Mode Lab IaC"
+    source_path: "inventory.ini"
+    overwrite: true
+    overwrite_vars: true
+    update_on_launch: true
+    update_cache_timeout: 0
