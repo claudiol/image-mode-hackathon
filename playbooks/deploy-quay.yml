@@ -1,21 +1,42 @@
 ---
 - name: Configure single-node Quay server
-  hosts: quay_demo
+  hosts: quay
   become: true
+  gather_facts: true
 
   vars_files:
-    - ../files/vars-quay-vault.yml
+    - ../vars/secrets.yml
 
   vars:
-    quay_http_port: "{{ quay_http_port | default(8080) }}"
-    quay_https_port: "{{ quay_https_port | default(443) }}"
-    quay_root: "{{ quay_root | default('/opt/quay') }}"
-    redhat_registry_url: "{{ redhat_registry_url | default('registry.redhat.io') }}"
     redhat_registry_authfile: /root/.config/containers/auth.json
-    quay_default_org: "{{ quay_default_org | default('image-mode') }}"
-    quay_default_team: "{{ quay_default_team | default('writers') }}"
 
   tasks:
+    - name: Validate required Quay variables
+      ansible.builtin.assert:
+        that:
+          - quay_hostname is defined
+          - quay_hostname | length > 0
+          - quay_root is defined
+          - quay_http_port is defined
+          - quay_https_port is defined
+          - quay_image is defined
+          - postgres_image is defined
+          - redis_image is defined
+          - quay_db_name is defined
+          - quay_db_user is defined
+          - quay_db_password is defined
+          - quay_secret_key is defined
+          - quay_superuser is defined
+          - quay_superuser_password is defined
+          - quay_superuser_email is defined
+          - redhat_registry_host is defined
+          - redhat_registry_username is defined
+          - redhat_registry_password is defined
+          - quay_default_org is defined
+          - quay_default_team is defined
+        fail_msg: "Missing required Quay variables. Define them in vars/secrets.yml."
+      no_log: true
+
     - name: Install required packages
       ansible.builtin.dnf:
         name:
@@ -78,10 +99,11 @@
 
     - name: Login to Red Hat registry
       containers.podman.podman_login:
-        registry: "{{ redhat_registry_url }}"
+        registry: "{{ redhat_registry_host }}"
         username: "{{ redhat_registry_username }}"
         password: "{{ redhat_registry_password }}"
         authfile: "{{ redhat_registry_authfile }}"
+      no_log: true
 
     - name: Stop existing Quay pod before rebuild
       containers.podman.podman_pod:
@@ -156,6 +178,7 @@
           POSTGRESQL_DATABASE: "{{ quay_db_name }}"
         volume:
           - "{{ quay_root }}/postgres:/var/lib/pgsql/data:Z"
+      no_log: true
 
     - name: Run Redis container
       containers.podman.podman_container:
@@ -247,6 +270,7 @@
 
           SUPER_USERS:
             - {{ quay_superuser }}
+      no_log: true
 
     - name: Run Quay registry container
       containers.podman.podman_container:
@@ -303,6 +327,7 @@
           - 200
           - 400
       register: quay_init_user
+      no_log: true
 
     - name: Set Quay API token fact
       ansible.builtin.set_fact:
@@ -311,6 +336,7 @@
             quay_init_user.json.access_token
             | default(quay_admin_access_token | default(''), true)
           }}
+      no_log: true
 
     - name: Save generated Quay API token locally on server
       ansible.builtin.copy:
@@ -318,6 +344,7 @@
         mode: "0600"
         content: "{{ quay_api_token }}"
       when: quay_api_token | length > 0
+      no_log: true
 
     - name: Mark initial Quay admin email as confirmed
       ansible.builtin.command: >
@@ -335,7 +362,7 @@
       ansible.builtin.fail:
         msg: >-
           No Quay API token is available. On a clean database, /api/v1/user/initialize
-          should return access_token. On reruns, set quay_admin_access_token in vars-quay-vault.yml.
+          should return access_token. On reruns, set quay_admin_access_token in vars/secrets.yml.
       when: quay_api_token | length == 0
 
     - name: Create default image-mode organization
@@ -354,6 +381,7 @@
           - 201
           - 400
       register: quay_create_org
+      no_log: true
 
     - name: Create writers team in image-mode organization
       ansible.builtin.uri:
@@ -370,6 +398,7 @@
           - 201
           - 400
       register: quay_create_team
+      no_log: true
 
     - name: Add Quay admin user to image-mode writers team
       ansible.builtin.uri:
@@ -383,10 +412,7 @@
           - 201
           - 400
       register: quay_add_team_member
-
-    - name: Display Quay initialize result
-      ansible.builtin.debug:
-        var: quay_init_user.json
+      no_log: true
 
     - name: Display default organization result
       ansible.builtin.debug:
