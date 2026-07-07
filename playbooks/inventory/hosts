@@ -3,4 +3,9 @@
 [satellite]
 10.20.1.154
 [aap_server]
-10.20.2.60
+3.141.7.11
+
+[image_mode_build_server]
+
+
+[quay_server]

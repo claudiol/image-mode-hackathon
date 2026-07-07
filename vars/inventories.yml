@@ -1,0 +1,16 @@
+---
+controller_inventories:
+  - name: "Image Builders"
+    description: "Hosts used to build Image Mode images"
+    organization: "Image Mode Lab"
+    variables: {}
+
+  - name: "Image Mode Development"
+    description: "Development Image Mode hosts"
+    organization: "Image Mode Lab"
+    variables: {}
+
+  - name: "Image Mode Production"
+    description: "Production Image Mode hosts"
+    organization: "Image Mode Lab"
+    variables: {}

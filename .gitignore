@@ -2,4 +2,5 @@
 .terraform/
 terraform.tfstate
 terraform.tfstate.backup
+playbooks/.DS_Store
 .DS_Store
