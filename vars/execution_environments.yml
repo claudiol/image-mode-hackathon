@@ -3,5 +3,5 @@ controller_execution_environments:
 
   - name: Image Mode EE
     organization: "Image Mode Lab"
-    image: registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest
+    image: registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest
     pull: always
