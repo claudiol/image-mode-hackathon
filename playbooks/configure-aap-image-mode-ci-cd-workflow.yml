@@ -25,7 +25,7 @@
         resolved_aap_controller_ip: >-
           {{
             (
-              groups['aap'][0]
+              hostvars[groups['aap'][0]].ansible_host
               if groups['aap'] is defined and groups['aap'] | length > 0
               else aap_controller_ip | default('')
             )
@@ -36,6 +36,18 @@
       ansible.builtin.fail:
         msg: "AAP controller IP could not be resolved. Add [aap] to inventory or define aap_controller_ip in vars/secrets.yml."
       when: resolved_aap_controller_ip | length == 0
+
+    - name: Set Quay hostname from Terraform inventory group
+      ansible.builtin.set_fact:
+        resolved_quay_hostname: "{{ groups['quay'][0] }}"
+      when:
+        - groups['quay'] is defined
+        - groups['quay'] | length > 0
+
+    - name: Fail if Quay hostname could not be resolved
+      ansible.builtin.fail:
+        msg: "Quay hostname could not be resolved. Terraform inventory must contain a [quay] group."
+      when: resolved_quay_hostname is not defined
 
     - name: Build preferred AAP controller endpoint list
       ansible.builtin.set_fact:
@@ -93,6 +105,10 @@
     - name: Show selected AAP controller endpoint
       ansible.builtin.debug:
         msg: "Using AAP controller endpoint: {{ controller_host }}"
+
+    - name: Show resolved Quay registry hostname
+      ansible.builtin.debug:
+        msg: "Using Quay registry hostname: {{ resolved_quay_hostname }}"
 
   tasks:
     - name: Ensure Image Mode Lab organization exists
