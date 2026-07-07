@@ -12,7 +12,6 @@
     - ../vars/secrets.yml
     - ../vars/organizations.yml
     - ../vars/credential_types.yml
-    - ../vars/hosts.yml
     - ../vars/credentials.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
@@ -25,8 +24,8 @@
         resolved_aap_controller_ip: >-
           {{
             (
-              groups['aap_server'][0]
-              if groups['aap_server'] is defined and groups['aap_server'] | length > 0
+              hostvars[groups['aap'][0]].ansible_host
+              if groups['aap'] is defined and groups['aap'] | length > 0
               else aap_controller_ip | default('')
             )
             | regex_replace('^_', '')
@@ -34,8 +33,20 @@
 
     - name: Fail if AAP controller IP could not be resolved
       ansible.builtin.fail:
-        msg: "AAP controller IP could not be resolved. Add [aap_server] to inventory or define aap_controller_ip in vars/secrets.yml."
+        msg: "AAP controller IP could not be resolved. Add [aap] to inventory or define aap_controller_ip in vars/secrets.yml."
       when: resolved_aap_controller_ip | length == 0
+
+    - name: Set Quay hostname from Terraform inventory group
+      ansible.builtin.set_fact:
+        resolved_quay_hostname: "{{ groups['quay'][0] }}"
+      when:
+        - groups['quay'] is defined
+        - groups['quay'] | length > 0
+
+    - name: Fail if Quay hostname could not be resolved
+      ansible.builtin.fail:
+        msg: "Quay hostname could not be resolved. Terraform inventory must contain a [quay] group."
+      when: resolved_quay_hostname is not defined
 
     - name: Build preferred AAP controller endpoint list
       ansible.builtin.set_fact:
@@ -94,6 +105,10 @@
       ansible.builtin.debug:
         msg: "Using AAP controller endpoint: {{ controller_host }}"
 
+    - name: Show resolved Quay registry hostname
+      ansible.builtin.debug:
+        msg: "Using Quay registry hostname: {{ resolved_quay_hostname }}"
+
   tasks:
     - name: Ensure Image Mode Lab organization exists
       ansible.controller.organization:
@@ -115,10 +130,10 @@
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
 
-        - name: Ensure Image Builders inventory exists
+        - name: Ensure Image Mode Lab Infrastructure inventory exists
           ansible.controller.inventory:
-            name: "Image Builders"
-            description: "Hosts used to build Image Mode images"
+            name: "Image Mode Lab Infrastructure"
+            description: "Terraform-generated Image Mode Lab infrastructure inventory"
             organization: "Image Mode Lab"
             state: present
             variables: {}
@@ -126,38 +141,6 @@
             controller_username: "{{ controller_username }}"
             controller_password: "{{ controller_password }}"
             validate_certs: false
-
-        - name: Ensure Image Mode Development inventory exists
-          ansible.controller.inventory:
-            name: "Image Mode Development"
-            description: "Development Image Mode hosts"
-            organization: "Image Mode Lab"
-            state: present
-            variables: {}
-            controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
-            validate_certs: false
-
-        - name: Ensure Image Mode Production inventory exists
-          ansible.controller.inventory:
-            name: "Image Mode Production"
-            description: "Production Image Mode hosts"
-            organization: "Image Mode Lab"
-            state: present
-            variables: {}
-            controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
-            validate_certs: false
-
-        - name: Configure AAP hosts
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_hosts
-          when:
-            - image_builder_host_ip is defined
-            - image_builder_host_ip | length > 0
-            - image_builder_host_ip is not match('^__TERRAFORM_.*__$')
 
         - name: Configure AAP execution environments
           ansible.builtin.include_role:
@@ -167,13 +150,43 @@
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_projects
 
+        - name: Configure Terraform inventory source
+          ansible.controller.inventory_source:
+            name: "Terraform Inventory Source"
+            description: "Imports Terraform-generated Ansible inventory from SCM"
+            organization: "Image Mode Lab"
+            inventory: "Image Mode Lab Infrastructure"
+            source: scm
+            source_project: "Image Mode CI/CD"
+            source_path: "playbooks/inventory/hosts"
+            overwrite: true
+            overwrite_vars: true
+            update_on_launch: true
+            update_cache_timeout: 0
+            state: present
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Sync Terraform inventory source
+          ansible.controller.inventory_source_update:
+            name: "Terraform Inventory Source"
+            organization: "Image Mode Lab"
+            inventory: "Image Mode Lab Infrastructure"
+            wait: true
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
         - name: Configure AAP job templates
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_job_templates
 
-        - name: Configure AAP workflow job templates
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_workflow_job_templates
+        # - name: Configure AAP workflow job templates
+        #   ansible.builtin.include_role:
+        #     name: infra.aap_configuration.controller_workflow_job_templates
 
       environment:
         CONTROLLER_HOST: "{{ controller_host }}"
