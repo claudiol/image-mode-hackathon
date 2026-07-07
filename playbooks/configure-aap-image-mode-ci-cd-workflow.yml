@@ -157,7 +157,7 @@
             organization: "Image Mode Lab"
             inventory: "Image Mode Lab Infrastructure"
             source: scm
-            source_project: "Image Mode Lab IaC"
+            source_project: "Image Mode CI/CD"
             source_path: "playbooks/inventory/hosts"
             overwrite: true
             overwrite_vars: true
