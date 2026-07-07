@@ -1,5 +1,10 @@
 ---
 controller_inventories:
+  - name: "Image Mode Lab Infrastructure"
+    description: "Image Mode Lab inventory"
+    organization: "Image Mode Lab"
+    variables: {}
+
   - name: "Image Builders"
     description: "Hosts used to build Image Mode images"
     organization: "Image Mode Lab"
