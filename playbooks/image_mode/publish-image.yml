@@ -1,0 +1,12 @@
+---
+- name: Publish Image Mode image
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Placeholder - publish image
+      ansible.builtin.debug:
+        msg:
+          - "Publish Image Mode image placeholder."
+          - "Future tasks will push the image to the configured registry."

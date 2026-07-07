@@ -1,0 +1,53 @@
+---
+controller_workflows:
+  - name: "Image Mode CI/CD Pipeline"
+    organization: "Image Mode Lab"
+    destroy_current_nodes: true
+
+    workflow_nodes:
+      - identifier: build
+        unified_job_template:
+          name: "Build Image"
+          organization:
+            name: "Image Mode Lab"
+          type: job_template
+        related:
+          success_nodes:
+            - identifier: publish
+
+      - identifier: publish
+        unified_job_template:
+          name: "Publish Image"
+          organization:
+            name: "Image Mode Lab"
+          type: job_template
+        related:
+          success_nodes:
+            - identifier: deploy_dev
+
+      - identifier: deploy_dev
+        unified_job_template:
+          name: "Deploy Development"
+          organization:
+            name: "Image Mode Lab"
+          type: job_template
+        related:
+          success_nodes:
+            - identifier: validate
+
+      - identifier: validate
+        unified_job_template:
+          name: "Validate Image"
+          organization:
+            name: "Image Mode Lab"
+          type: job_template
+        related:
+          failure_nodes:
+            - identifier: rollback
+
+      - identifier: rollback
+        unified_job_template:
+          name: "Rollback"
+          organization:
+            name: "Image Mode Lab"
+          type: job_template
