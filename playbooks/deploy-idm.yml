@@ -1,6 +1,6 @@
 ---
 - name: Prepare and install Red Hat IdM / FreeIPA on AWS EC2 RHEL 9+
-  hosts: idm_servers
+  hosts: idm
   become: true
   gather_facts: true
 
@@ -8,13 +8,11 @@
     - vars-vault.yml
 
   vars:
-    idm_fqdn: "idm.redhat.local"
-    idm_short_name: "idm"
-    idm_domain: "redhat.local"
-    idm_realm: "REDHAT.LOCAL"
+    idm_fqdn: "{{ inventory_hostname }}"
+    idm_short_name: "{{ inventory_hostname_short }}"
+    idm_domain: "{{ inventory_hostname.split('.')[1:] | join('.') }}"
+    idm_realm: "{{ idm_domain | upper }}"
 
-    # AWS VPC resolver is normally VPC CIDR base + 2.
-    # Override this in inventory/group_vars if your VPC differs.
     aws_dns_resolver: "10.20.0.2"
 
     idm_setup_dns: true
@@ -49,13 +47,12 @@
     - name: Validate AWS private IPv4 discovery
       ansible.builtin.assert:
         that:
-          - ansible_default_ipv4.address is defined
-          - ansible_default_ipv4.address | length > 0
-        fail_msg: "Could not detect ansible_default_ipv4.address. Check host networking/facts."
+          - private_ip is defined or ansible_default_ipv4.address is defined
+        fail_msg: "Could not detect private_ip or ansible_default_ipv4.address. Check Terraform inventory and host networking/facts."
 
     - name: Set discovered network facts
       ansible.builtin.set_fact:
-        idm_private_ip: "{{ ansible_default_ipv4.address }}"
+        idm_private_ip: "{{ private_ip | default(ansible_default_ipv4.address, true) }}"
         idm_nm_connection: "{{ ansible_default_ipv4.interface }}"
 
   tasks:
@@ -182,4 +179,9 @@
 
     - name: Show IdM install status
       ansible.builtin.debug:
-        msg: "IdM install completed or was already present at /etc/ipa/default.conf."
+        msg:
+          - "IdM install completed or was already present."
+          - "FQDN: {{ idm_fqdn }}"
+          - "Domain: {{ idm_domain }}"
+          - "Realm: {{ idm_realm }}"
+          - "Private IP: {{ idm_private_ip }}"
