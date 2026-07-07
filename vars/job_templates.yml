@@ -9,7 +9,7 @@ controller_templates:
     playbook: "playbooks/deploy-quay.yml"
     execution_environment: "Image Mode EE"
     credentials:
-      - "AWS Machine Credential"
+      - "Image Mode Machine Credential"
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
       - "Image Mode Ansible Vault"
