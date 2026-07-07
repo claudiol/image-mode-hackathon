@@ -12,10 +12,10 @@
     - ../vars/secrets.yml
     - ../vars/organizations.yml
     - ../vars/credential_types.yml
-    - ../vars/hosts.yml
     - ../vars/credentials.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
+    - ../vars/controller_inventory_sources.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
 
@@ -25,8 +25,8 @@
         resolved_aap_controller_ip: >-
           {{
             (
-              groups['aap_server'][0]
-              if groups['aap_server'] is defined and groups['aap_server'] | length > 0
+              groups['aap'][0]
+              if groups['aap'] is defined and groups['aap'] | length > 0
               else aap_controller_ip | default('')
             )
             | regex_replace('^_', '')
@@ -34,7 +34,7 @@
 
     - name: Fail if AAP controller IP could not be resolved
       ansible.builtin.fail:
-        msg: "AAP controller IP could not be resolved. Add [aap_server] to inventory or define aap_controller_ip in vars/secrets.yml."
+        msg: "AAP controller IP could not be resolved. Add [aap] to inventory or define aap_controller_ip in vars/secrets.yml."
       when: resolved_aap_controller_ip | length == 0
 
     - name: Build preferred AAP controller endpoint list
@@ -115,10 +115,10 @@
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
 
-        - name: Ensure Image Builders inventory exists
+        - name: Ensure Image Mode Lab Infrastructure inventory exists
           ansible.controller.inventory:
-            name: "Image Builders"
-            description: "Hosts used to build Image Mode images"
+            name: "Image Mode Lab Infrastructure"
+            description: "Terraform-generated Image Mode Lab infrastructure inventory"
             organization: "Image Mode Lab"
             state: present
             variables: {}
@@ -126,38 +126,6 @@
             controller_username: "{{ controller_username }}"
             controller_password: "{{ controller_password }}"
             validate_certs: false
-
-        - name: Ensure Image Mode Development inventory exists
-          ansible.controller.inventory:
-            name: "Image Mode Development"
-            description: "Development Image Mode hosts"
-            organization: "Image Mode Lab"
-            state: present
-            variables: {}
-            controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
-            validate_certs: false
-
-        - name: Ensure Image Mode Production inventory exists
-          ansible.controller.inventory:
-            name: "Image Mode Production"
-            description: "Production Image Mode hosts"
-            organization: "Image Mode Lab"
-            state: present
-            variables: {}
-            controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
-            validate_certs: false
-
-        - name: Configure AAP hosts
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_hosts
-          when:
-            - image_builder_host_ip is defined
-            - image_builder_host_ip | length > 0
-            - image_builder_host_ip is not match('^__TERRAFORM_.*__$')
 
         - name: Configure AAP execution environments
           ansible.builtin.include_role:
@@ -166,6 +134,10 @@
         - name: Configure AAP projects
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_projects
+
+        - name: Configure AAP inventory sources
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_inventory_sources
 
         - name: Configure AAP job templates
           ansible.builtin.include_role:
