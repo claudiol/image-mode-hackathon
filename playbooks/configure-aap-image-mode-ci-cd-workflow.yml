@@ -15,7 +15,6 @@
     - ../vars/credentials.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
-    - ../vars/controller_inventory_sources.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
 
@@ -151,9 +150,35 @@
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_projects
 
-        - name: Configure AAP inventory sources
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_inventory_sources
+        - name: Configure Terraform inventory source
+          ansible.controller.inventory_source:
+            name: "Terraform Inventory Source"
+            description: "Imports Terraform-generated Ansible inventory from SCM"
+            organization: "Image Mode Lab"
+            inventory: "Image Mode Lab Infrastructure"
+            source: scm
+            source_project: "Image Mode Lab IaC"
+            source_path: "playbooks/inventory/hosts"
+            overwrite: true
+            overwrite_vars: true
+            update_on_launch: true
+            update_cache_timeout: 0
+            state: present
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Sync Terraform inventory source
+          ansible.controller.inventory_source_update:
+            name: "Terraform Inventory Source"
+            organization: "Image Mode Lab"
+            inventory: "Image Mode Lab Infrastructure"
+            wait: true
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
 
         - name: Configure AAP job templates
           ansible.builtin.include_role:
