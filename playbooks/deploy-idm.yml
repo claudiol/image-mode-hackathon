@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars_files:
-    - vars-vault.yml
+    - ../vars/secrets.yml
 
   vars:
     idm_fqdn: "{{ inventory_hostname }}"
