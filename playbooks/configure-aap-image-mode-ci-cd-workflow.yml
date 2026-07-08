@@ -1,0 +1,199 @@
+---
+- name: Configure AAP Image Mode CI/CD
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - infra.aap_configuration
+    - ansible.controller
+
+  vars_files:
+    - ../vars/secrets.yml
+    - ../vars/organizations.yml
+    - ../vars/credential_types.yml
+    - ../vars/credentials.yml
+    - ../vars/execution_environments.yml
+    - ../vars/projects.yml
+    - ../vars/job_templates.yml
+    - ../vars/workflow_job_templates.yml
+
+  pre_tasks:
+    - name: Set AAP controller IP from inventory group or vars file
+      ansible.builtin.set_fact:
+        resolved_aap_controller_ip: >-
+          {{
+            (
+              hostvars[groups['aap'][0]].ansible_host
+              if groups['aap'] is defined and groups['aap'] | length > 0
+              else aap_controller_ip | default('')
+            )
+            | regex_replace('^_', '')
+          }}
+
+    - name: Fail if AAP controller IP could not be resolved
+      ansible.builtin.fail:
+        msg: "AAP controller IP could not be resolved. Add [aap] to inventory or define aap_controller_ip in vars/secrets.yml."
+      when: resolved_aap_controller_ip | length == 0
+
+    - name: Set Quay hostname from Terraform inventory group
+      ansible.builtin.set_fact:
+        resolved_quay_hostname: "{{ groups['quay'][0] }}"
+      when:
+        - groups['quay'] is defined
+        - groups['quay'] | length > 0
+
+    - name: Fail if Quay hostname could not be resolved
+      ansible.builtin.fail:
+        msg: "Quay hostname could not be resolved. Terraform inventory must contain a [quay] group."
+      when: resolved_quay_hostname is not defined
+
+    - name: Build preferred AAP controller endpoint list
+      ansible.builtin.set_fact:
+        aap_controller_endpoint_candidates:
+          - "https://{{ aap_fqdn }}"
+          - "https://{{ resolved_aap_controller_ip }}"
+
+    - name: Check available AAP controller endpoints
+      ansible.builtin.uri:
+        url: "{{ item }}/api/gateway/v1/status/"
+        validate_certs: false
+        status_code:
+          - 200
+          - 401
+          - 403
+        timeout: 10
+      loop: "{{ aap_controller_endpoint_candidates }}"
+      register: aap_endpoint_checks
+      failed_when: false
+      changed_when: false
+
+    - name: Select first reachable AAP controller endpoint
+      ansible.builtin.set_fact:
+        controller_host: >-
+          {{
+            (
+              aap_endpoint_checks.results
+              | selectattr('status', 'defined')
+              | selectattr('status', 'in', [200, 401, 403])
+              | map(attribute='item')
+              | list
+              | first
+            )
+            | default('')
+          }}
+
+    - name: Fail if no AAP controller endpoint is reachable
+      ansible.builtin.fail:
+        msg:
+          - "AAP controller is not reachable using DNS or IP."
+          - "Tried DNS: https://{{ aap_fqdn }}"
+          - "Tried IP: https://{{ resolved_aap_controller_ip }}"
+      when: controller_host | length == 0
+
+    - name: Set controller connection variables
+      ansible.builtin.set_fact:
+        controller_hostname: "{{ controller_host }}"
+        controller_validate_certs: false
+        aap_hostname: "{{ controller_host }}"
+        aap_username: "{{ controller_username }}"
+        aap_password: "{{ controller_password }}"
+        aap_validate_certs: false
+      no_log: true
+
+    - name: Show selected AAP controller endpoint
+      ansible.builtin.debug:
+        msg: "Using AAP controller endpoint: {{ controller_host }}"
+
+    - name: Show resolved Quay registry hostname
+      ansible.builtin.debug:
+        msg: "Using Quay registry hostname: {{ resolved_quay_hostname }}"
+
+  tasks:
+    - name: Ensure Image Mode Lab organization exists
+      ansible.controller.organization:
+        name: "Image Mode Lab"
+        description: "AAP Image Mode CI/CD lab organization"
+        state: present
+        controller_host: "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+
+    - name: Configure AAP Image Mode CI/CD objects
+      block:
+        - name: Configure AAP credential types
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_credential_types
+
+        - name: Configure AAP credentials
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_credentials
+
+        - name: Ensure Image Mode Lab Infrastructure inventory exists
+          ansible.controller.inventory:
+            name: "Image Mode Lab Infrastructure"
+            description: "Terraform-generated Image Mode Lab infrastructure inventory"
+            organization: "Image Mode Lab"
+            state: present
+            variables: {}
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Configure AAP execution environments
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_execution_environments
+
+        - name: Configure AAP projects
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_projects
+
+        - name: Configure Terraform inventory source
+          ansible.controller.inventory_source:
+            name: "Terraform Inventory Source"
+            description: "Imports Terraform-generated Ansible inventory from SCM"
+            organization: "Image Mode Lab"
+            inventory: "Image Mode Lab Infrastructure"
+            source: scm
+            source_project: "Image Mode CI/CD"
+            source_path: "playbooks/inventory/hosts"
+            overwrite: true
+            overwrite_vars: true
+            update_on_launch: true
+            update_cache_timeout: 0
+            state: present
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Sync Terraform inventory source
+          ansible.controller.inventory_source_update:
+            name: "Terraform Inventory Source"
+            organization: "Image Mode Lab"
+            inventory: "Image Mode Lab Infrastructure"
+            wait: true
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+
+        - name: Configure AAP job templates
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_job_templates
+
+        # - name: Configure AAP workflow job templates
+        #   ansible.builtin.include_role:
+        #     name: infra.aap_configuration.controller_workflow_job_templates
+
+      environment:
+        CONTROLLER_HOST: "{{ controller_host }}"
+        CONTROLLER_USERNAME: "{{ controller_username }}"
+        CONTROLLER_PASSWORD: "{{ controller_password }}"
+        CONTROLLER_VERIFY_SSL: "false"
+        TOWER_HOST: "{{ controller_host }}"
+        TOWER_USERNAME: "{{ controller_username }}"
+        TOWER_PASSWORD: "{{ controller_password }}"
+        TOWER_VERIFY_SSL: "false"

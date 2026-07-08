@@ -1,6 +1,21 @@
-[idm_servers]
-10.20.2.112
+[all:vars]
+ansible_user=ec2-user
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+[idm]
+idm-1.sandbox4075.opentlc.com ansible_host=18.218.63.247 private_ip=10.20.1.182
+
 [satellite]
-10.20.1.154
-[aap_server]
-10.20.2.60
+satellite-1.sandbox4075.opentlc.com ansible_host=18.190.191.6 private_ip=10.20.1.91
+
+[aap]
+aap-1.sandbox4075.opentlc.com ansible_host=18.188.120.210 private_ip=10.20.1.107
+
+[quay]
+quay-1.sandbox4075.opentlc.com ansible_host=3.13.202.37 private_ip=10.20.1.110
+
+[quay_demo]
+quay-demo.sandbox4075.opentlc.com ansible_host=16.59.25.57 private_ip=10.20.1.137
+
+[image_builder]
+image-builder-1.sandbox4075.opentlc.com ansible_host=18.219.229.200 private_ip=10.20.1.111
