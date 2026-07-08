@@ -10,18 +10,19 @@
   vars:
     idm_short_name: "{{ inventory_hostname_short }}"
 
-    # Parent/public OpenTLC domain:
-    # idm-1.sandbox4075.opentlc.com -> sandbox4075.opentlc.com
-    idm_parent_domain: "{{ inventory_hostname.split('.')[1:] | join('.') }}"
+    # These should come from Terraform inventory.tpl:
+    #
+    # parent_domain_name=sandbox4075.opentlc.com
+    # idm_domain_name=lab.sandbox4075.opentlc.com
+    # idm_realm_name=LAB.SANDBOX4075.OPENTLC.COM
+    # idm_server_fqdn=idm-1.lab.sandbox4075.opentlc.com
+    # idm_server_ip=10.20.1.x
+    # aws_dns_resolver=10.20.0.2
 
-    # Private IdM lab DNS zone:
-    # sandbox4075.opentlc.com -> lab.sandbox4075.opentlc.com
-    idm_domain: "lab.{{ idm_parent_domain }}"
-    idm_realm: "{{ idm_domain | upper }}"
-
-    # Final IdM hostname:
-    # idm-1.lab.sandbox4075.opentlc.com
-    idm_fqdn: "{{ idm_short_name }}.{{ idm_domain }}"
+    idm_parent_domain: "{{ parent_domain_name }}"
+    idm_domain: "{{ idm_domain_name }}"
+    idm_realm: "{{ idm_realm_name }}"
+    idm_fqdn: "{{ idm_server_fqdn }}"
 
     idm_setup_dns: true
     idm_no_reverse: true
@@ -52,6 +53,21 @@
           - idm_vault_admin_password | length > 0
         fail_msg: "Missing IdM vault passwords. Define idm_vault_dm_password and idm_vault_admin_password in vars/secrets.yml."
 
+    - name: Validate Terraform-provided DNS variables
+      ansible.builtin.assert:
+        that:
+          - parent_domain_name is defined
+          - parent_domain_name | length > 0
+          - idm_domain_name is defined
+          - idm_domain_name | length > 0
+          - idm_realm_name is defined
+          - idm_realm_name | length > 0
+          - idm_server_fqdn is defined
+          - idm_server_fqdn | length > 0
+          - aws_dns_resolver is defined
+          - aws_dns_resolver | length > 0
+        fail_msg: "Missing Terraform DNS inventory variables. Check inventory.tpl and Terraform templatefile vars."
+
     - name: Validate AWS private IPv4 discovery
       ansible.builtin.assert:
         that:
@@ -60,8 +76,18 @@
 
     - name: Set discovered network facts
       ansible.builtin.set_fact:
-        idm_private_ip: "{{ private_ip | default(ansible_default_ipv4.address, true) }}"
+        idm_private_ip: "{{ idm_server_ip | default(private_ip | default(ansible_default_ipv4.address, true), true) }}"
         idm_nm_connection: "{{ ansible_default_ipv4.interface }}"
+
+    - name: Validate IdM DNS relationship
+      ansible.builtin.assert:
+        that:
+          - idm_domain == "lab." ~ idm_parent_domain
+          - idm_fqdn == idm_short_name ~ "." ~ idm_domain
+          - idm_realm == idm_domain | upper
+        fail_msg: >-
+          DNS mismatch detected. Expected idm_fqdn={{ idm_short_name }}.{{ idm_domain }},
+          idm_domain=lab.{{ idm_parent_domain }}, realm={{ idm_domain | upper }}.
 
   tasks:
     - name: Ensure required IdM packages are installed
@@ -170,19 +196,6 @@
       failed_when: false
       changed_when: false
 
-    - name: Remove failed partial IdM install before retry
-      ansible.builtin.command:
-        argv:
-          - ipa-server-install
-          - --uninstall
-          - --unattended
-      register: ipa_uninstall
-      failed_when: false
-      changed_when: ipa_uninstall.rc == 0
-      when:
-        - ipa_status.rc != 0
-        - ansible.builtin.stat is not defined
-
     - name: Check for existing partial IdM config
       ansible.builtin.stat:
         path: /etc/ipa/default.conf
@@ -231,9 +244,9 @@
       ansible.builtin.debug:
         msg:
           - "IdM install completed and verified."
-          - "SSH inventory hostname: {{ inventory_hostname }}"
-          - "IdM FQDN: {{ idm_fqdn }}"
+          - "AWS parent DNS domain: {{ idm_parent_domain }}"
           - "IdM DNS domain: {{ idm_domain }}"
+          - "IdM FQDN: {{ idm_fqdn }}"
           - "IdM realm: {{ idm_realm }}"
-          - "Parent DNS domain: {{ idm_parent_domain }}"
-          - "Private IP: {{ idm_private_ip }}"
+          - "IdM private IP: {{ idm_private_ip }}"
+          - "AWS DNS forwarder: {{ aws_dns_resolver }}"
