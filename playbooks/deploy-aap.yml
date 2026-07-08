@@ -59,7 +59,7 @@
         --output text
       register: fetched_aap_secrets
       changed_when: false
-      no_log: true
+      no_log: false
       loop:
         - { key: "aap/postgresql_admin_password", var: "postgresql_admin_password" }
         - { key: "aap/gateway_admin_username", var: "gateway_admin_username" }
