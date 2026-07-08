@@ -13,7 +13,6 @@
     idm_domain: "{{ inventory_hostname.split('.')[1:] | join('.') }}"
     idm_realm: "{{ idm_domain | upper }}"
 
-    aws_dns_resolver: "10.20.0.2"
 
     idm_setup_dns: true
     idm_no_reverse: true
