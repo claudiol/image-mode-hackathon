@@ -8,11 +8,20 @@
     - ../vars/secrets.yml
 
   vars:
-    idm_fqdn: "{{ inventory_hostname }}"
     idm_short_name: "{{ inventory_hostname_short }}"
-    idm_domain: "{{ inventory_hostname.split('.')[1:] | join('.') }}"
+
+    # Parent/public OpenTLC domain:
+    # idm-1.sandbox4075.opentlc.com -> sandbox4075.opentlc.com
+    idm_parent_domain: "{{ inventory_hostname.split('.')[1:] | join('.') }}"
+
+    # Private IdM lab DNS zone:
+    # sandbox4075.opentlc.com -> lab.sandbox4075.opentlc.com
+    idm_domain: "lab.{{ idm_parent_domain }}"
     idm_realm: "{{ idm_domain | upper }}"
 
+    # Final IdM hostname:
+    # idm-1.lab.sandbox4075.opentlc.com
+    idm_fqdn: "{{ idm_short_name }}.{{ idm_domain }}"
 
     idm_setup_dns: true
     idm_no_reverse: true
@@ -41,13 +50,13 @@
           - idm_vault_dm_password | length > 0
           - idm_vault_admin_password is defined
           - idm_vault_admin_password | length > 0
-        fail_msg: "Missing IdM vault passwords. Define idm_vault_dm_password and idm_vault_admin_password in vars-vault.yml."
+        fail_msg: "Missing IdM vault passwords. Define idm_vault_dm_password and idm_vault_admin_password in vars/secrets.yml."
 
     - name: Validate AWS private IPv4 discovery
       ansible.builtin.assert:
         that:
           - private_ip is defined or ansible_default_ipv4.address is defined
-        fail_msg: "Could not detect private_ip or ansible_default_ipv4.address. Check Terraform inventory and host networking/facts."
+        fail_msg: "Could not detect private_ip or ansible_default_ipv4.address."
 
     - name: Set discovered network facts
       ansible.builtin.set_fact:
@@ -55,7 +64,7 @@
         idm_nm_connection: "{{ ansible_default_ipv4.interface }}"
 
   tasks:
-    - name: Ensure RHEL 9 AppStream/Base packages are available
+    - name: Ensure required IdM packages are installed
       ansible.builtin.dnf:
         name:
           - firewalld
@@ -67,7 +76,7 @@
           - ipa-server-dns
         state: present
 
-    - name: Set persistent hostname
+    - name: Set persistent IdM lab hostname
       ansible.builtin.hostname:
         name: "{{ idm_fqdn }}"
 
@@ -85,7 +94,7 @@
         regexp: '^(hosts:\s+.*)\s+myhostname(\s*.*)$'
         replace: '\1\2'
 
-    - name: Ensure IdM hostname resolves to private AWS IP
+    - name: Ensure IdM lab hostname resolves to private AWS IP
       ansible.builtin.blockinfile:
         path: /etc/hosts
         marker: "# {mark} ANSIBLE MANAGED IDM HOSTS"
@@ -155,7 +164,44 @@
         state: restarted
       when: nmcli_dns.changed | default(false)
 
-    - name: Install IdM server with integrated DNS
+    - name: Check whether IdM is fully installed
+      ansible.builtin.command: ipactl status
+      register: ipa_status
+      failed_when: false
+      changed_when: false
+
+    - name: Remove failed partial IdM install before retry
+      ansible.builtin.command:
+        argv:
+          - ipa-server-install
+          - --uninstall
+          - --unattended
+      register: ipa_uninstall
+      failed_when: false
+      changed_when: ipa_uninstall.rc == 0
+      when:
+        - ipa_status.rc != 0
+        - ansible.builtin.stat is not defined
+
+    - name: Check for existing partial IdM config
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: ipa_default_conf
+
+    - name: Remove failed partial IdM install when config exists but services are down
+      ansible.builtin.command:
+        argv:
+          - ipa-server-install
+          - --uninstall
+          - --unattended
+      register: ipa_partial_uninstall
+      failed_when: false
+      changed_when: ipa_partial_uninstall.rc == 0
+      when:
+        - ipa_status.rc != 0
+        - ipa_default_conf.stat.exists
+
+    - name: Install IdM server with integrated DNS for lab subdomain
       ansible.builtin.command:
         argv:
           - ipa-server-install
@@ -170,17 +216,24 @@
           - "--forward-policy={{ idm_forward_policy }}"
           - "--no-dnssec-validation"
           - "--unattended"
-          - "{{ '--no-reverse' if idm_no_reverse else '' }}"
-      args:
-        creates: /etc/ipa/default.conf
+          - "--no-reverse"
       register: ipa_install
-      no_log: false
+      no_log: true
+      when: ipa_status.rc != 0
+
+    - name: Verify IdM services are running
+      ansible.builtin.command: ipactl status
+      register: ipa_verify
+      changed_when: false
+      failed_when: ipa_verify.rc != 0
 
     - name: Show IdM install status
       ansible.builtin.debug:
         msg:
-          - "IdM install completed or was already present."
-          - "FQDN: {{ idm_fqdn }}"
-          - "Domain: {{ idm_domain }}"
-          - "Realm: {{ idm_realm }}"
+          - "IdM install completed and verified."
+          - "SSH inventory hostname: {{ inventory_hostname }}"
+          - "IdM FQDN: {{ idm_fqdn }}"
+          - "IdM DNS domain: {{ idm_domain }}"
+          - "IdM realm: {{ idm_realm }}"
+          - "Parent DNS domain: {{ idm_parent_domain }}"
           - "Private IP: {{ idm_private_ip }}"
