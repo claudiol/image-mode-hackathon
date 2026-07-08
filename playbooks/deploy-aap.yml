@@ -82,7 +82,7 @@
       ansible.builtin.set_fact:
         "{{ item.item.var }}": "{{ item.stdout }}"
       loop: "{{ fetched_aap_secrets.results }}"
-      no_log: false
+      no_log: true
 
     - name: PHASE 0 | Set static PostgreSQL admin username
       ansible.builtin.set_fact:
