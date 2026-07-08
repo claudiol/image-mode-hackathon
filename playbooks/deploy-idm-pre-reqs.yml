@@ -103,6 +103,7 @@
             name:
               - ipa-server
               - ipa-server-dns
+              - ansible-freeipa
             state: present
 
     - name: PHASE 7 | Post-Install Split-Horizon and Cache Remediation Setup
@@ -144,22 +145,25 @@
             immediate: true
           loop: [88, 464, 53, 123]
 
-    - name: PHASE 8 | Execute FreeIPA Server Installation via Inline Template
-      ansible.builtin.shell: |
-        ipa-server-install \
-          --hostname={{ idm_fqdn }} \
-          --ip-address={{ ansible_default_ipv4.address }} \
-          -n aws.redhat.local \
-          -r AWS.REDHAT.LOCAL \
-          -p DM_Secret_Pass123 \
-          -a Admin_Secret_Pass123 \
-          --setup-dns \
-          --forwarder={{ aws_dns_resolver }} \
-          --no-dnssec-validation \
-          --unattended
-      args:
-        creates: /etc/ipa/default.conf
-      register: ipa_installer_output
+    - name: PHASE 8 | Execute Native IdM Server Installation
+      block:
+        - name: Ensure latest ansible collection mappings are loaded from disk
+          ansible.builtin.meta: refresh_inventory
+
+        - name: Execute IdM deployment role
+          ansible.builtin.include_role:
+            name: freeipa.ansible_freeipa.ipaserver
+          vars:
+            ipaserver_hostname: "{{ idm_fqdn }}"
+            ipaserver_ip_addresses: ["{{ ansible_facts['default_ipv4']['address'] }}"]
+            ipaserver_domain: "aws.redhat.local"
+            ipaserver_realm: "AWS.REDHAT.LOCAL"
+            ipadm_password: "DM_Secret_Pass123"
+            ipaadmin_password: "Admin_Secret_Pass123"
+            ipaserver_setup_dns: true
+            ipaserver_forwarders: ["{{ aws_dns_resolver }}"]
+            ipaserver_no_dnssec_validation: true
+          register: ipa_installer_output
 
     - name: Log Installer Output
       ansible.builtin.debug:
