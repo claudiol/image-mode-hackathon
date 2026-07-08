@@ -13,7 +13,7 @@
     aap_installer_url: "https://aap-containerized-installers.s3.us-east-1.amazonaws.com/2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
     aap_installer_tarball: "{{ aap_work_dir }}/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
 
-    aap_manifest_src: "../files/manifest_AAP.zip"
+    aap_manifest_url: "https://aap-containerized-installers.s3.us-east-1.amazonaws.com/2.7/manifest_AAP.zip"
     aap_manifest_dest: "/home/{{ aap_run_user }}/manifest_AAP.zip"
     aap_activation_playbook: "/home/{{ aap_run_user }}/activate-aap-manifest.yml"
 
@@ -28,8 +28,7 @@
       - podman
       - tar
       - firewalld
-      - python3-boto3
-      - python3-botocore
+      - awscli
 
   pre_tasks:
     - name: PHASE 0 | Validate AWS secret lookup variables
@@ -41,33 +40,53 @@
           - secret_prefix | length > 0
         fail_msg: "aws_region and secret_prefix must be defined in inventory."
 
-    - name: PHASE 0 | Load AAP secrets from AWS Secrets Manager
+    - name: PHASE 0 | Ensure AWS CLI is installed
+      ansible.builtin.dnf:
+        name: awscli
+        state: present
+
+    - name: PHASE 0 | Verify AWS identity from AAP EC2 instance role
+      ansible.builtin.command: aws sts get-caller-identity --region {{ aws_region }}
+      register: aws_identity_check
+      changed_when: false
+
+    - name: PHASE 0 | Fetch AAP secrets from AWS Secrets Manager
+      ansible.builtin.command: >
+        aws secretsmanager get-secret-value
+        --region {{ aws_region }}
+        --secret-id {{ secret_prefix }}/{{ item.key }}
+        --query SecretString
+        --output text
+      register: fetched_aap_secrets
+      changed_when: false
+      no_log: true
+      loop:
+        - { key: "aap/postgresql_admin_password", var: "postgresql_admin_password" }
+        - { key: "aap/gateway_admin_username", var: "gateway_admin_username" }
+        - { key: "aap/gateway_admin_password", var: "gateway_admin_password" }
+        - { key: "aap/gateway_pg_password", var: "gateway_pg_password" }
+        - { key: "aap/controller_admin_password", var: "controller_admin_password" }
+        - { key: "aap/controller_pg_password", var: "controller_pg_password" }
+        - { key: "aap/hub_admin_password", var: "hub_admin_password" }
+        - { key: "aap/hub_pg_password", var: "hub_pg_password" }
+        - { key: "aap/eda_admin_password", var: "eda_admin_password" }
+        - { key: "aap/eda_pg_password", var: "eda_pg_password" }
+        - { key: "aap/automationmetrics_pg_password", var: "automationmetrics_pg_password" }
+        - { key: "aap/automationmetrics_controller_read_pg_password", var: "automationmetrics_controller_read_pg_password" }
+        - { key: "redhat/registry_username", var: "registry_username" }
+        - { key: "redhat/registry_password", var: "registry_password" }
+        - { key: "redhat/org_id", var: "aap_org_id" }
+        - { key: "redhat/aap_activation_key", var: "aap_activation_key" }
+
+    - name: PHASE 0 | Convert fetched secrets into Ansible facts
+      ansible.builtin.set_fact:
+        "{{ item.item.var }}": "{{ item.stdout }}"
+      loop: "{{ fetched_aap_secrets.results }}"
+      no_log: true
+
+    - name: PHASE 0 | Set static PostgreSQL admin username
       ansible.builtin.set_fact:
         postgresql_admin_username: "postgres"
-        postgresql_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/postgresql_admin_password', region=aws_region) }}"
-
-        registry_username: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/redhat/registry_username', region=aws_region) }}"
-        registry_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/redhat/registry_password', region=aws_region) }}"
-
-        gateway_admin_username: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/gateway_admin_username', region=aws_region) }}"
-        gateway_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/gateway_admin_password', region=aws_region) }}"
-        gateway_pg_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/gateway_pg_password', region=aws_region) }}"
-
-        controller_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/controller_admin_password', region=aws_region) }}"
-        controller_pg_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/controller_pg_password', region=aws_region) }}"
-
-        hub_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/hub_admin_password', region=aws_region) }}"
-        hub_pg_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/hub_pg_password', region=aws_region) }}"
-
-        eda_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/eda_admin_password', region=aws_region) }}"
-        eda_pg_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/eda_pg_password', region=aws_region) }}"
-
-        automationmetrics_pg_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/automationmetrics_pg_password', region=aws_region) }}"
-        automationmetrics_controller_read_pg_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/automationmetrics_controller_read_pg_password', region=aws_region) }}"
-
-        aap_org_id: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/redhat/org_id', region=aws_region) }}"
-        aap_activation_key: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/redhat/aap_activation_key', region=aws_region) }}"
-      no_log: true
 
   tasks:
     - name: PHASE 1 | Prepare RHSM repo management
@@ -363,13 +382,14 @@
 
     - name: PHASE 12 | Activate AAP using manifest_AAP.zip
       block:
-        - name: Copy AAP manifest to EC2 host
-          ansible.builtin.copy:
-            src: "{{ aap_manifest_src }}"
+        - name: Download AAP manifest
+          ansible.builtin.get_url:
+            url: "{{ aap_manifest_url }}"
             dest: "{{ aap_manifest_dest }}"
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
             mode: "0600"
+            timeout: 300
 
         - name: Write AAP manifest activation playbook
           ansible.builtin.copy:
@@ -383,6 +403,7 @@
                 hosts: localhost
                 gather_facts: false
                 connection: local
+
                 tasks:
                   - name: Upload AAP subscription manifest
                     ansible.controller.license:
