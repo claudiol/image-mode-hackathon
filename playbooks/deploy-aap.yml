@@ -10,10 +10,12 @@
     aap_run_user: "ec2-user"
 
     aap_work_dir: "/opt"
-    aap_installer_url: "https://aap-containerized-installers.s3.us-east-1.amazonaws.com/2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
-    aap_installer_tarball: "{{ aap_work_dir }}/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
 
-    aap_manifest_url: "https://aap-containerized-installers.s3.us-east-1.amazonaws.com/2.7/manifest_AAP.zip"
+    aap_s3_bucket: "aap-containerized-installers"
+    aap_installer_s3_key: "2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
+    aap_manifest_s3_key: "2.7/manifest_AAP.zip"
+
+    aap_installer_tarball: "{{ aap_work_dir }}/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
     aap_manifest_dest: "/home/{{ aap_run_user }}/manifest_AAP.zip"
     aap_activation_playbook: "/home/{{ aap_run_user }}/activate-aap-manifest.yml"
 
@@ -50,6 +52,10 @@
       register: aws_identity_check
       changed_when: false
 
+    - name: PHASE 0 | Show AWS caller identity
+      ansible.builtin.debug:
+        var: aws_identity_check.stdout
+
     - name: PHASE 0 | Fetch AAP secrets from AWS Secrets Manager
       ansible.builtin.command: >
         aws secretsmanager get-secret-value
@@ -59,7 +65,7 @@
         --output text
       register: fetched_aap_secrets
       changed_when: false
-      no_log: false
+      no_log: true
       loop:
         - { key: "aap/postgresql_admin_password", var: "postgresql_admin_password" }
         - { key: "aap/gateway_admin_username", var: "gateway_admin_username" }
@@ -191,12 +197,22 @@
 
     - name: PHASE 7 | Download and extract AAP 2.7 containerized installer
       block:
-        - name: Download AAP 2.7 containerized installer from S3
-          ansible.builtin.get_url:
-            url: "{{ aap_installer_url }}"
-            dest: "{{ aap_installer_tarball }}"
+        - name: Download AAP 2.7 containerized installer from private S3 using instance role
+          ansible.builtin.command: >
+            aws s3 cp
+            s3://{{ aap_s3_bucket }}/{{ aap_installer_s3_key }}
+            {{ aap_installer_tarball }}
+            --region {{ aws_region }}
+          args:
+            creates: "{{ aap_installer_tarball }}"
+          changed_when: true
+
+        - name: Ensure AAP installer tarball permissions
+          ansible.builtin.file:
+            path: "{{ aap_installer_tarball }}"
+            owner: root
+            group: root
             mode: "0644"
-            timeout: 1800
 
         - name: Extract AAP installer under /opt
           ansible.builtin.unarchive:
@@ -382,14 +398,22 @@
 
     - name: PHASE 12 | Activate AAP using manifest_AAP.zip
       block:
-        - name: Download AAP manifest
-          ansible.builtin.get_url:
-            url: "{{ aap_manifest_url }}"
-            dest: "{{ aap_manifest_dest }}"
+        - name: Download AAP manifest from private S3 using instance role
+          ansible.builtin.command: >
+            aws s3 cp
+            s3://{{ aap_s3_bucket }}/{{ aap_manifest_s3_key }}
+            {{ aap_manifest_dest }}
+            --region {{ aws_region }}
+          args:
+            creates: "{{ aap_manifest_dest }}"
+          changed_when: true
+
+        - name: Ensure AAP manifest ownership and permissions
+          ansible.builtin.file:
+            path: "{{ aap_manifest_dest }}"
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
             mode: "0600"
-            timeout: 300
 
         - name: Write AAP manifest activation playbook
           ansible.builtin.copy:
