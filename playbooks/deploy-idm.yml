@@ -174,7 +174,7 @@
       args:
         creates: /etc/ipa/default.conf
       register: ipa_install
-      no_log: true
+      no_log: false
 
     - name: Show IdM install status
       ansible.builtin.debug:
