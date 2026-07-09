@@ -142,19 +142,6 @@
       become: true
       no_log: true
 
-    - name: Read current AAP Gateway authentication settings
-      ansible.builtin.uri:
-        url: "{{ aap_url }}/api/gateway/v1/settings/authentication/"
-        method: GET
-        user: "{{ gateway_admin_username }}"
-        password: "{{ gateway_admin_password }}"
-        force_basic_auth: true
-        validate_certs: false
-        status_code: 200
-        return_content: true
-      register: current_aap_auth_settings
-      no_log: false
-
     - name: Configure AAP Gateway LDAP authentication against IdM
       ansible.builtin.uri:
         url: "{{ aap_url }}/api/gateway/v1/settings/authentication/"
@@ -167,53 +154,61 @@
           - 200
           - 202
         body_format: json
-        body: >-
-          {{
-            current_aap_auth_settings.json | combine({
-              "AUTH_LDAP_SERVER_URI": [ldap_server_uri],
-              "AUTH_LDAP_BIND_DN": [ldap_bind_dn],
-              "AUTH_LDAP_BIND_PASSWORD": [aap_bind_password],
-              "AUTH_LDAP_USER_SEARCH": [
-                ldap_user_search_base,
-                "SCOPE_SUBTREE",
-                "(uid=%(user)s)"
-              ],
-              "AUTH_LDAP_GROUP_SEARCH": [
-                ldap_group_search_base,
-                "SCOPE_SUBTREE",
-                "(objectClass=ipausergroup)"
-              ],
-              "AUTH_LDAP_GROUP_TYPE": ["MemberDNGroupType"],
-              "AUTH_LDAP_GROUP_TYPE_PARAMS": {
-                "member_attr": "member",
-                "name_attr": "cn"
-              },
-              "AUTH_LDAP_USER_ATTR_MAP": {
-                "username": "uid",
-                "first_name": "givenName",
-                "last_name": "sn",
-                "email": "mail"
-              },
-              "AUTH_LDAP_USER_FLAGS_BY_GROUP": {
-                "is_superuser": [ldap_admin_group_dn]
-              },
-              "AUTH_LDAP_ORGANIZATION_MAP": {
-                "Default": {
-                  "users": true,
-                  "admins": [ldap_admin_group_dn],
-                  "remove_users": false,
-                  "remove_admins": false
-                }
-              },
-              "AUTH_LDAP_ALWAYS_UPDATE_USER": [true],
-              "AUTH_LDAP_CACHE_TIMEOUT": [3600],
-              "AUTH_LDAP_CONNECTION_OPTIONS": {
-                "OPT_REFERRALS": 0,
-                "OPT_NETWORK_TIMEOUT": 30
-              }
-            }, recursive=True)
-          }}
-      no_log: false
+        body:
+          AUTH_LDAP_SERVER_URI:
+            - "{{ ldap_server_uri }}"
+
+          AUTH_LDAP_BIND_DN:
+            - "{{ ldap_bind_dn }}"
+
+          AUTH_LDAP_BIND_PASSWORD:
+            - "{{ aap_bind_password }}"
+
+          AUTH_LDAP_USER_SEARCH:
+            - "{{ ldap_user_search_base }}"
+            - "SCOPE_SUBTREE"
+            - "(uid=%(user)s)"
+
+          AUTH_LDAP_GROUP_SEARCH:
+            - "{{ ldap_group_search_base }}"
+            - "SCOPE_SUBTREE"
+            - "(objectClass=ipausergroup)"
+
+          AUTH_LDAP_GROUP_TYPE:
+            - "MemberDNGroupType"
+
+          AUTH_LDAP_GROUP_TYPE_PARAMS:
+            member_attr: "member"
+            name_attr: "cn"
+
+          AUTH_LDAP_USER_ATTR_MAP:
+            username: "uid"
+            first_name: "givenName"
+            last_name: "sn"
+            email: "mail"
+
+          AUTH_LDAP_USER_FLAGS_BY_GROUP:
+            is_superuser:
+              - "{{ ldap_admin_group_dn }}"
+
+          AUTH_LDAP_ORGANIZATION_MAP:
+            Default:
+              users: true
+              admins:
+                - "{{ ldap_admin_group_dn }}"
+              remove_users: false
+              remove_admins: false
+
+          AUTH_LDAP_ALWAYS_UPDATE_USER:
+            - true
+
+          AUTH_LDAP_CACHE_TIMEOUT:
+            - 3600
+
+          AUTH_LDAP_CONNECTION_OPTIONS:
+            OPT_REFERRALS: 0
+            OPT_NETWORK_TIMEOUT: 30
+      no_log: true
 
     - name: Confirm AAP IdM LDAP login configuration
       ansible.builtin.debug:
