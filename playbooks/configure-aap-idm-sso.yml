@@ -10,6 +10,7 @@
     idm_bind_user: "aap-bind"
     idm_admin_user: "admin"
     idm_admin_group: "idm-admins"
+    idm_base_dn: "{{ idm_domain_name.split('.') | map('regex_replace', '^(.*)$', 'dc=\\1') | join(',') }}"
 
     ldap_server_uri: "ldaps://{{ idm_server_fqdn }}:636"
     ldap_bind_dn: "uid={{ idm_bind_user }},cn=users,cn=accounts,{{ idm_base_dn }}"
