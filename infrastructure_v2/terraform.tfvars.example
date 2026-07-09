@@ -1,12 +1,230 @@
-aws_profile = "CHANGE_ME"
-aws_region  = "us-east-2"
+############################################################
+# terraform.tfvars
+#
+# Image Mode Hackathon Lab Configuration
+#
+# This file controls the AWS lab deployment.
+#
+# Do not store sensitive production credentials here.
+# Pass Red Hat credentials using TF_VAR_* environment variables.
+############################################################
+
+
+############################################################
+# AWS Settings
+############################################################
+
+# AWS CLI profile used by Terraform
+#
+# Example:
+# aws configure --profile image-mode-lab
+
+aws_profile = "image-mode-lab"
+
+
+# AWS region where the lab will be deployed
+
+aws_region = "us-east-2"
+
+
+############################################################
+# Environment Settings
+############################################################
+
+# Prefix used for:
+#
+# - AWS resource names
+# - Tags
+# - IAM resources
+# - EC2 key pair
 
 environment_name = "image-mode-lab"
 
-domain_name = "xxxxx.sandbox1906.opentlc.com"
+
+############################################################
+# AWS Secrets Manager
+############################################################
+
+# Prefix used for generated secrets.
+#
+# Example generated secrets:
+#
+# image-mode-lab/aws/ssh_private_key
+# image-mode-lab/idm/admin_password
+# image-mode-lab/aap/controller_admin_password
+
+secret_prefix = "image-mode-lab"
+
+
+############################################################
+# DNS Settings
+############################################################
+
+# Leave blank to auto-discover OpenTLC Route53 zones.
+#
+# Example discovered:
+#
+# sandbox1234.opentlc.com
+#
+# Terraform creates:
+#
+# lab.sandbox1234.opentlc.com
+
+domain_name = ""
+
+
+# Optional Route53 hosted zone ID.
+#
+# Leave blank for automatic discovery.
+
+route53_zone_id = ""
+
+
+# Creates public DNS records:
+#
+# idm-1.lab.example.com
+# aap-1.lab.example.com
+# quay-1.lab.example.com
+
+create_public_dns_records = true
+
+
+############################################################
+# Networking
+############################################################
+
+# Main lab VPC
+
+vpc_cidr = "10.20.0.0/16"
+
+
+# Subnet where EC2 instances are deployed
+
+public_subnet_cidr = "10.20.1.0/24"
+
+
+# Second subnet required by Route53 Resolver endpoints
+
+resolver_subnet_cidr = "10.20.2.0/24"
+
+
+############################################################
+# Access
+############################################################
+
+# Public IP allowed to SSH during bootstrap.
+#
+# Find yours:
+#
+# curl ifconfig.me
+#
+# Example:
+#
+# ssh_allowed_cidr = "1.2.3.4/32"
 
 ssh_allowed_cidr = "YOUR_PUBLIC_IP/32"
 
-key_name = "YOUR_KEYPAIR"
 
-route53_zone_id = ""
+############################################################
+# Server Definitions
+############################################################
+
+# Defines which lab servers Terraform creates.
+#
+# count:
+#   Number of instances
+#
+# instance_type:
+#   AWS EC2 size
+#
+# root_volume:
+#   OS disk size in GB
+#
+# extra_volume:
+#   Additional attached disk in GB
+
+
+servers = {
+
+
+  ##########################################################
+  # Red Hat Identity Management
+  ##########################################################
+
+  idm = {
+    count         = 1
+    instance_type = "m6i.large"
+    root_volume   = 80
+    extra_volume  = 0
+  }
+
+
+  ##########################################################
+  # Red Hat Satellite
+  ##########################################################
+
+  satellite = {
+    count         = 1
+    instance_type = "m6i.2xlarge"
+    root_volume   = 200
+    extra_volume  = 500
+  }
+
+
+  ##########################################################
+  # Ansible Automation Platform
+  ##########################################################
+
+  aap = {
+    count         = 1
+    instance_type = "m6i.xlarge"
+    root_volume   = 120
+    extra_volume  = 0
+  }
+
+
+  ##########################################################
+  # Red Hat Quay Registry
+  ##########################################################
+
+  quay = {
+    count         = 1
+    instance_type = "m6i.large"
+    root_volume   = 100
+    extra_volume  = 300
+  }
+
+
+  ##########################################################
+  # Image Builder / bootc Development Host
+  ##########################################################
+
+  image-builder = {
+    count         = 1
+    instance_type = "m6i.2xlarge"
+    root_volume   = 120
+    extra_volume  = 500
+  }
+
+}
+
+
+############################################################
+# IdM Admin Users
+############################################################
+
+# These users are created in Red Hat IdM.
+#
+# They receive administrative access:
+#
+# - Linux sudo access
+# - IdM administration
+# - AAP administration integration
+
+idm_users = [
+  "claudiol",
+  "pduncan",
+  "cpranava",
+  "stripura"
+]
+
