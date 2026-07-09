@@ -1,0 +1,15 @@
+---
+- name: Deploy Red Hat IdM Server
+  ansible.builtin.import_playbook: deploy-idm.yml
+
+- name: Enroll hosts into IdM
+  ansible.builtin.import_playbook: enroll-idm-clients.yml
+
+- name: Deploy Ansible Automation Platform
+  ansible.builtin.import_playbook: deploy-aap.yml
+
+# - name: Deploy Satellite
+#   ansible.builtin.import_playbook: deploy-satellite.yml
+
+# - name: Deploy Quay
+#   ansible.builtin.import_playbook: deploy-quay.yml
