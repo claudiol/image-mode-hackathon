@@ -206,7 +206,7 @@
           AUTH_LDAP_CONNECTION_OPTIONS:
             OPT_REFERRALS: 0
             OPT_NETWORK_TIMEOUT: 30
-      no_log: true
+      no_log: false
 
     - name: Confirm AAP IdM LDAP login configuration
       ansible.builtin.debug:
