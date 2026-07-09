@@ -341,6 +341,7 @@
 
               automationmetrics_pg_password={{ automationmetrics_pg_password }}
               automationmetrics_controller_read_pg_password={{ automationmetrics_controller_read_pg_password }}
+              custom_ca_cert=/etc/ipa/ca.crt
           no_log: true
 
         - name: Give ec2-user ownership of installer directory
