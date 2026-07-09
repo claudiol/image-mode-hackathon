@@ -61,8 +61,8 @@ output "ansible_inventory" {
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
-    idm_server_fqdn    = local.flattened_servers["idm-1"].hostname
-    idm_server_ip      = aws_instance.server["idm-1"].private_ip
+    idm_server_fqdn    = local.primary_idm_hostname
+    idm_server_ip      = local.primary_idm_private_ip
 
     servers = {
       for name, instance in aws_instance.server :
@@ -151,8 +151,8 @@ output "route53_resolver_forward_domain" {
 }
 
 output "route53_resolver_forward_target" {
-  description = "Private IP of the IdM DNS server used as the Route53 Resolver forwarding target."
-  value       = aws_instance.server["idm-1"].private_ip
+  description = "Private IP of the selected primary IdM DNS server used as the Route53 Resolver forwarding target."
+  value       = local.primary_idm_private_ip
 }
 
 output "server_fqdns" {
@@ -161,6 +161,173 @@ output "server_fqdns" {
   value = {
     for name, server in local.flattened_servers :
     name => server.hostname
+  }
+}
+
+############################################################
+# Role-Based Server Information
+############################################################
+
+output "idm_servers" {
+  description = "Created IdM servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+      public_ip  = aws_eip.server[name].public_ip
+      url        = "https://${local.flattened_servers[name].hostname}"
+    }
+    if local.flattened_servers[name].role == "idm"
+  }
+}
+
+output "aap_servers" {
+  description = "Created AAP servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+      public_ip  = aws_eip.server[name].public_ip
+      url        = "https://${local.flattened_servers[name].hostname}"
+    }
+    if local.flattened_servers[name].role == "aap"
+  }
+}
+
+output "quay_servers" {
+  description = "Created Quay servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+      public_ip  = aws_eip.server[name].public_ip
+      url        = "https://${local.flattened_servers[name].hostname}"
+    }
+    if local.flattened_servers[name].role == "quay"
+  }
+}
+
+output "satellite_servers" {
+  description = "Created Satellite servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+      public_ip  = aws_eip.server[name].public_ip
+      url        = "https://${local.flattened_servers[name].hostname}"
+    }
+    if local.flattened_servers[name].role == "satellite"
+  }
+}
+
+output "image_builder_servers" {
+  description = "Created image builder servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+      public_ip  = aws_eip.server[name].public_ip
+      url        = "https://${local.flattened_servers[name].hostname}"
+    }
+    if local.flattened_servers[name].role == "image-builder"
+  }
+}
+
+############################################################
+# Primary Service Endpoints
+############################################################
+
+output "primary_idm_fqdn" {
+  description = "Primary IdM server FQDN selected dynamically."
+  value       = local.primary_idm_hostname
+}
+
+output "primary_idm_private_ip" {
+  description = "Primary IdM server private IP selected dynamically."
+  value       = local.primary_idm_private_ip
+}
+
+output "aap_urls" {
+  description = "AAP URLs."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => "https://${server.hostname}"
+    if server.role == "aap"
+  }
+}
+
+output "quay_urls" {
+  description = "Quay URLs."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => "https://${server.hostname}"
+    if server.role == "quay"
+  }
+}
+
+output "satellite_urls" {
+  description = "Satellite URLs."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => "https://${server.hostname}"
+    if server.role == "satellite"
+  }
+}
+
+output "image_builder_fqdns" {
+  description = "Image builder FQDNs."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => server.hostname
+    if server.role == "image-builder"
+  }
+}
+
+############################################################
+# Quay IdM LDAP Information
+############################################################
+
+output "quay_idm_ldap_settings" {
+  description = "Derived IdM LDAP settings used by Quay."
+
+  value = {
+    ldap_uri       = "ldap://${local.primary_idm_hostname}:389"
+    ldap_base_dn   = join(",", [for part in split(".", local.idm_domain_name) : "dc=${part}"])
+    ldap_bind_user = "uid=admin,cn=users,cn=accounts,${join(",", [for part in split(".", local.idm_domain_name) : "dc=${part}"])}"
+    admin_users    = var.idm_users
+  }
+}
+
+############################################################
+# AWS Secrets Manager Secret Names
+############################################################
+
+output "quay_secret_names" {
+  description = "AWS Secrets Manager secret names used by the Quay deployment."
+
+  value = {
+    db_password        = "${var.secret_prefix}/quay/db_password"
+    secret_key         = "${var.secret_prefix}/quay/secret_key"
+    superuser          = "${var.secret_prefix}/quay/superuser"
+    superuser_password = "${var.secret_prefix}/quay/superuser_password"
+    admin_access_token = "${var.secret_prefix}/quay/admin_access_token"
+    registry_username  = "${var.secret_prefix}/redhat/registry_username"
+    registry_password  = "${var.secret_prefix}/redhat/registry_password"
+    idm_admin_password = "${var.secret_prefix}/idm/admin_password"
   }
 }
 
@@ -175,29 +342,4 @@ output "ssh_commands" {
     for name, instance in aws_instance.server :
     name => "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
   }
-}
-
-output "aap_url" {
-  description = "AAP URL."
-  value       = "https://aap-1.${local.idm_domain_name}"
-}
-
-output "quay_url" {
-  description = "Quay URL."
-  value       = "https://quay-1.${local.idm_domain_name}"
-}
-
-output "satellite_url" {
-  description = "Satellite URL."
-  value       = "https://satellite-1.${local.idm_domain_name}"
-}
-
-output "idm_fqdn" {
-  description = "IdM server FQDN."
-  value       = "idm-1.${local.idm_domain_name}"
-}
-
-output "image_builder_fqdn" {
-  description = "Image builder server FQDN."
-  value       = "image-builder-1.${local.idm_domain_name}"
 }
