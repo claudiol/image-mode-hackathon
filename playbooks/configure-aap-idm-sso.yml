@@ -147,29 +147,6 @@
       become: true
       no_log: true
 
-    - name: Read IdM CA certificate from IdM server
-      ansible.builtin.slurp:
-        src: /etc/ipa/ca.crt
-      delegate_to: "{{ groups['idm'][0] }}"
-      become: true
-      register: idm_ca_cert
-      run_once: true
-      no_log: true
-
-    - name: Install IdM CA certificate on AAP host
-      become: true
-      ansible.builtin.copy:
-        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
-        content: "{{ idm_ca_cert.content | b64decode }}"
-        owner: root
-        group: root
-        mode: "0644"
-      register: aap_idm_ca_cert
-
-    - name: Update AAP host CA trust
-      become: true
-      ansible.builtin.command: update-ca-trust
-      changed_when: aap_idm_ca_cert.changed
 
     - name: Install LDAP client tools on AAP host
       become: true
