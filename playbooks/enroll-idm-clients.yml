@@ -56,6 +56,15 @@
         idm_enroll_password: "{{ idm_admin_secret_result.stdout }}"
       no_log: true
 
+    - name: Read IdM CA certificate from IdM server
+      ansible.builtin.slurp:
+        src: /etc/ipa/ca.crt
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: idm_ca_cert
+      run_once: true
+      no_log: true
+
   tasks:
     - name: Ensure required IdM client packages are installed
       ansible.builtin.dnf:
@@ -66,7 +75,34 @@
           - sssd
           - bind-utils
           - chrony
+          - ca-certificates
         state: present
+
+    - name: Install IdM CA certificate into system trust
+      ansible.builtin.copy:
+        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+        content: "{{ idm_ca_cert.content | b64decode }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: idm_ca_install
+
+    - name: Update system CA trust
+      ansible.builtin.command: update-ca-trust
+      changed_when: idm_ca_install.changed
+
+    - name: Restart AAP Gateway containers when this host is AAP and CA trust changed
+      ansible.builtin.command:
+        argv:
+          - podman
+          - restart
+          - automation-gateway
+          - automation-gateway-proxy
+      changed_when: true
+      failed_when: false
+      when:
+        - "'aap' in group_names"
+        - idm_ca_install.changed
 
     - name: Set persistent client hostname
       ansible.builtin.hostname:
@@ -90,13 +126,6 @@
       when:
         - idm_server_ip is defined
         - idm_server_ip | length > 0
-
-    - name: Check whether host is already enrolled in IdM
-      ansible.builtin.command: ipa-client-install --uninstall --unattended
-      register: ipa_client_uninstall_check
-      changed_when: false
-      failed_when: false
-      check_mode: true
 
     - name: Check for existing IPA client config
       ansible.builtin.stat:
@@ -122,6 +151,11 @@
       when:
         - not ipa_client_default_conf.stat.exists
 
+    - name: Re-check IPA client config after enrollment
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: ipa_client_default_conf_after
+
     - name: Enable and start oddjobd
       ansible.builtin.service:
         name: oddjobd
@@ -142,7 +176,7 @@
     - name: Validate IdM client enrollment
       ansible.builtin.assert:
         that:
-          - ipa_client_default_conf.stat.exists or ipa_client_install.rc == 0
+          - ipa_client_default_conf_after.stat.exists
           - krb5_keytab.stat.exists
         fail_msg: "IdM client enrollment failed or /etc/krb5.keytab is missing."
 
@@ -164,3 +198,4 @@
           - "IdM domain: {{ idm_domain }}"
           - "IdM realm: {{ idm_realm }}"
           - "IdM server: {{ idm_server }}"
+          - "IdM CA installed into system trust."
