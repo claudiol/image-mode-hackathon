@@ -388,34 +388,13 @@
           - ipa
           - group-add
           - "{{ idm_admin_group }}"
-          - "--desc=Global IdM administrators with sudo access"
+          - "--desc=Global IdM administrators with sudo and IdM console access"
       register: idm_admin_group_add
       changed_when: idm_admin_group_add.rc == 0
       failed_when:
         - idm_admin_group_add.rc != 0
         - "'already exists' not in (idm_admin_group_add.stderr | default(''))"
         - "'already exists' not in (idm_admin_group_add.stdout | default(''))"
-
-    - name: Ensure IdM users exist with temporary password
-      ansible.builtin.command:
-        argv:
-          - ipa
-          - user-add
-          - "{{ item }}"
-          - "--first={{ item }}"
-          - "--last=User"
-          - "--password"
-        stdin: |
-          {{ idm_default_user_password }}
-          {{ idm_default_user_password }}
-      register: idm_user_add
-      no_log: true
-      changed_when: idm_user_add.rc == 0
-      failed_when:
-        - idm_user_add.rc != 0
-        - "'already exists' not in (idm_user_add.stderr | default(''))"
-        - "'already exists' not in (idm_user_add.stdout | default(''))"
-      loop: "{{ idm_users }}"
 
     - name: Ensure IdM users exist
       ansible.builtin.command:
@@ -467,6 +446,20 @@
         - "'This entry is already a member' not in (idm_group_member_add.stderr | default(''))"
         - "'This entry is already a member' not in (idm_group_member_add.stdout | default(''))"
       loop: "{{ idm_users }}"
+
+    - name: Add global admin group to IdM built-in admins group
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-add-member
+          - admins
+          - "--groups={{ idm_admin_group }}"
+      register: idm_console_admin_add
+      changed_when: "'Number of members added 1' in (idm_console_admin_add.stdout | default(''))"
+      failed_when:
+        - idm_console_admin_add.rc != 0
+        - "'This entry is already a member' not in (idm_console_admin_add.stderr | default(''))"
+        - "'This entry is already a member' not in (idm_console_admin_add.stdout | default(''))"
 
     - name: Ensure sudo rule exists for global IdM admins
       ansible.builtin.command:
@@ -523,6 +516,8 @@
         - idm_sudo_group_add.rc != 0
         - "'This entry is already a member' not in (idm_sudo_group_add.stderr | default(''))"
         - "'This entry is already a member' not in (idm_sudo_group_add.stdout | default(''))"
+
+
 
     - name: Show IdM install status
       ansible.builtin.debug:
