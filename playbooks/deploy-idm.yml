@@ -460,29 +460,29 @@
       ansible.builtin.command:
         argv:
           - ipa
-          - sudorule-add-host
+          - sudorule-mod
           - "{{ idm_sudo_rule }}"
           - "--hostcat=all"
       register: idm_sudo_hostcat
-      changed_when: idm_sudo_hostcat.rc == 0
+      changed_when: "'Modified Sudo Rule' in (idm_sudo_hostcat.stdout | default(''))"
       failed_when:
         - idm_sudo_hostcat.rc != 0
-        - "'host category already set' not in (idm_sudo_hostcat.stderr | default(''))"
-        - "'host category already set' not in (idm_sudo_hostcat.stdout | default(''))"
+        - "'no modifications to be performed' not in (idm_sudo_hostcat.stderr | default(''))"
+        - "'no modifications to be performed' not in (idm_sudo_hostcat.stdout | default(''))"
 
     - name: Allow sudo rule to run all commands
       ansible.builtin.command:
         argv:
           - ipa
-          - sudorule-add-allow-command
+          - sudorule-mod
           - "{{ idm_sudo_rule }}"
           - "--cmdcat=all"
       register: idm_sudo_cmdcat
-      changed_when: idm_sudo_cmdcat.rc == 0
+      changed_when: "'Modified Sudo Rule' in (idm_sudo_cmdcat.stdout | default(''))"
       failed_when:
         - idm_sudo_cmdcat.rc != 0
-        - "'command category already set' not in (idm_sudo_cmdcat.stderr | default(''))"
-        - "'command category already set' not in (idm_sudo_cmdcat.stdout | default(''))"
+        - "'no modifications to be performed' not in (idm_sudo_cmdcat.stderr | default(''))"
+        - "'no modifications to be performed' not in (idm_sudo_cmdcat.stdout | default(''))"
 
     - name: Add IdM admin group to sudo rule
       ansible.builtin.command:
