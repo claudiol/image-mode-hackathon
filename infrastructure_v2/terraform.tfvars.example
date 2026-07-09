@@ -1,0 +1,12 @@
+aws_profile = "CHANGE_ME"
+aws_region  = "us-east-2"
+
+environment_name = "image-mode-lab"
+
+domain_name = "xxxxx.sandbox1906.opentlc.com"
+
+ssh_allowed_cidr = "YOUR_PUBLIC_IP/32"
+
+key_name = "YOUR_KEYPAIR"
+
+route53_zone_id = ""
