@@ -347,7 +347,7 @@
               contains: "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int == 0
-      no_log: true
+      no_log: false
 
     - name: Update IdM admins superuser map
       ansible.builtin.uri:
