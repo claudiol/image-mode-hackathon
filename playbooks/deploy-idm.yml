@@ -49,30 +49,50 @@
           - aws_region | length > 0
         fail_msg: "Missing secret_prefix or aws_region from inventory."
 
-    - name: Read IdM admin password from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        idm_vault_admin_password: >-
-          {{ lookup(
-            'amazon.aws.aws_secret',
-            secret_prefix ~ '/idm/admin_password',
-            region=aws_region,
-            on_missing='error'
-          ) }}
+    - name: Read IdM admin password from AWS Secrets Manager using AWS CLI
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/idm/admin_password"
+          - --region
+          - "{{ aws_region }}"
+          - --query
+          - SecretString
+          - --output
+          - text
       delegate_to: localhost
       become: false
+      register: idm_admin_secret_result
+      changed_when: false
       no_log: true
 
-    - name: Read IdM Directory Manager password from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        idm_vault_dm_password: >-
-          {{ lookup(
-            'amazon.aws.aws_secret',
-            secret_prefix ~ '/idm/directory_manager_password',
-            region=aws_region,
-            on_missing='error'
-          ) }}
+    - name: Read IdM Directory Manager password from AWS Secrets Manager using AWS CLI
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/idm/directory_manager_password"
+          - --region
+          - "{{ aws_region }}"
+          - --query
+          - SecretString
+          - --output
+          - text
       delegate_to: localhost
       become: false
+      register: idm_dm_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set IdM password facts
+      ansible.builtin.set_fact:
+        idm_vault_admin_password: "{{ idm_admin_secret_result.stdout }}"
+        idm_vault_dm_password: "{{ idm_dm_secret_result.stdout }}"
       no_log: true
 
     - name: Validate required AWS secret variables
