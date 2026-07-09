@@ -398,8 +398,7 @@
           triggers:
             attributes:
               memberOf:
-                has_or:
-                  - "{{ ldap_admin_group_dn }}"
+                contains: "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int > 0
       no_log: false
