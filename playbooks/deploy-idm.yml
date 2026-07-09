@@ -5,9 +5,6 @@
   gather_facts: true
 
   vars:
-    idm_vault_admin_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/idm/admin_password', region=aws_region) }}"
-    idm_vault_dm_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/idm/directory_manager_password', region=aws_region) }}"
-
     idm_short_name: "{{ inventory_hostname_short }}"
 
     idm_parent_domain: "{{ parent_domain_name }}"
@@ -16,7 +13,6 @@
     idm_fqdn: "{{ idm_server_fqdn }}"
 
     idm_forward_policy: "only"
-
     idm_default_user_password: "RedHat123^"
 
     idm_users:
@@ -44,18 +40,49 @@
       - 123
 
   pre_tasks:
-    - name: Validate required AWS secret variables
+    - name: Validate required AWS lookup inputs
       ansible.builtin.assert:
         that:
           - secret_prefix is defined
           - secret_prefix | length > 0
           - aws_region is defined
           - aws_region | length > 0
+        fail_msg: "Missing secret_prefix or aws_region from inventory."
+
+    - name: Read IdM admin password from AWS Secrets Manager
+      ansible.builtin.set_fact:
+        idm_vault_admin_password: >-
+          {{ lookup(
+            'amazon.aws.aws_secret',
+            secret_prefix ~ '/idm/admin_password',
+            region=aws_region,
+            on_missing='error'
+          ) }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Read IdM Directory Manager password from AWS Secrets Manager
+      ansible.builtin.set_fact:
+        idm_vault_dm_password: >-
+          {{ lookup(
+            'amazon.aws.aws_secret',
+            secret_prefix ~ '/idm/directory_manager_password',
+            region=aws_region,
+            on_missing='error'
+          ) }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Validate required AWS secret variables
+      ansible.builtin.assert:
+        that:
           - idm_vault_dm_password is defined
           - idm_vault_dm_password | length > 0
           - idm_vault_admin_password is defined
           - idm_vault_admin_password | length > 0
-        fail_msg: "Missing IdM AWS Secrets Manager values. Check secret_prefix, aws_region, and Terraform-created IdM secrets."
+        fail_msg: "Missing IdM AWS Secrets Manager values. Check Terraform-created IdM secrets."
       no_log: true
 
     - name: Validate Terraform-provided DNS variables
