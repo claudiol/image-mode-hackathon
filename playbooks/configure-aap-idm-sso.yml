@@ -189,6 +189,8 @@
         argv:
           - podman
           - exec
+          - --user
+          - "0"
           - automation-gateway
           - update-ca-trust
       changed_when: true
