@@ -182,7 +182,7 @@
           - automation-gateway:/etc/pki/ca-trust/source/anchors/idm-ca.crt
       changed_when: true
 
-    - name: Update CA trust inside automation-gateway container
+    - name: Update CA trust inside automation-gateway container as root
       become: true
       become_user: "{{ aap_container_user }}"
       ansible.builtin.command:
@@ -193,17 +193,6 @@
           - "0"
           - automation-gateway
           - update-ca-trust
-      changed_when: true
-
-    - name: Restart AAP Gateway containers after IdM CA trust update
-      become: true
-      become_user: "{{ aap_container_user }}"
-      ansible.builtin.command:
-        argv:
-          - podman
-          - restart
-          - automation-gateway
-          - automation-gateway-proxy
       changed_when: true
 
     - name: Install LDAP client tools on AAP host
@@ -291,7 +280,7 @@
               email: "mail"
       register: created_ldap_authenticator
       when: existing_ldap_authenticator.json.count | int == 0
-      no_log: false
+      no_log: true
 
     - name: Update LDAP authenticator
       ansible.builtin.uri:
@@ -335,7 +324,7 @@
               last_name: "sn"
               email: "mail"
       when: existing_ldap_authenticator.json.count | int > 0
-      no_log: false
+      no_log: true
 
     - name: Set LDAP authenticator id
       ansible.builtin.set_fact:
