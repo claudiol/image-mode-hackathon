@@ -7,9 +7,12 @@
   vars:
     aap_url: "https://{{ inventory_hostname }}"
 
+    aap_ldap_authenticator_name: "Red Hat IdM LDAP"
+
     idm_bind_user: "aap-bind"
     idm_admin_user: "admin"
     idm_admin_group: "idm-admins"
+
     idm_base_dn: "{{ idm_domain_name.split('.') | map('regex_replace', '^(.*)$', 'dc=\\1') | join(',') }}"
 
     ldap_server_uri: "ldaps://{{ idm_server_fqdn }}:636"
@@ -32,11 +35,9 @@
           - idm_server_fqdn | length > 0
           - idm_domain_name is defined
           - idm_domain_name | length > 0
-          - idm_base_dn is defined
-          - idm_base_dn | length > 0
           - groups['idm'] is defined
           - groups['idm'] | length > 0
-        fail_msg: "Missing aws_region, aws_profile, secret_prefix, idm_server_fqdn, idm_domain_name, idm_base_dn, or [idm] inventory group."
+        fail_msg: "Missing required inventory variables."
 
     - name: Read AAP gateway admin username from AWS Secrets Manager
       ansible.builtin.command:
@@ -80,7 +81,7 @@
       become: false
       register: gateway_admin_password_result
       changed_when: false
-      no_log: false
+      no_log: true
 
     - name: Read IdM admin password from AWS Secrets Manager
       ansible.builtin.command:
@@ -132,8 +133,7 @@
             --password
         fi
 
-        ipa user-mod "{{ idm_bind_user }}" \
-          --setattr=nsaccountlock=FALSE || true
+        ipa user-mod "{{ idm_bind_user }}" --setattr=nsaccountlock=FALSE || true
 
         kdestroy
       args:
@@ -142,10 +142,69 @@
       become: true
       no_log: true
 
-    - name: Configure AAP Gateway LDAP authentication against IdM
+    - name: Check for existing LDAP authenticator
       ansible.builtin.uri:
-        url: "{{ aap_url }}/api/gateway/v1/settings/authentication/"
-        method: PUT
+        url: "{{ aap_url }}/api/gateway/v1/authenticators/?name={{ aap_ldap_authenticator_name | urlencode }}"
+        method: GET
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        return_content: true
+      register: existing_ldap_authenticator
+      no_log: true
+
+    - name: Create LDAP authenticator
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticators/"
+        method: POST
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code:
+          - 200
+          - 201
+        body_format: json
+        body:
+          name: "{{ aap_ldap_authenticator_name }}"
+          enabled: true
+          create_objects: true
+          remove_users: false
+          type: "ansible_base.authentication.authenticator_plugins.ldap"
+          configuration:
+            SERVER_URI: "{{ ldap_server_uri }}"
+            BIND_DN: "{{ ldap_bind_dn }}"
+            BIND_PASSWORD: "{{ aap_bind_password }}"
+            START_TLS: false
+            CONNECTION_OPTIONS:
+              OPT_REFERRALS: 0
+              OPT_NETWORK_TIMEOUT: 30
+            USER_SEARCH:
+              - "{{ ldap_user_search_base }}"
+              - "SCOPE_SUBTREE"
+              - "(uid=%(user)s)"
+            GROUP_SEARCH:
+              - "{{ ldap_group_search_base }}"
+              - "SCOPE_SUBTREE"
+              - "(objectClass=ipausergroup)"
+            GROUP_TYPE: "MemberDNGroupType"
+            GROUP_TYPE_PARAMS:
+              member_attr: "member"
+              name_attr: "cn"
+            USER_ATTR_MAP:
+              first_name: "givenName"
+              last_name: "sn"
+              email: "mail"
+      register: created_ldap_authenticator
+      when: existing_ldap_authenticator.json.count | int == 0
+      no_log: true
+
+    - name: Update LDAP authenticator
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticators/{{ existing_ldap_authenticator.json.results[0].id }}/"
+        method: PATCH
         user: "{{ gateway_admin_username }}"
         password: "{{ gateway_admin_password }}"
         force_basic_auth: true
@@ -155,66 +214,51 @@
           - 202
         body_format: json
         body:
-          AUTH_LDAP_SERVER_URI:
-            - "{{ ldap_server_uri }}"
+          enabled: true
+          create_objects: true
+          remove_users: false
+          configuration:
+            SERVER_URI: "{{ ldap_server_uri }}"
+            BIND_DN: "{{ ldap_bind_dn }}"
+            BIND_PASSWORD: "{{ aap_bind_password }}"
+            START_TLS: false
+            CONNECTION_OPTIONS:
+              OPT_REFERRALS: 0
+              OPT_NETWORK_TIMEOUT: 30
+            USER_SEARCH:
+              - "{{ ldap_user_search_base }}"
+              - "SCOPE_SUBTREE"
+              - "(uid=%(user)s)"
+            GROUP_SEARCH:
+              - "{{ ldap_group_search_base }}"
+              - "SCOPE_SUBTREE"
+              - "(objectClass=ipausergroup)"
+            GROUP_TYPE: "MemberDNGroupType"
+            GROUP_TYPE_PARAMS:
+              member_attr: "member"
+              name_attr: "cn"
+            USER_ATTR_MAP:
+              first_name: "givenName"
+              last_name: "sn"
+              email: "mail"
+      when: existing_ldap_authenticator.json.count | int > 0
+      no_log: true
 
-          AUTH_LDAP_BIND_DN:
-            - "{{ ldap_bind_dn }}"
+    - name: Set LDAP authenticator id
+      ansible.builtin.set_fact:
+        ldap_authenticator_id: >-
+          {{
+            existing_ldap_authenticator.json.results[0].id
+            if existing_ldap_authenticator.json.count | int > 0
+            else created_ldap_authenticator.json.id
+          }}
 
-          AUTH_LDAP_BIND_PASSWORD:
-            - "{{ aap_bind_password }}"
-
-          AUTH_LDAP_USER_SEARCH:
-            - "{{ ldap_user_search_base }}"
-            - "SCOPE_SUBTREE"
-            - "(uid=%(user)s)"
-
-          AUTH_LDAP_GROUP_SEARCH:
-            - "{{ ldap_group_search_base }}"
-            - "SCOPE_SUBTREE"
-            - "(objectClass=ipausergroup)"
-
-          AUTH_LDAP_GROUP_TYPE:
-            - "MemberDNGroupType"
-
-          AUTH_LDAP_GROUP_TYPE_PARAMS:
-            member_attr: "member"
-            name_attr: "cn"
-
-          AUTH_LDAP_USER_ATTR_MAP:
-            username: "uid"
-            first_name: "givenName"
-            last_name: "sn"
-            email: "mail"
-
-          AUTH_LDAP_USER_FLAGS_BY_GROUP:
-            is_superuser:
-              - "{{ ldap_admin_group_dn }}"
-
-          AUTH_LDAP_ORGANIZATION_MAP:
-            Default:
-              users: true
-              admins:
-                - "{{ ldap_admin_group_dn }}"
-              remove_users: false
-              remove_admins: false
-
-          AUTH_LDAP_ALWAYS_UPDATE_USER:
-            - true
-
-          AUTH_LDAP_CACHE_TIMEOUT:
-            - 3600
-
-          AUTH_LDAP_CONNECTION_OPTIONS:
-            OPT_REFERRALS: 0
-            OPT_NETWORK_TIMEOUT: 30
-      no_log: false
-
-    - name: Confirm AAP IdM LDAP login configuration
+    - name: Confirm AAP IdM LDAP authenticator configuration
       ansible.builtin.debug:
         msg:
-          - "AAP LDAP authentication configuration completed."
-          - "All IdM users under: {{ ldap_user_search_base }} can log in."
-          - "IdM admin group mapped to AAP admin: {{ ldap_admin_group_dn }}"
+          - "AAP Gateway LDAP authenticator configured."
+          - "Authenticator: {{ aap_ldap_authenticator_name }}"
           - "LDAP server: {{ ldap_server_uri }}"
-          - "AAP bind user: {{ ldap_bind_dn }}"
+          - "LDAP user search base: {{ ldap_user_search_base }}"
+          - "LDAP group search base: {{ ldap_group_search_base }}"
+          - "IdM admin group DN: {{ ldap_admin_group_dn }}"
