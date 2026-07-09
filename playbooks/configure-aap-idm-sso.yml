@@ -20,6 +20,9 @@
     ldap_group_search_base: "cn=groups,cn=accounts,{{ idm_base_dn }}"
     ldap_admin_group_dn: "cn={{ idm_admin_group }},cn=groups,cn=accounts,{{ idm_base_dn }}"
 
+    aap_allow_map_name: "Allow all IdM users"
+    aap_admin_map_name: "IdM admins are AAP superusers"
+
   pre_tasks:
     - name: Validate required variables
       ansible.builtin.assert:
@@ -199,7 +202,7 @@
               email: "mail"
       register: created_ldap_authenticator
       when: existing_ldap_authenticator.json.count | int == 0
-      no_log: false
+      no_log: true
 
     - name: Update LDAP authenticator
       ansible.builtin.uri:
@@ -243,7 +246,7 @@
               last_name: "sn"
               email: "mail"
       when: existing_ldap_authenticator.json.count | int > 0
-      no_log: false
+      no_log: true
 
     - name: Set LDAP authenticator id
       ansible.builtin.set_fact:
@@ -254,6 +257,120 @@
             else created_ldap_authenticator.json.id
           }}
 
+    - name: Check for existing Allow all IdM users map
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticator_maps/?name={{ aap_allow_map_name | urlencode }}"
+        method: GET
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        return_content: true
+      register: existing_allow_map
+      no_log: true
+
+    - name: Create Allow all IdM users map
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticator_maps/"
+        method: POST
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code:
+          - 200
+          - 201
+        body_format: json
+        body:
+          name: "{{ aap_allow_map_name }}"
+          authenticator: "{{ ldap_authenticator_id | int }}"
+          map_type: "allow"
+          triggers:
+            always: {}
+          order: 10
+      when: existing_allow_map.json.count | int == 0
+      no_log: true
+
+    - name: Update Allow all IdM users map
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticator_maps/{{ existing_allow_map.json.results[0].id }}/"
+        method: PATCH
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code:
+          - 200
+          - 202
+        body_format: json
+        body:
+          authenticator: "{{ ldap_authenticator_id | int }}"
+          map_type: "allow"
+          triggers:
+            always: {}
+          order: 10
+      when: existing_allow_map.json.count | int > 0
+      no_log: true
+
+    - name: Check for existing IdM admins superuser map
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticator_maps/?name={{ aap_admin_map_name | urlencode }}"
+        method: GET
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        return_content: true
+      register: existing_admin_map
+      no_log: true
+
+    - name: Create IdM admins superuser map
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticator_maps/"
+        method: POST
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code:
+          - 200
+          - 201
+        body_format: json
+        body:
+          name: "{{ aap_admin_map_name }}"
+          authenticator: "{{ ldap_authenticator_id | int }}"
+          map_type: "is_superuser"
+          triggers:
+            groups:
+              contains: "{{ ldap_admin_group_dn }}"
+          order: 20
+      when: existing_admin_map.json.count | int == 0
+      no_log: true
+
+    - name: Update IdM admins superuser map
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/gateway/v1/authenticator_maps/{{ existing_admin_map.json.results[0].id }}/"
+        method: PATCH
+        user: "{{ gateway_admin_username }}"
+        password: "{{ gateway_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code:
+          - 200
+          - 202
+        body_format: json
+        body:
+          authenticator: "{{ ldap_authenticator_id | int }}"
+          map_type: "is_superuser"
+          triggers:
+            groups:
+              contains: "{{ ldap_admin_group_dn }}"
+          order: 20
+      when: existing_admin_map.json.count | int > 0
+      no_log: true
+
     - name: Confirm AAP IdM LDAP authenticator configuration
       ansible.builtin.debug:
         msg:
@@ -262,4 +379,6 @@
           - "LDAP server: {{ ldap_server_uri }}"
           - "LDAP user search base: {{ ldap_user_search_base }}"
           - "LDAP group search base: {{ ldap_group_search_base }}"
-          - "IdM admin group DN: {{ ldap_admin_group_dn }}"
+          - "Allow map: {{ aap_allow_map_name }}"
+          - "Admin group DN: {{ ldap_admin_group_dn }}"
+          - "Admin map: {{ aap_admin_map_name }}"
