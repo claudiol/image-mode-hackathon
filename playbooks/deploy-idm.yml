@@ -352,7 +352,10 @@
           - "--a-rec={{ hostvars[item.item].private_ip }}"
       register: idm_dns_record_mod
       changed_when: "'Modified record' in (idm_dns_record_mod.stdout | default(''))"
-      failed_when: idm_dns_record_mod.rc != 0
+      failed_when:
+        - idm_dns_record_mod.rc != 0
+        - "'no modifications to be performed' not in (idm_dns_record_mod.stderr | default(''))"
+        - "'no modifications to be performed' not in (idm_dns_record_mod.stdout | default(''))"
       loop: "{{ idm_dns_record_checks.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
@@ -360,6 +363,7 @@
         - item.rc is defined
         - item.rc == 0
         - hostvars[item.item].private_ip is defined
+        - "'A record: ' ~ hostvars[item.item].private_ip not in (item.stdout | default(''))"
 
     - name: Verify IdM DNS resolves all inventory hosts to private IPs
       ansible.builtin.command:
