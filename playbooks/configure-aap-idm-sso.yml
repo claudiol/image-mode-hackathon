@@ -213,7 +213,7 @@
               }
             }, recursive=True)
           }}
-      no_log: true
+      no_log: false
 
     - name: Confirm AAP IdM LDAP login configuration
       ansible.builtin.debug:
