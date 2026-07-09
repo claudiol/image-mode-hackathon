@@ -13,10 +13,13 @@
     idm_fqdn: "{{ idm_server_fqdn }}"
 
     idm_forward_policy: "only"
-    idm_default_user_password: "RedHat123^"
 
     idm_admin_group: idm-admins
     idm_sudo_rule: allow_idm_admins_all
+
+    idm_admin_password_secret_name: "{{ secret_prefix }}/idm/admin_password"
+    idm_dm_password_secret_name: "{{ secret_prefix }}/idm/directory_manager_password"
+    idm_default_user_password_secret_name: "{{ secret_prefix }}/idm/default_user_password"
 
     required_tcp_ports:
       - 80
@@ -41,7 +44,9 @@
           - secret_prefix | length > 0
           - aws_region is defined
           - aws_region | length > 0
-        fail_msg: "Missing secret_prefix or aws_region from inventory."
+          - aws_profile is defined
+          - aws_profile | length > 0
+        fail_msg: "Missing secret_prefix, aws_region, or aws_profile from inventory."
 
     - name: Read IdM admin password from AWS Secrets Manager using AWS CLI
       ansible.builtin.command:
@@ -50,7 +55,7 @@
           - secretsmanager
           - get-secret-value
           - --secret-id
-          - "{{ secret_prefix }}/idm/admin_password"
+          - "{{ idm_admin_password_secret_name }}"
           - --region
           - "{{ aws_region }}"
           - --profile
@@ -63,7 +68,7 @@
       become: false
       register: idm_admin_secret_result
       changed_when: false
-      no_log: false
+      no_log: true
 
     - name: Read IdM Directory Manager password from AWS Secrets Manager using AWS CLI
       ansible.builtin.command:
@@ -72,7 +77,7 @@
           - secretsmanager
           - get-secret-value
           - --secret-id
-          - "{{ secret_prefix }}/idm/directory_manager_password"
+          - "{{ idm_dm_password_secret_name }}"
           - --region
           - "{{ aws_region }}"
           - --profile
@@ -85,12 +90,35 @@
       become: false
       register: idm_dm_secret_result
       changed_when: false
-      no_log: false
+      no_log: true
+
+    - name: Read IdM default user password from AWS Secrets Manager using AWS CLI
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ idm_default_user_password_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: idm_default_user_password_result
+      changed_when: false
+      no_log: true
 
     - name: Set IdM password facts
       ansible.builtin.set_fact:
         idm_vault_admin_password: "{{ idm_admin_secret_result.stdout }}"
         idm_vault_dm_password: "{{ idm_dm_secret_result.stdout }}"
+        idm_default_user_password: "{{ idm_default_user_password_result.stdout }}"
       no_log: true
 
     - name: Validate required AWS secret variables
@@ -100,6 +128,8 @@
           - idm_vault_dm_password | length > 0
           - idm_vault_admin_password is defined
           - idm_vault_admin_password | length > 0
+          - idm_default_user_password is defined
+          - idm_default_user_password | length > 0
         fail_msg: "Missing IdM AWS Secrets Manager values. Check Terraform-created IdM secrets."
       no_log: true
 
@@ -138,7 +168,7 @@
         fail_msg: >-
           DNS mismatch detected. Expected idm_fqdn={{ idm_short_name }}.{{ idm_domain }},
           idm_domain=lab.{{ idm_parent_domain }}, realm={{ idm_domain | upper }}.
-          
+
     - name: Validate Terraform-provided IdM users
       ansible.builtin.assert:
         that:
@@ -517,8 +547,6 @@
         - idm_sudo_group_add.rc != 0
         - "'This entry is already a member' not in (idm_sudo_group_add.stderr | default(''))"
         - "'This entry is already a member' not in (idm_sudo_group_add.stdout | default(''))"
-
-
 
     - name: Show IdM install status
       ansible.builtin.debug:
