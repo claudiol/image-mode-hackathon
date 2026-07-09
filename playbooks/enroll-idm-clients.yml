@@ -91,19 +91,6 @@
       ansible.builtin.command: update-ca-trust
       changed_when: idm_ca_install.changed
 
-    - name: Restart AAP Gateway containers when this host is AAP and CA trust changed
-      ansible.builtin.command:
-        argv:
-          - podman
-          - restart
-          - automation-gateway
-          - automation-gateway-proxy
-      changed_when: true
-      failed_when: false
-      when:
-        - "'aap' in group_names"
-        - idm_ca_install.changed
-
     - name: Set persistent client hostname
       ansible.builtin.hostname:
         name: "{{ idm_client_hostname }}"
