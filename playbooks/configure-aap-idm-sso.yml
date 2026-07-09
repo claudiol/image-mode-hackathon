@@ -22,6 +22,7 @@
 
     aap_allow_map_name: "Allow all IdM users"
     aap_admin_map_name: "IdM admins are AAP superusers"
+    aap_container_user: "ec2-user"
 
   pre_tasks:
     - name: Validate required variables
@@ -172,6 +173,7 @@
 
     - name: Copy IdM CA certificate into automation-gateway container
       become: true
+      become_user: "{{ aap_container_user }}"
       ansible.builtin.command:
         argv:
           - podman
@@ -182,6 +184,7 @@
 
     - name: Update CA trust inside automation-gateway container
       become: true
+      become_user: "{{ aap_container_user }}"
       ansible.builtin.command:
         argv:
           - podman
@@ -192,6 +195,7 @@
 
     - name: Restart AAP Gateway containers after IdM CA trust update
       become: true
+      become_user: "{{ aap_container_user }}"
       ansible.builtin.command:
         argv:
           - podman
