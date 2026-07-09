@@ -199,7 +199,7 @@
               email: "mail"
       register: created_ldap_authenticator
       when: existing_ldap_authenticator.json.count | int == 0
-      no_log: true
+      no_log: false
 
     - name: Update LDAP authenticator
       ansible.builtin.uri:
@@ -242,7 +242,7 @@
               last_name: "sn"
               email: "mail"
       when: existing_ldap_authenticator.json.count | int > 0
-      no_log: true
+      no_log: false
 
     - name: Set LDAP authenticator id
       ansible.builtin.set_fact:
