@@ -39,6 +39,8 @@
           - idm_domain_name | length > 0
           - groups['idm'] is defined
           - groups['idm'] | length > 0
+          - idm_users is defined
+          - idm_users | length > 0
         fail_msg: "Missing required inventory variables."
 
     - name: Read AAP gateway admin username from AWS Secrets Manager
@@ -142,6 +144,33 @@
         executable: /bin/bash
       delegate_to: "{{ groups['idm'][0] }}"
       become: true
+      no_log: true
+
+    - name: Install LDAP client tools on AAP host
+      become: true
+      ansible.builtin.dnf:
+        name: openldap-clients
+        state: present
+
+    - name: Test AAP host can bind and find first IdM user
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -x
+          - -H
+          - "{{ ldap_server_uri }}"
+          - -D
+          - "{{ ldap_bind_dn }}"
+          - -w
+          - "{{ aap_bind_password }}"
+          - -b
+          - "{{ ldap_user_search_base }}"
+          - "(uid={{ idm_users[0] }})"
+          - uid
+          - memberOf
+          - mail
+      register: ldap_bind_test
+      changed_when: false
       no_log: true
 
     - name: Check for existing LDAP authenticator
@@ -343,12 +372,13 @@
           authenticator: "{{ ldap_authenticator_id | int }}"
           map_type: "is_superuser"
           triggers:
-            groups:
-              has_or:
-                - "{{ ldap_admin_group_dn }}"
+            attributes:
+              memberOf:
+                has_or:
+                  - "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int == 0
-      no_log: false
+      no_log: true
 
     - name: Update IdM admins superuser map
       ansible.builtin.uri:
@@ -366,12 +396,13 @@
           authenticator: "{{ ldap_authenticator_id | int }}"
           map_type: "is_superuser"
           triggers:
-            groups:
-              has_or:
-                - "{{ ldap_admin_group_dn }}"
+            attributes:
+              memberOf:
+                has_or:
+                  - "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int > 0
-      no_log: false
+      no_log: true
 
     - name: Confirm AAP IdM LDAP authenticator configuration
       ansible.builtin.debug:
