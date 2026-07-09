@@ -171,30 +171,6 @@
       ansible.builtin.command: update-ca-trust
       changed_when: aap_idm_ca_cert.changed
 
-    - name: Copy IdM CA certificate into automation-gateway container
-      become: true
-      become_user: "{{ aap_container_user }}"
-      ansible.builtin.command:
-        argv:
-          - podman
-          - cp
-          - /etc/pki/ca-trust/source/anchors/idm-ca.crt
-          - automation-gateway:/etc/pki/ca-trust/source/anchors/idm-ca.crt
-      changed_when: true
-
-    - name: Update CA trust inside automation-gateway container as root
-      become: true
-      become_user: "{{ aap_container_user }}"
-      ansible.builtin.command:
-        argv:
-          - podman
-          - exec
-          - --user
-          - "0"
-          - automation-gateway
-          - update-ca-trust
-      changed_when: true
-
     - name: Install LDAP client tools on AAP host
       become: true
       ansible.builtin.dnf:
