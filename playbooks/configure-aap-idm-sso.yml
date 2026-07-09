@@ -146,6 +146,60 @@
       become: true
       no_log: true
 
+    - name: Read IdM CA certificate from IdM server
+      ansible.builtin.slurp:
+        src: /etc/ipa/ca.crt
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: idm_ca_cert
+      run_once: true
+      no_log: true
+
+    - name: Install IdM CA certificate on AAP host
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+        content: "{{ idm_ca_cert.content | b64decode }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: aap_idm_ca_cert
+
+    - name: Update AAP host CA trust
+      become: true
+      ansible.builtin.command: update-ca-trust
+      changed_when: aap_idm_ca_cert.changed
+
+    - name: Copy IdM CA certificate into automation-gateway container
+      become: true
+      ansible.builtin.command:
+        argv:
+          - podman
+          - cp
+          - /etc/pki/ca-trust/source/anchors/idm-ca.crt
+          - automation-gateway:/etc/pki/ca-trust/source/anchors/idm-ca.crt
+      changed_when: true
+
+    - name: Update CA trust inside automation-gateway container
+      become: true
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - automation-gateway
+          - update-ca-trust
+      changed_when: true
+
+    - name: Restart AAP Gateway containers after IdM CA trust update
+      become: true
+      ansible.builtin.command:
+        argv:
+          - podman
+          - restart
+          - automation-gateway
+          - automation-gateway-proxy
+      changed_when: true
+
     - name: Install LDAP client tools on AAP host
       become: true
       ansible.builtin.dnf:
@@ -374,8 +428,7 @@
           triggers:
             attributes:
               memberOf:
-                has_or:
-                  - "{{ ldap_admin_group_dn }}"
+                contains: "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int == 0
       no_log: true
@@ -401,7 +454,7 @@
                 contains: "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int > 0
-      no_log: false
+      no_log: true
 
     - name: Confirm AAP IdM LDAP authenticator configuration
       ansible.builtin.debug:
