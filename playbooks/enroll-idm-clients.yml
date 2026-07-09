@@ -146,6 +146,16 @@
           - krb5_keytab.stat.exists
         fail_msg: "IdM client enrollment failed or /etc/krb5.keytab is missing."
 
+    - name: Verify IdM user lookup through SSSD
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - "{{ idm_users[0] }}"
+      register: idm_getent_test
+      changed_when: false
+      failed_when: idm_getent_test.rc != 0
+
     - name: Show enrollment result
       ansible.builtin.debug:
         msg:
