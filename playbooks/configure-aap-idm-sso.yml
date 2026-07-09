@@ -1,5 +1,5 @@
 ---
-- name: Configure AAP SSO with Red Hat IdM LDAP
+- name: Configure AAP LDAP login with Red Hat IdM
   hosts: aap
   become: false
   gather_facts: false
@@ -23,19 +23,89 @@
         that:
           - aws_region is defined
           - aws_region | length > 0
+          - aws_profile is defined
+          - aws_profile | length > 0
           - secret_prefix is defined
           - secret_prefix | length > 0
           - idm_server_fqdn is defined
           - idm_server_fqdn | length > 0
           - idm_base_dn is defined
           - idm_base_dn | length > 0
-        fail_msg: "Missing aws_region, secret_prefix, idm_server_fqdn, or idm_base_dn."
+          - groups['idm'] is defined
+          - groups['idm'] | length > 0
+        fail_msg: "Missing aws_region, aws_profile, secret_prefix, idm_server_fqdn, idm_base_dn, or [idm] inventory group."
 
-    - name: Load required secrets from AWS Secrets Manager
+    - name: Read AAP gateway admin username from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/aap/gateway_admin_username"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: gateway_admin_username_result
+      changed_when: false
+      no_log: true
+
+    - name: Read AAP gateway admin password from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/aap/gateway_admin_password"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: gateway_admin_password_result
+      changed_when: false
+      no_log: true
+
+    - name: Read IdM admin password from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/idm/admin_password"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: idm_admin_password_result
+      changed_when: false
+      no_log: true
+
+    - name: Set secret facts
       ansible.builtin.set_fact:
-        gateway_admin_username: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/gateway_admin_username', region=aws_region) }}"
-        gateway_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/aap/gateway_admin_password', region=aws_region) }}"
-        idm_admin_password: "{{ lookup('amazon.aws.secretsmanager_secret', secret_prefix ~ '/idm/admin_password', region=aws_region) }}"
+        gateway_admin_username: "{{ gateway_admin_username_result.stdout }}"
+        gateway_admin_password: "{{ gateway_admin_password_result.stdout }}"
+        idm_admin_password: "{{ idm_admin_password_result.stdout }}"
       no_log: true
 
     - name: Generate AAP LDAP bind password for this run
@@ -51,18 +121,21 @@
         echo "{{ idm_admin_password }}" | kinit "{{ idm_admin_user }}"
 
         if ipa user-show "{{ idm_bind_user }}" >/dev/null 2>&1; then
-          echo "{{ aap_bind_password }}" | ipa passwd "{{ idm_bind_user }}"
+          printf '%s\n%s\n' "{{ aap_bind_password }}" "{{ aap_bind_password }}" | ipa passwd "{{ idm_bind_user }}"
         else
-          echo "{{ aap_bind_password }}" | ipa user-add "{{ idm_bind_user }}" \
+          printf '%s\n%s\n' "{{ aap_bind_password }}" "{{ aap_bind_password }}" | ipa user-add "{{ idm_bind_user }}" \
             --first="AAP" \
             --last="Bind" \
             --password
         fi
 
+        ipa user-mod "{{ idm_bind_user }}" \
+          --setattr=nsaccountlock=FALSE || true
+
         kdestroy
       args:
         executable: /bin/bash
-      delegate_to: "{{ idm_server_fqdn }}"
+      delegate_to: "{{ groups['idm'][0] }}"
       become: true
       no_log: true
 
@@ -101,8 +174,9 @@
           AUTH_LDAP_GROUP_TYPE:
             - "MemberDNGroupType"
 
-          AUTH_LDAP_REQUIRE_GROUP:
-            - "{{ ldap_admin_group_dn }}"
+          AUTH_LDAP_GROUP_TYPE_PARAMS:
+            member_attr: "member"
+            name_attr: "cn"
 
           AUTH_LDAP_USER_ATTR_MAP:
             username: "uid"
@@ -116,15 +190,28 @@
 
           AUTH_LDAP_ORGANIZATION_MAP:
             Default:
+              users: true
               admins:
                 - "{{ ldap_admin_group_dn }}"
+              remove_users: false
               remove_admins: false
+
+          AUTH_LDAP_ALWAYS_UPDATE_USER:
+            - true
+
+          AUTH_LDAP_CACHE_TIMEOUT:
+            - 3600
+
+          AUTH_LDAP_CONNECTION_OPTIONS:
+            OPT_REFERRALS: 0
+            OPT_NETWORK_TIMEOUT: 30
       no_log: true
 
-    - name: Confirm AAP IdM SSO configuration
+    - name: Confirm AAP IdM LDAP login configuration
       ansible.builtin.debug:
         msg:
-          - "AAP SSO configuration completed."
+          - "AAP LDAP authentication configuration completed."
+          - "All IdM users under: {{ ldap_user_search_base }} can log in."
+          - "IdM admin group mapped to AAP admin: {{ ldap_admin_group_dn }}"
           - "LDAP server: {{ ldap_server_uri }}"
           - "AAP bind user: {{ ldap_bind_dn }}"
-          - "AAP admins group: {{ ldap_admin_group_dn }}"
