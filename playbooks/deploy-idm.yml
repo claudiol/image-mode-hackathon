@@ -81,6 +81,8 @@
           - "{{ secret_prefix }}/idm/directory_manager_password"
           - --region
           - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
           - --query
           - SecretString
           - --output
@@ -89,7 +91,7 @@
       become: false
       register: idm_dm_secret_result
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Set IdM password facts
       ansible.builtin.set_fact:
