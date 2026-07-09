@@ -59,6 +59,8 @@
           - "{{ secret_prefix }}/idm/admin_password"
           - --region
           - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
           - --query
           - SecretString
           - --output
@@ -67,7 +69,7 @@
       become: false
       register: idm_admin_secret_result
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Read IdM Directory Manager password from AWS Secrets Manager using AWS CLI
       ansible.builtin.command:
