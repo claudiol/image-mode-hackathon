@@ -4,10 +4,10 @@
   become: true
   gather_facts: true
 
-  vars_files:
-    - ../vars/secrets.yml
-
   vars:
+    idm_vault_admin_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/idm/admin_password', region=aws_region) }}"
+    idm_vault_dm_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/idm/directory_manager_password', region=aws_region) }}"
+
     idm_short_name: "{{ inventory_hostname_short }}"
 
     idm_parent_domain: "{{ parent_domain_name }}"
@@ -15,9 +15,18 @@
     idm_realm: "{{ idm_realm_name }}"
     idm_fqdn: "{{ idm_server_fqdn }}"
 
-    idm_setup_dns: true
-    idm_no_reverse: true
     idm_forward_policy: "only"
+
+    idm_default_user_password: "RedHat123^"
+
+    idm_users:
+      - claudiol
+      - pduncan
+      - cpranava
+      - stripura
+
+    idm_admin_group: idm-admins
+    idm_sudo_rule: allow_idm_admins_all
 
     required_tcp_ports:
       - 80
@@ -35,14 +44,19 @@
       - 123
 
   pre_tasks:
-    - name: Validate required vault variables
+    - name: Validate required AWS secret variables
       ansible.builtin.assert:
         that:
+          - secret_prefix is defined
+          - secret_prefix | length > 0
+          - aws_region is defined
+          - aws_region | length > 0
           - idm_vault_dm_password is defined
           - idm_vault_dm_password | length > 0
           - idm_vault_admin_password is defined
           - idm_vault_admin_password | length > 0
-        fail_msg: "Missing IdM vault passwords. Define idm_vault_dm_password and idm_vault_admin_password in vars/secrets.yml."
+        fail_msg: "Missing IdM AWS Secrets Manager values. Check secret_prefix, aws_region, and Terraform-created IdM secrets."
+      no_log: true
 
     - name: Validate Terraform-provided DNS variables
       ansible.builtin.assert:
@@ -98,12 +112,13 @@
         name: "{{ idm_fqdn }}"
 
     - name: Preserve hostname across cloud-init runs
-      ansible.builtin.lineinfile:
-        path: /etc/cloud/cloud.cfg
-        regexp: '^preserve_hostname:'
-        line: 'preserve_hostname: true'
-        state: present
-        create: false
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: |
+          preserve_hostname: true
+        owner: root
+        group: root
+        mode: "0644"
 
     - name: Remove myhostname from NSS hosts lookup
       ansible.builtin.replace:
@@ -312,6 +327,122 @@
       when:
         - hostvars[item].private_ip is defined
 
+    - name: Ensure global IdM admin group exists
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-add
+          - "{{ idm_admin_group }}"
+          - "--desc=Global IdM administrators with sudo access"
+      register: idm_admin_group_add
+      changed_when: idm_admin_group_add.rc == 0
+      failed_when:
+        - idm_admin_group_add.rc != 0
+        - "'already exists' not in (idm_admin_group_add.stderr | default(''))"
+        - "'already exists' not in (idm_admin_group_add.stdout | default(''))"
+
+    - name: Ensure IdM users exist with temporary password
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-add
+          - "{{ item }}"
+          - "--first={{ item }}"
+          - "--last=User"
+          - "--password"
+        stdin: |
+          {{ idm_default_user_password }}
+          {{ idm_default_user_password }}
+      register: idm_user_add
+      no_log: true
+      changed_when: idm_user_add.rc == 0
+      failed_when:
+        - idm_user_add.rc != 0
+        - "'already exists' not in (idm_user_add.stderr | default(''))"
+        - "'already exists' not in (idm_user_add.stdout | default(''))"
+      loop: "{{ idm_users }}"
+
+    - name: Force IdM users to change password on next login
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-mod
+          - "{{ item }}"
+          - "--password-expiration=19700101000000Z"
+      changed_when: true
+      loop: "{{ idm_users }}"
+
+    - name: Add users to global IdM admin group
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-add-member
+          - "{{ idm_admin_group }}"
+          - "--users={{ item }}"
+      register: idm_group_member_add
+      changed_when: "'Number of members added 1' in (idm_group_member_add.stdout | default(''))"
+      failed_when:
+        - idm_group_member_add.rc != 0
+        - "'This entry is already a member' not in (idm_group_member_add.stderr | default(''))"
+        - "'This entry is already a member' not in (idm_group_member_add.stdout | default(''))"
+      loop: "{{ idm_users }}"
+
+    - name: Ensure sudo rule exists for global IdM admins
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - sudorule-add
+          - "{{ idm_sudo_rule }}"
+          - "--desc=Allow idm-admins sudo access on all hosts"
+      register: idm_sudo_rule_add
+      changed_when: idm_sudo_rule_add.rc == 0
+      failed_when:
+        - idm_sudo_rule_add.rc != 0
+        - "'already exists' not in (idm_sudo_rule_add.stderr | default(''))"
+        - "'already exists' not in (idm_sudo_rule_add.stdout | default(''))"
+
+    - name: Allow sudo rule to apply to all hosts
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - sudorule-add-host
+          - "{{ idm_sudo_rule }}"
+          - "--hostcat=all"
+      register: idm_sudo_hostcat
+      changed_when: idm_sudo_hostcat.rc == 0
+      failed_when:
+        - idm_sudo_hostcat.rc != 0
+        - "'host category already set' not in (idm_sudo_hostcat.stderr | default(''))"
+        - "'host category already set' not in (idm_sudo_hostcat.stdout | default(''))"
+
+    - name: Allow sudo rule to run all commands
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - sudorule-add-allow-command
+          - "{{ idm_sudo_rule }}"
+          - "--cmdcat=all"
+      register: idm_sudo_cmdcat
+      changed_when: idm_sudo_cmdcat.rc == 0
+      failed_when:
+        - idm_sudo_cmdcat.rc != 0
+        - "'command category already set' not in (idm_sudo_cmdcat.stderr | default(''))"
+        - "'command category already set' not in (idm_sudo_cmdcat.stdout | default(''))"
+
+    - name: Add IdM admin group to sudo rule
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - sudorule-add-user
+          - "{{ idm_sudo_rule }}"
+          - "--groups={{ idm_admin_group }}"
+      register: idm_sudo_group_add
+      changed_when: "'Number of members added 1' in (idm_sudo_group_add.stdout | default(''))"
+      failed_when:
+        - idm_sudo_group_add.rc != 0
+        - "'This entry is already a member' not in (idm_sudo_group_add.stderr | default(''))"
+        - "'This entry is already a member' not in (idm_sudo_group_add.stdout | default(''))"
+
     - name: Show IdM install status
       ansible.builtin.debug:
         msg:
@@ -323,3 +454,6 @@
           - "IdM private IP: {{ idm_private_ip }}"
           - "AWS DNS forwarder: {{ aws_dns_resolver }}"
           - "IdM DNS A records were created/updated for inventory hosts."
+          - "Created/verified users: {{ idm_users | join(', ') }}"
+          - "Admin sudo group: {{ idm_admin_group }}"
+          - "Sudo rule: {{ idm_sudo_rule }}"
