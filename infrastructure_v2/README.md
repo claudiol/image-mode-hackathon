@@ -38,8 +38,6 @@ The deployed environment contains:
 
 ## DNS Design
 
-The lab uses a dedicated IdM managed DNS subdomain.
-
 AWS Route53 owns the parent domain:
 
 ```text
@@ -62,13 +60,7 @@ quay-1.lab.sandbox1234.opentlc.com
 image-builder-1.lab.sandbox1234.opentlc.com
 ```
 
-Route53 Resolver forwards:
-
-```text
-lab.sandbox1234.opentlc.com
-```
-
-queries to the IdM DNS server.
+Route53 Resolver forwards the lab domain to IdM DNS.
 
 ---
 
@@ -80,34 +72,38 @@ Primary Terraform automation.
 
 Responsible for:
 
-- Route53 discovery
-- Network creation
-- Server deployment
+- AWS networking
+- DNS discovery
+- EC2 deployment
 - SSH key generation
-- Secrets creation
-- IAM configuration
-- DNS configuration
+- AWS Secrets creation
+- IAM permissions
 - Inventory generation
-- Lab bootstrap execution
+- Running Ansible bootstrap
 
 Deployment flow:
 
 ```text
 Terraform Apply
-       |
-       v
-AWS Infrastructure
-       |
-       v
+
+        |
+
+Create AWS Infrastructure
+
+        |
+
 Generate Credentials
-       |
-       v
+
+        |
+
 Create Servers
-       |
-       v
+
+        |
+
 Generate Inventory
-       |
-       v
+
+        |
+
 Run Ansible Deployment
 ```
 
@@ -115,20 +111,19 @@ Run Ansible Deployment
 
 ## variables.tf
 
-Defines configurable Terraform inputs:
+Defines Terraform input variables:
 
 Examples:
 
 - AWS region
-- Environment name
-- Network ranges
-- DNS configuration
+- DNS settings
 - Server sizing
+- Network ranges
 - IdM users
 
-Normally this file does not need modification.
+Normally this file does not require changes.
 
-User settings belong in:
+Environment-specific settings belong in:
 
 ```text
 terraform.tfvars
@@ -138,13 +133,13 @@ terraform.tfvars
 
 # terraform.tfvars Usage
 
-This file controls your deployment.
+This file controls the deployment.
 
 Example:
 
 ```hcl
 ############################################################
-# AWS
+# AWS Settings
 ############################################################
 
 aws_profile = "image-mode-lab"
@@ -164,6 +159,8 @@ environment_name = "image-mode-lab"
 ############################################################
 
 domain_name = ""
+
+route53_zone_id = ""
 
 create_public_dns_records = true
 
@@ -187,7 +184,7 @@ ssh_allowed_cidr = "YOUR_PUBLIC_IP/32"
 
 
 ############################################################
-# IdM Users
+# IdM Admin Users
 ############################################################
 
 idm_users = [
@@ -198,23 +195,87 @@ idm_users = [
 
 ---
 
+# IdM Temporary User Password
+
+The lab creates IdM users automatically.
+
+A temporary password is required for the initial login.
+
+The Terraform variable is:
+
+```text
+idm_default_user_password
+```
+
+## Option 1: terraform.tfvars (Lab Usage)
+
+For disposable lab environments you may set:
+
+```hcl
+############################################################
+# IdM Temporary User Password
+############################################################
+
+# Initial password assigned to IdM users.
+#
+# Users should change this after first login.
+#
+# Do NOT commit terraform.tfvars containing real passwords.
+
+
+idm_default_user_password = "YourPassword!"
+```
+
+To prevent accidental Git commits add:
+
+```text
+terraform.tfvars
+*.tfvars
+```
+
+to:
+
+```text
+.gitignore
+```
+
+This prevents secret scanners such as GitGuardian from detecting committed credentials.
+
+---
+
+## Option 2: Environment Variable (Recommended)
+
+For shared repositories or CI/CD:
+
+```bash
+export TF_VAR_idm_default_user_password='YourPassword!'
+```
+
+Terraform automatically maps this to:
+
+```hcl
+variable "idm_default_user_password"
+```
+
+No password is stored on disk.
+
+---
+
 # SSH Key Automation
 
-Manual SSH key creation is not required.
+No manual SSH key creation is required.
 
 Terraform automatically:
 
-1. Generates a private key
+1. Generates an RSA private key
 
-2. Creates an AWS EC2 key pair
-
-Example:
+2. Creates an AWS EC2 Key Pair:
 
 ```text
 image-mode-lab-ssh-key
 ```
 
-3. Creates a local bootstrap key:
+3. Creates:
 
 ```text
 image-mode-lab-key.pem
@@ -222,16 +283,16 @@ image-mode-lab-key.pem
 
 Used by:
 
-- Terraform
-- Initial Ansible deployment
+- Terraform bootstrap
+- Ansible deployment
 
-4. Stores the key in AWS Secrets Manager:
+4. Stores the private key in AWS Secrets Manager:
 
 ```text
 image-mode-lab/aws/ssh_private_key
 ```
 
-Used later by:
+Used later for:
 
 - AAP machine credentials
 - Automation jobs
@@ -240,7 +301,7 @@ Used later by:
 
 # AWS Secrets Manager
 
-Terraform creates the required lab secrets automatically.
+Terraform creates required secrets automatically.
 
 ## IdM
 
@@ -280,9 +341,9 @@ image-mode-lab/aws/ssh_private_key
 
 # ⚠️ Important: AAP Installer Private S3 Bucket Access
 
-The AAP deployment retrieves installation content from a private AWS S3 bucket.
+AAP downloads its installer files from a private S3 bucket.
 
-The playbook downloads:
+The deployment retrieves:
 
 ```text
 ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz
@@ -296,15 +357,13 @@ from:
 s3://aap-containerized-installers/2.7/
 ```
 
-Because this bucket is private, the AWS account running the lab must be allowed access.
+The AWS account running this lab must be allowed access.
 
-Before deployment, update the bucket policy with your AWS Account ID.
-
-Find the account:
+Find your AWS Account ID:
 
 ```bash
 aws sts get-caller-identity \
-  --profile image-mode-lab
+--profile image-mode-lab
 ```
 
 Example:
@@ -315,7 +374,7 @@ Example:
 }
 ```
 
-Add this account to the bucket policy:
+Add that account to the S3 bucket policy:
 
 ```json
 {
@@ -339,25 +398,25 @@ Replace:
 123456789012
 ```
 
-with your AWS environment Account ID.
+with the AWS Account ID running Terraform.
 
-Terraform creates the AAP EC2 IAM permissions automatically, but the private S3 bucket must also trust the AWS account.
+Terraform creates the EC2 IAM role permissions automatically, but the bucket must trust the account.
 
-If this step is missed, AAP deployment fails with:
+Missing this step causes:
 
 ```text
 AccessDenied
 ```
 
-when downloading the installer.
+during AAP deployment.
 
 ---
 
-# Sensitive Variables
+# Red Hat Credentials
 
-Do not commit Red Hat credentials.
+Do not store Red Hat credentials in Git.
 
-Export them instead:
+Use environment variables:
 
 ```bash
 export TF_VAR_redhat_org_id="123456"
@@ -367,12 +426,6 @@ export TF_VAR_redhat_aap_activation_key="activation-key"
 export TF_VAR_redhat_registry_username="username"
 
 export TF_VAR_redhat_registry_password="password"
-```
-
-Optional IdM default password:
-
-```bash
-export TF_VAR_idm_default_user_password='ChangeMe123!'
 ```
 
 ---
@@ -386,7 +439,7 @@ aws configure \
 --profile image-mode-lab
 ```
 
-Verify access:
+Verify:
 
 ```bash
 aws sts get-caller-identity \
@@ -403,7 +456,7 @@ terraform init
 
 ---
 
-## 3. Review Deployment
+## 3. Review Changes
 
 ```bash
 terraform plan \
@@ -426,44 +479,32 @@ terraform apply lab.tfplan
 terraform apply
 
         |
-        v
 
 Create AWS Network
 
         |
-        v
 
-Create Secrets
+Generate Secrets
 
         |
-        v
 
 Generate SSH Key
 
         |
-        v
 
-Deploy RHEL Servers
+Deploy Servers
 
         |
-        v
 
 Configure DNS
 
         |
-        v
 
 Generate inventory.ini
 
         |
-        v
 
-Clone Automation Repository
-
-        |
-        v
-
-Run deploy-services.yml
+Run Ansible Playbooks
 ```
 
 ---
@@ -493,7 +534,7 @@ aap-1.lab.example.com ansible_host=1.2.3.5
 
 # Connecting To Servers
 
-Terraform outputs SSH commands:
+View generated SSH commands:
 
 ```bash
 terraform output ssh_commands
@@ -507,19 +548,21 @@ ssh \
 ec2-user@SERVER_PUBLIC_IP
 ```
 
-After IdM deployment, users authenticate through Red Hat IdM.
+After IdM deployment:
+
+- Users authenticate through IdM
+- SSH keys are managed through IdM
+- Bootstrap key is retained for automation
 
 ---
 
 # Useful Outputs
 
-View everything:
-
 ```bash
 terraform output
 ```
 
-Common outputs:
+Examples:
 
 ```text
 aap_url
@@ -535,35 +578,35 @@ lab_ssh_private_key_secret_name
 
 ---
 
-# Destroy Lab
+# Destroy The Lab
 
-Remove all AWS resources:
+Remove everything:
 
 ```bash
 terraform destroy
 ```
 
-This removes:
+Deletes:
 
 - EC2 instances
-- Volumes
+- EBS volumes
 - DNS records
-- Resolver rules
+- Resolver configuration
+- IAM resources
 - Secrets
-- IAM roles
-- Network resources
+- Networking
 
 ---
 
 # Security Notes
 
-This environment is intended as an automated lab.
+This is designed for automated labs.
 
-For production:
+Production recommendations:
 
-- Store Terraform state remotely
-- Encrypt Terraform state
-- Restrict state access
-- Rotate generated secrets
-- Restrict SSH access
-- Avoid committing terraform.tfvars containing secrets
+- Use remote encrypted Terraform state
+- Protect Terraform state access
+- Rotate generated credentials
+- Restrict SSH CIDRs
+- Avoid committing terraform.tfvars
+- Store production secrets externally
