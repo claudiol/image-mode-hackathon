@@ -232,7 +232,7 @@
           ansible.builtin.set_fact:
             aap_installer_dir: "{{ (installer_dirs.files | sort(attribute='path') | last).path }}"
 
-    - name: PHASE 8 | Generate AAP containerized inventory
+    - name: PHASE 8 | Trust IdM CA and generate AAP containerized inventory
       block:
         - name: Get ec2-user UID
           ansible.builtin.command: id -u "{{ aap_run_user }}"
@@ -247,6 +247,35 @@
         - name: Set ec2-user home fact
           ansible.builtin.set_fact:
             aap_run_user_home: "{{ aap_run_user_passwd.stdout.split(':')[5] }}"
+
+        - name: Read IdM CA certificate from IdM server
+          ansible.builtin.slurp:
+            src: /etc/ipa/ca.crt
+          delegate_to: "{{ groups['idm'][0] }}"
+          become: true
+          register: idm_ca_cert
+          no_log: true
+          when:
+            - groups['idm'] is defined
+            - groups['idm'] | length > 0
+
+        - name: Install IdM CA certificate on AAP host
+          ansible.builtin.copy:
+            dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+            content: "{{ idm_ca_cert.content | b64decode }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when:
+            - idm_ca_cert is defined
+            - idm_ca_cert.content is defined
+
+        - name: Update AAP host CA trust
+          ansible.builtin.command: update-ca-trust
+          changed_when: true
+          when:
+            - idm_ca_cert is defined
+            - idm_ca_cert.content is defined
 
         - name: Write clean AAP installer inventory
           ansible.builtin.copy:
