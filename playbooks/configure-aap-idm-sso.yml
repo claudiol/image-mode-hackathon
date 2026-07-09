@@ -153,7 +153,7 @@
         status_code: 200
         return_content: true
       register: current_aap_auth_settings
-      no_log: true
+      no_log: false
 
     - name: Configure AAP Gateway LDAP authentication against IdM
       ansible.builtin.uri:
