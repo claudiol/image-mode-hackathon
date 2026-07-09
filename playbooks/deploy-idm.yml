@@ -424,7 +424,12 @@
           - user-mod
           - "{{ item }}"
           - "--password-expiration=19700101000000Z"
-      changed_when: true
+      register: idm_user_password_expire
+      changed_when: idm_user_password_expire.rc == 0
+      failed_when:
+        - idm_user_password_expire.rc != 0
+        - "'no modifications to be performed' not in (idm_user_password_expire.stderr | default(''))"
+        - "'no modifications to be performed' not in (idm_user_password_expire.stdout | default(''))"
       loop: "{{ idm_users }}"
 
     - name: Add users to global IdM admin group
