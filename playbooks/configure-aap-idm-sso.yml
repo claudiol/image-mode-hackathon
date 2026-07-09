@@ -402,7 +402,7 @@
                   - "{{ ldap_admin_group_dn }}"
           order: 20
       when: existing_admin_map.json.count | int > 0
-      no_log: true
+      no_log: false
 
     - name: Confirm AAP IdM LDAP authenticator configuration
       ansible.builtin.debug:
