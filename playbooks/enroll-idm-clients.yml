@@ -1,0 +1,166 @@
+---
+- name: Enroll EC2 hosts into Red Hat IdM domain
+  hosts: all:!idm
+  become: true
+  gather_facts: true
+
+  vars:
+    idm_domain: "{{ idm_domain_name }}"
+    idm_realm: "{{ idm_realm_name }}"
+    idm_server: "{{ idm_server_fqdn }}"
+    idm_client_hostname: "{{ inventory_hostname }}"
+    idm_enroll_user: "admin"
+
+  pre_tasks:
+    - name: Validate required IdM inventory variables
+      ansible.builtin.assert:
+        that:
+          - idm_domain_name is defined
+          - idm_domain_name | length > 0
+          - idm_realm_name is defined
+          - idm_realm_name | length > 0
+          - idm_server_fqdn is defined
+          - idm_server_fqdn | length > 0
+          - secret_prefix is defined
+          - secret_prefix | length > 0
+          - aws_region is defined
+          - aws_region | length > 0
+          - aws_profile is defined
+          - aws_profile | length > 0
+        fail_msg: "Missing required IdM/AWS inventory variables."
+
+    - name: Read IdM admin password from AWS Secrets Manager using AWS CLI
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/idm/admin_password"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: idm_admin_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set IdM enrollment password fact
+      ansible.builtin.set_fact:
+        idm_enroll_password: "{{ idm_admin_secret_result.stdout }}"
+      no_log: true
+
+  tasks:
+    - name: Ensure required IdM client packages are installed
+      ansible.builtin.dnf:
+        name:
+          - ipa-client
+          - oddjob
+          - oddjob-mkhomedir
+          - sssd
+          - bind-utils
+          - chrony
+        state: present
+
+    - name: Set persistent client hostname
+      ansible.builtin.hostname:
+        name: "{{ idm_client_hostname }}"
+
+    - name: Preserve hostname across cloud-init runs
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: |
+          preserve_hostname: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Ensure IdM server resolves locally during enrollment
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^\S+\s+{{ idm_server | regex_escape }}(\s|$)'
+        line: "{{ idm_server_ip }} {{ idm_server }}"
+        state: present
+      when:
+        - idm_server_ip is defined
+        - idm_server_ip | length > 0
+
+    - name: Check whether host is already enrolled in IdM
+      ansible.builtin.command: ipa-client-install --uninstall --unattended
+      register: ipa_client_uninstall_check
+      changed_when: false
+      failed_when: false
+      check_mode: true
+
+    - name: Check for existing IPA client config
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: ipa_client_default_conf
+
+    - name: Enroll host into IdM domain
+      ansible.builtin.command:
+        argv:
+          - ipa-client-install
+          - "--unattended"
+          - "--principal={{ idm_enroll_user }}"
+          - "--password={{ idm_enroll_password }}"
+          - "--domain={{ idm_domain }}"
+          - "--realm={{ idm_realm }}"
+          - "--server={{ idm_server }}"
+          - "--hostname={{ idm_client_hostname }}"
+          - "--mkhomedir"
+          - "--force-join"
+          - "--no-ntp"
+      register: ipa_client_install
+      no_log: true
+      when:
+        - not ipa_client_default_conf.stat.exists
+
+    - name: Enable and start oddjobd
+      ansible.builtin.service:
+        name: oddjobd
+        state: started
+        enabled: true
+
+    - name: Enable and start SSSD
+      ansible.builtin.service:
+        name: sssd
+        state: started
+        enabled: true
+
+    - name: Verify host keytab exists
+      ansible.builtin.stat:
+        path: /etc/krb5.keytab
+      register: krb5_keytab
+
+    - name: Validate IdM client enrollment
+      ansible.builtin.assert:
+        that:
+          - ipa_client_default_conf.stat.exists or ipa_client_install.rc == 0
+          - krb5_keytab.stat.exists
+        fail_msg: "IdM client enrollment failed or /etc/krb5.keytab is missing."
+
+    - name: Verify IdM user lookup through SSSD
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - pduncan
+      register: idm_getent_test
+      changed_when: false
+      failed_when: idm_getent_test.rc != 0
+
+    - name: Show enrollment result
+      ansible.builtin.debug:
+        msg:
+          - "Host enrolled or already enrolled in IdM."
+          - "Client hostname: {{ idm_client_hostname }}"
+          - "IdM domain: {{ idm_domain }}"
+          - "IdM realm: {{ idm_realm }}"
+          - "IdM server: {{ idm_server }}"
