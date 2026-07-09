@@ -6,7 +6,6 @@
 
   vars:
     aap_url: "https://{{ inventory_hostname }}"
-
     aap_ldap_authenticator_name: "Red Hat IdM LDAP"
 
     idm_bind_user: "aap-bind"
@@ -174,7 +173,8 @@
           remove_users: false
           type: "ansible_base.authentication.authenticator_plugins.ldap"
           configuration:
-            SERVER_URI: "{{ ldap_server_uri }}"
+            SERVER_URI:
+              - "{{ ldap_server_uri }}"
             BIND_DN: "{{ ldap_bind_dn }}"
             BIND_PASSWORD: "{{ aap_bind_password }}"
             START_TLS: false
@@ -218,7 +218,8 @@
           create_objects: true
           remove_users: false
           configuration:
-            SERVER_URI: "{{ ldap_server_uri }}"
+            SERVER_URI:
+              - "{{ ldap_server_uri }}"
             BIND_DN: "{{ ldap_bind_dn }}"
             BIND_PASSWORD: "{{ aap_bind_password }}"
             START_TLS: false
