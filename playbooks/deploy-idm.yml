@@ -127,13 +127,13 @@
     - name: Validate AWS private IPv4 discovery
       ansible.builtin.assert:
         that:
-          - private_ip is defined or ansible_facts.default_ipv4.address is defined
-        fail_msg: "Could not detect private_ip or ansible_facts.default_ipv4.address."
+          - private_ip is defined or ansible_facts["default_ipv4"]["address"] is defined
+        fail_msg: "Could not detect private IPv4 address."
 
     - name: Set discovered network facts
       ansible.builtin.set_fact:
-        idm_private_ip: "{{ idm_server_ip | default(private_ip | default(ansible_facts.default_ipv4.address, true), true) }}"
-        idm_nm_connection: "{{ ansible_facts.default_ipv4.interface }}"
+        idm_private_ip: "{{ idm_server_ip | default(private_ip | default(ansible_facts['default_ipv4']['address'], true), true) }}"
+        idm_nm_connection: "{{ ansible_facts['default_ipv4']['interface'] }}"
 
     - name: Validate IdM DNS relationship
       ansible.builtin.assert:
