@@ -179,15 +179,15 @@ locals {
     "aap/automationmetrics_pg_password",
     "aap/automationmetrics_controller_read_pg_password",
     "aap/vault_password",
-
     "idm/admin_password",
     "idm/directory_manager_password",
-
     "satellite/admin_password",
-
     "quay/db_password",
     "quay/secret_key",
-    "quay/superuser_password"
+    "quay/database_secret_key",
+    "quay/superuser_password",
+    "quay/redis_password"
+
   ])
 
   static_secret_values = {
