@@ -191,8 +191,96 @@
           - policycoreutils-python-utils
           - openssl
           - curl
+          - jq
           - openldap-clients
         state: present
+
+    - name: Enable and start firewalld
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Open Quay firewall ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "{{ quay_http_port }}"
+        - "{{ quay_https_port }}"
+
+    - name: Force clean existing Quay deployment
+      when: quay_force_clean_rebuild | bool
+      block:
+        - name: Stop existing Quay containers
+          ansible.builtin.command: podman stop {{ item }}
+          loop:
+            - quay-registry
+            - quay-postgres
+            - quay-redis
+          changed_when: true
+          failed_when: false
+
+        - name: Remove existing Quay containers
+          ansible.builtin.command: podman rm -f {{ item }}
+          loop:
+            - quay-registry
+            - quay-postgres
+            - quay-redis
+          changed_when: true
+          failed_when: false
+
+        - name: Remove existing Quay pod
+          ansible.builtin.command: podman pod rm -f quay-pod
+          changed_when: true
+          failed_when: false
+
+        - name: Remove existing Quay root directory
+          ansible.builtin.file:
+            path: "{{ quay_root }}"
+            state: absent
+
+    - name: Ensure Quay root directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ quay_root }}"
+        - "{{ quay_root }}/config"
+        - "{{ quay_root }}/storage"
+        - "{{ quay_root }}/postgres"
+        - "{{ quay_root }}/redis"
+
+    - name: Log in to Red Hat registry
+      containers.podman.podman_login:
+        registry: registry.redhat.io
+        username: "{{ redhat_registry_username }}"
+        password: "{{ redhat_registry_password }}"
+        authfile: "{{ redhat_registry_authfile }}"
+      no_log: true
+
+    - name: Generate Quay self-signed TLS certificate
+      ansible.builtin.command: >
+        openssl req -x509 -nodes -newkey rsa:4096
+        -days {{ quay_tls_cert_days }}
+        -keyout {{ quay_root }}/config/ssl.key
+        -out {{ quay_root }}/config/ssl.cert
+        -subj "/C={{ quay_tls_country }}/ST={{ quay_tls_state }}/L={{ quay_tls_city }}/O={{ quay_tls_org }}/OU={{ quay_tls_org_unit }}/CN={{ quay_hostname }}"
+        -addext "subjectAltName=DNS:{{ quay_hostname }}"
+      args:
+        creates: "{{ quay_root }}/config/ssl.cert"
+
+    - name: Set TLS key permissions
+      ansible.builtin.file:
+        path: "{{ quay_root }}/config/ssl.key"
+        owner: root
+        group: root
+        mode: "0600"
 
     - name: Verify IdM LDAP bind and user search from Quay server
       ansible.builtin.command: >
@@ -259,9 +347,6 @@
       changed_when: false
       no_log: true
 
-    # Keep the rest of your existing podman/postgres/redis/bootstrap tasks here unchanged
-    # until the config.yaml sections.
-
     - name: Create bootstrap Quay config.yaml using local Database authentication
       ansible.builtin.copy:
         dest: "{{ quay_root }}/config/config.yaml"
@@ -308,7 +393,154 @@
           {% endfor %}
       no_log: true
 
-    # Keep your existing bootstrap start/wait/initialize-token/org-create tasks.
+    - name: Create Quay pod
+      containers.podman.podman_pod:
+        name: quay-pod
+        state: created
+        publish:
+          - "{{ quay_http_port }}:8080"
+          - "{{ quay_https_port }}:8443"
+
+    - name: Start PostgreSQL container
+      containers.podman.podman_container:
+        name: quay-postgres
+        pod: quay-pod
+        image: "{{ postgres_image }}"
+        authfile: "{{ redhat_registry_authfile }}"
+        state: started
+        restart_policy: always
+        env:
+          POSTGRESQL_USER: "{{ quay_db_user }}"
+          POSTGRESQL_PASSWORD: "{{ quay_db_password }}"
+          POSTGRESQL_DATABASE: "{{ quay_db_name }}"
+        volume:
+          - "{{ quay_root }}/postgres:/var/lib/pgsql/data:Z"
+      no_log: true
+
+    - name: Start Redis container
+      containers.podman.podman_container:
+        name: quay-redis
+        pod: quay-pod
+        image: "{{ redis_image }}"
+        authfile: "{{ redhat_registry_authfile }}"
+        state: started
+        restart_policy: always
+        volume:
+          - "{{ quay_root }}/redis:/var/lib/redis/data:Z"
+
+    - name: Wait for PostgreSQL to become ready
+      ansible.builtin.command: podman exec quay-postgres pg_isready -U {{ quay_db_user }} -d {{ quay_db_name }}
+      register: quay_postgres_ready
+      retries: 60
+      delay: 5
+      until: quay_postgres_ready.rc == 0
+      changed_when: false
+
+    - name: Start Quay registry container with bootstrap config
+      containers.podman.podman_container:
+        name: quay-registry
+        pod: quay-pod
+        image: "{{ quay_image }}"
+        authfile: "{{ redhat_registry_authfile }}"
+        state: started
+        recreate: true
+        restart_policy: always
+        volume:
+          - "{{ quay_root }}/config:/conf/stack:Z"
+          - "{{ quay_root }}/storage:/datastorage:Z"
+
+    - name: Wait for Quay HTTPS to respond with bootstrap config
+      ansible.builtin.command: >
+        curl -kfsS
+        --connect-timeout 5
+        --max-time 15
+        https://127.0.0.1:{{ quay_https_port }}/
+      register: quay_bootstrap_https_check
+      retries: 60
+      delay: 5
+      until: quay_bootstrap_https_check.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if Quay did not become reachable with bootstrap config
+      ansible.builtin.fail:
+        msg: "Quay container started but HTTPS did not respond with bootstrap Database authentication config."
+      when: quay_bootstrap_https_check.rc != 0
+
+    - name: Initialize Quay superuser and API token
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/initialize"
+        method: POST
+        validate_certs: false
+        body_format: json
+        body:
+          username: "{{ quay_superuser }}"
+          password: "{{ quay_superuser_password }}"
+          email: "{{ quay_superuser_email }}"
+          access_token: true
+        status_code:
+          - 200
+          - 201
+          - 400
+      register: quay_initialize_user
+      no_log: true
+
+    - name: Set Quay API token from initialized user or existing secret
+      ansible.builtin.set_fact:
+        quay_api_token: >-
+          {{
+            quay_initialize_user.json.access_token
+            | default(quay_admin_access_token)
+          }}
+      no_log: true
+
+    - name: Validate Quay API token is available
+      ansible.builtin.assert:
+        that:
+          - quay_api_token is defined
+          - quay_api_token | length > 0
+        fail_msg: "Unable to determine Quay API token. Initialization did not return a token and no existing token was found."
+
+    - name: Store generated Quay admin API token in AWS Secrets Manager
+      ansible.builtin.command: >
+        aws secretsmanager put-secret-value
+        --secret-id {{ secret_prefix }}/quay/admin_access_token
+        --region {{ aws_region }}
+        --secret-string {{ quay_api_token | quote }}
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      failed_when: false
+      no_log: true
+      environment:
+        AWS_PROFILE: "{{ aws_profile | default(omit) }}"
+      when:
+        - quay_initialize_user.json.access_token is defined
+        - quay_initialize_user.json.access_token | length > 0
+
+    - name: Create Quay default organization
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/"
+        method: POST
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        body_format: json
+        body:
+          name: "{{ quay_default_org }}"
+          email: "{{ quay_default_org }}@example.com"
+        status_code:
+          - 200
+          - 201
+          - 400
+      register: quay_create_org
+      no_log: true
+      failed_when: >
+        quay_create_org.status == 400 and
+        (
+          quay_create_org.json.error_message | default('') is not search('already') and
+          quay_create_org.json.error_message | default('') is not search('exists')
+        )
 
     - name: Create or update Quay teams for IdM sync
       ansible.builtin.uri:
@@ -330,6 +562,14 @@
       ansible.builtin.command: podman stop quay-registry
       changed_when: true
       failed_when: false
+
+    - name: Ensure Quay config directory still exists before final config write
+      ansible.builtin.file:
+        path: "{{ quay_root }}/config"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
     - name: Create final Quay config.yaml with IdM LDAP authentication and team sync
       ansible.builtin.copy:
