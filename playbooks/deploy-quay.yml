@@ -28,7 +28,9 @@
     quay_default_org: image-mode
     quay_default_team: writers
 
+    quay_superuser_email: quayadmin@example.com
     quay_hostname: "{{ inventory_hostname }}"
+
     quay_force_clean_rebuild: true
 
     idm_base_dn: "dc={{ idm_domain_name.split('.') | join(',dc=') }}"
@@ -45,15 +47,16 @@
     quay_ldap_user_filter: "(uid=*)"
 
     quay_admin_users: "{{ idm_users | default([]) }}"
-    quay_org_bootstrap_user: "{{ (quay_admin_users | unique | first) | default('') }}"
     quay_org_member_users: "{{ quay_admin_users | unique }}"
 
     required_secret_paths:
       redhat_registry_username: redhat/registry_username
       redhat_registry_password: redhat/registry_password
+      quay_superuser: quay/superuser
       quay_db_password: quay/db_password
       quay_secret_key: quay/secret_key
       quay_database_secret_key: quay/database_secret_key
+      quay_superuser_password: quay/superuser_password
       idm_admin_password: idm/admin_password
 
   pre_tasks:
@@ -100,20 +103,22 @@
       ansible.builtin.set_fact:
         redhat_registry_username: "{{ quay_required_secrets.redhat_registry_username }}"
         redhat_registry_password: "{{ quay_required_secrets.redhat_registry_password }}"
+        quay_superuser: "{{ quay_required_secrets.quay_superuser }}"
         quay_db_password: "{{ quay_required_secrets.quay_db_password }}"
         quay_secret_key: "{{ quay_required_secrets.quay_secret_key }}"
         quay_database_secret_key: "{{ quay_required_secrets.quay_database_secret_key }}"
+        quay_superuser_password: "{{ quay_required_secrets.quay_superuser_password }}"
         idm_admin_password: "{{ quay_required_secrets.idm_admin_password }}"
       no_log: true
 
-    - name: Read optional existing LDAP bootstrap API token from AWS Secrets Manager using AWS CLI
+    - name: Read optional existing Quay admin API token from AWS Secrets Manager using AWS CLI
       ansible.builtin.command: >
         aws secretsmanager get-secret-value
-        --secret-id {{ secret_prefix }}/quay/ldap_admin_access_token
+        --secret-id {{ secret_prefix }}/quay/admin_access_token
         --region {{ aws_region }}
         --query SecretString
         --output text
-      register: quay_ldap_admin_token_result
+      register: quay_admin_token_result
       delegate_to: localhost
       become: false
       changed_when: false
@@ -122,16 +127,16 @@
       environment:
         AWS_PROFILE: "{{ aws_profile | default(omit) }}"
 
-    - name: Normalize optional LDAP bootstrap API token
+    - name: Normalize optional Quay API token
       ansible.builtin.set_fact:
-        quay_ldap_admin_access_token: >-
+        quay_admin_access_token: >-
           {{
             ''
             if (
-              quay_ldap_admin_token_result.rc != 0 or
-              quay_ldap_admin_token_result.stdout | default('') in ['CHANGE_ME_AFTER_QUAY_DEPLOYMENT', '']
+              quay_admin_token_result.rc != 0 or
+              quay_admin_token_result.stdout | default('') in ['CHANGE_ME_AFTER_QUAY_DEPLOYMENT', '']
             )
-            else quay_ldap_admin_token_result.stdout
+            else quay_admin_token_result.stdout
           }}
       no_log: true
 
@@ -152,6 +157,9 @@
           - quay_db_password is defined
           - quay_secret_key is defined
           - quay_database_secret_key is defined
+          - quay_superuser is defined
+          - quay_superuser_password is defined
+          - quay_superuser_email is defined
           - redhat_registry_username is defined
           - redhat_registry_password is defined
           - quay_default_org is defined
@@ -161,7 +169,6 @@
           - quay_ldap_bind_dn is defined
           - idm_admin_password is defined
           - quay_admin_users | length > 0
-          - quay_org_bootstrap_user | length > 0
         fail_msg: "Missing required Quay, IdM, AWS Secrets variables, or idm_users list."
 
     - name: Install required packages
@@ -231,24 +238,6 @@
       changed_when: false
       no_log: true
 
-    - name: Verify selected LDAP org bootstrap user exists in IdM
-      ansible.builtin.command: >
-        ldapsearch -x
-        -H {{ quay_ldap_uri }}
-        -D {{ quay_ldap_bind_dn | quote }}
-        -w {{ idm_admin_password | quote }}
-        -b {{ ('cn=users,cn=accounts,' ~ idm_base_dn) | quote }}
-        {{ ('(uid=' ~ quay_org_bootstrap_user ~ ')') | quote }}
-        uid
-      register: quay_ldap_bootstrap_user_check
-      changed_when: false
-      no_log: true
-
-    - name: Fail if selected LDAP org bootstrap user was not found
-      ansible.builtin.fail:
-        msg: "Selected LDAP org bootstrap user {{ quay_org_bootstrap_user }} was not found in IdM."
-      when: "quay_ldap_bootstrap_user_check.stdout is not search('uid: ' ~ quay_org_bootstrap_user)"
-
     - name: Create Podman auth directory
       ansible.builtin.file:
         path: /root/.config/containers
@@ -289,7 +278,6 @@
         - "{{ quay_root }}/storage"
         - "{{ quay_root }}/config/config.yaml"
         - "{{ quay_root }}/config/bootstrap-token"
-        - "{{ quay_root }}/config/ldap-bootstrap-user"
       when: quay_force_clean_rebuild | bool
 
     - name: Create Quay directories
@@ -411,7 +399,247 @@
       changed_when: false
       failed_when: pg_trgm_verify.stdout | trim != "pg_trgm"
 
-    - name: Create Quay config.yaml with IdM LDAP authentication from first boot
+    - name: Create bootstrap Quay config.yaml using local Database authentication
+      ansible.builtin.copy:
+        dest: "{{ quay_root }}/config/config.yaml"
+        mode: "0644"
+        content: |
+          SERVER_HOSTNAME: "{{ quay_hostname }}"
+          PREFERRED_URL_SCHEME: "https"
+          SETUP_COMPLETE: true
+
+          AUTHENTICATION_TYPE: "Database"
+          FEATURE_MAILING: false
+          FEATURE_USER_CREATION: true
+          FEATURE_USER_INITIALIZE: true
+          FEATURE_REQUIRE_EMAIL_VERIFICATION: false
+
+          DATABASE_SECRET_KEY: "{{ quay_database_secret_key }}"
+          SECRET_KEY: "{{ quay_secret_key }}"
+
+          DB_URI: "postgresql://{{ quay_db_user }}:{{ quay_db_password | urlencode }}@127.0.0.1:5432/{{ quay_db_name }}"
+
+          BUILDLOGS_REDIS:
+            host: "127.0.0.1"
+            port: 6379
+
+          USER_EVENTS_REDIS:
+            host: "127.0.0.1"
+            port: 6379
+
+          DISTRIBUTED_STORAGE_CONFIG:
+            default:
+              - LocalStorage
+              - storage_path: /datastorage/registry
+
+          DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS:
+            - default
+
+          DISTRIBUTED_STORAGE_PREFERENCE:
+            - default
+
+          SUPER_USERS:
+            - "{{ quay_superuser }}"
+          {% for admin_user in quay_admin_users | unique %}
+            - "{{ admin_user }}"
+          {% endfor %}
+      no_log: true
+
+    - name: Run Quay registry container for bootstrap
+      containers.podman.podman_container:
+        name: quay-registry
+        pod: quay-pod
+        image: "{{ quay_image }}"
+        authfile: "{{ redhat_registry_authfile }}"
+        state: started
+        recreate: true
+        restart_policy: always
+        volume:
+          - "{{ quay_root }}/config:/conf/stack:Z"
+          - "{{ quay_root }}/storage:/datastorage:Z"
+
+    - name: Wait for Quay HTTPS to respond during bootstrap
+      ansible.builtin.command: >
+        curl -kfsS
+        --connect-timeout 5
+        --max-time 15
+        https://127.0.0.1:{{ quay_https_port }}/
+      register: quay_https_check
+      retries: 60
+      delay: 5
+      until: quay_https_check.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Show Quay registry logs if bootstrap HTTPS check failed
+      ansible.builtin.command: podman logs --tail 300 quay-registry
+      register: quay_logs
+      changed_when: false
+      failed_when: false
+      when: quay_https_check.rc != 0
+
+    - name: Display Quay registry logs if bootstrap HTTPS check failed
+      ansible.builtin.debug:
+        msg: "{{ quay_logs.stdout_lines + quay_logs.stderr_lines }}"
+      when: quay_https_check.rc != 0
+
+    - name: Fail if Quay did not become reachable during bootstrap
+      ansible.builtin.fail:
+        msg: "Quay container started but HTTPS did not respond during Database bootstrap. Check Quay logs above."
+      when: quay_https_check.rc != 0
+
+    - name: Create initial local Quay bootstrap admin user
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/initialize"
+        method: POST
+        validate_certs: false
+        body_format: json
+        body:
+          username: "{{ quay_superuser }}"
+          password: "{{ quay_superuser_password }}"
+          email: "{{ quay_superuser_email }}"
+          access_token: true
+        status_code:
+          - 200
+          - 400
+      register: quay_init_user
+      failed_when: false
+      no_log: true
+
+    - name: Set Quay API token fact
+      ansible.builtin.set_fact:
+        quay_api_token: >-
+          {{
+            quay_init_user.json.access_token
+            | default(quay_admin_access_token | default(''), true)
+          }}
+      no_log: true
+
+    - name: Fail if no Quay API token is available
+      ansible.builtin.fail:
+        msg: >-
+          No Quay API token is available. A clean Database bootstrap should return
+          access_token from /api/v1/user/initialize. If this is not a clean rebuild,
+          store a valid token in AWS Secrets Manager at {{ secret_prefix }}/quay/admin_access_token.
+      when: quay_api_token | length == 0
+
+    - name: Save generated Quay API token locally on server
+      ansible.builtin.copy:
+        dest: "{{ quay_root }}/config/bootstrap-token"
+        mode: "0600"
+        content: "{{ quay_api_token }}"
+      no_log: true
+
+    - name: Save generated Quay API token to AWS Secrets Manager
+      ansible.builtin.command: >
+        aws secretsmanager put-secret-value
+        --secret-id {{ secret_prefix }}/quay/admin_access_token
+        --secret-string {{ quay_api_token | quote }}
+        --region {{ aws_region }}
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      failed_when: false
+      no_log: true
+      environment:
+        AWS_PROFILE: "{{ aws_profile | default(omit) }}"
+
+    - name: Mark initial Quay admin email as confirmed
+      ansible.builtin.command: >
+        podman exec quay-postgres
+        psql
+        -U {{ quay_db_user }}
+        -d {{ quay_db_name }}
+        -v ON_ERROR_STOP=1
+        -c "UPDATE public.user SET email_confirmed = true WHERE username = '{{ quay_superuser }}';"
+      register: quay_confirm_email
+      changed_when: "'UPDATE 1' in quay_confirm_email.stdout"
+      failed_when: false
+
+    - name: Create default image-mode organization
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/"
+        method: POST
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        body_format: json
+        body:
+          name: "{{ quay_default_org }}"
+          email: "{{ quay_default_org }}@example.com"
+        status_code:
+          - 200
+          - 201
+          - 400
+      register: quay_create_org
+      no_log: true
+      failed_when: >
+        quay_create_org.status == 400 and
+        (
+          quay_create_org.json.error_message | default('') is not search('already exists')
+        )
+
+    - name: Verify default organization exists
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_org
+      no_log: true
+
+    - name: Create or update writers team in image-mode organization
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        body_format: json
+        body:
+          role: creator
+        status_code:
+          - 200
+          - 201
+      register: quay_create_team
+      no_log: true
+
+    - name: Verify writers team members endpoint exists
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}/members"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_team
+      no_log: true
+
+    - name: Add local bootstrap admin user to writers team
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}/members/{{ quay_superuser }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+      register: quay_add_bootstrap_member
+      no_log: true
+      failed_when: false
+
+    - name: Stop Quay before switching to IdM LDAP authentication
+      ansible.builtin.command: podman stop quay-registry
+      changed_when: true
+      failed_when: false
+
+    - name: Create final Quay config.yaml with IdM LDAP authentication
       ansible.builtin.copy:
         dest: "{{ quay_root }}/config/config.yaml"
         mode: "0644"
@@ -464,12 +692,13 @@
           LDAP_USER_FILTER: "{{ quay_ldap_user_filter }}"
 
           SUPER_USERS:
+            - "{{ quay_superuser }}"
           {% for admin_user in quay_admin_users | unique %}
             - "{{ admin_user }}"
           {% endfor %}
       no_log: true
 
-    - name: Run Quay registry container with LDAP configuration
+    - name: Start Quay registry container with LDAP configuration
       containers.podman.podman_container:
         name: quay-registry
         pod: quay-pod
@@ -482,152 +711,37 @@
           - "{{ quay_root }}/config:/conf/stack:Z"
           - "{{ quay_root }}/storage:/datastorage:Z"
 
-    - name: Wait for Quay HTTPS to respond
+    - name: Wait for Quay HTTPS to respond after LDAP switch
       ansible.builtin.command: >
         curl -kfsS
         --connect-timeout 5
         --max-time 15
         https://127.0.0.1:{{ quay_https_port }}/
-      register: quay_https_check
+      register: quay_ldap_https_check
       retries: 60
       delay: 5
-      until: quay_https_check.rc == 0
+      until: quay_ldap_https_check.rc == 0
       changed_when: false
       failed_when: false
 
-    - name: Show Quay registry logs if HTTPS check failed
+    - name: Show Quay registry logs if LDAP HTTPS check failed
       ansible.builtin.command: podman logs --tail 300 quay-registry
-      register: quay_logs
+      register: quay_ldap_logs
       changed_when: false
       failed_when: false
-      when: quay_https_check.rc != 0
+      when: quay_ldap_https_check.rc != 0
 
-    - name: Display Quay registry logs if HTTPS check failed
+    - name: Display Quay registry logs if LDAP HTTPS check failed
       ansible.builtin.debug:
-        msg: "{{ quay_logs.stdout_lines + quay_logs.stderr_lines }}"
-      when: quay_https_check.rc != 0
+        msg: "{{ quay_ldap_logs.stdout_lines + quay_ldap_logs.stderr_lines }}"
+      when: quay_ldap_https_check.rc != 0
 
-    - name: Fail if Quay did not become reachable
+    - name: Fail if Quay did not become reachable after LDAP switch
       ansible.builtin.fail:
-        msg: "Quay container started but HTTPS did not respond. Check Quay logs above."
-      when: quay_https_check.rc != 0
+        msg: "Quay container started but HTTPS did not respond after switching to LDAP. Check Quay logs above."
+      when: quay_ldap_https_check.rc != 0
 
-    - name: Initialize first LDAP admin user and request API token
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/initialize"
-        method: POST
-        validate_certs: false
-        body_format: json
-        body:
-          username: "{{ quay_org_bootstrap_user }}"
-          password: "{{ idm_default_user_password }}"
-          email: "{{ quay_org_bootstrap_user }}@example.com"
-          access_token: true
-        status_code:
-          - 200
-          - 400
-      register: quay_init_ldap_admin_user
-      failed_when: false
-      no_log: true
-
-    - name: Set LDAP admin Quay API token fact
-      ansible.builtin.set_fact:
-        quay_api_token: >-
-          {{
-            quay_init_ldap_admin_user.json.access_token
-            | default(quay_ldap_admin_access_token | default(''), true)
-          }}
-      no_log: true
-
-    - name: Fail if no LDAP admin Quay API token is available
-      ansible.builtin.fail:
-        msg: >-
-          No LDAP admin Quay API token is available. On a clean LDAP-first bootstrap,
-          /api/v1/user/initialize should return an access_token for the first LDAP admin user.
-          If this is not a clean rebuild, generate an OAuth token in the Quay UI for an LDAP admin
-          user and store it in AWS Secrets Manager at {{ secret_prefix }}/quay/ldap_admin_access_token.
-      when: quay_api_token | length == 0
-
-    - name: Save LDAP admin Quay API token locally on server
-      ansible.builtin.copy:
-        dest: "{{ quay_root }}/config/bootstrap-token"
-        mode: "0600"
-        content: "{{ quay_api_token }}"
-      no_log: true
-
-    - name: Save LDAP bootstrap user locally on server
-      ansible.builtin.copy:
-        dest: "{{ quay_root }}/config/ldap-bootstrap-user"
-        mode: "0600"
-        content: "{{ quay_org_bootstrap_user }}"
-      no_log: true
-
-    - name: Save LDAP admin Quay API token to AWS Secrets Manager
-      ansible.builtin.command: >
-        aws secretsmanager put-secret-value
-        --secret-id {{ secret_prefix }}/quay/ldap_admin_access_token
-        --secret-string {{ quay_api_token | quote }}
-        --region {{ aws_region }}
-      delegate_to: localhost
-      become: false
-      changed_when: true
-      failed_when: false
-      no_log: true
-      environment:
-        AWS_PROFILE: "{{ aws_profile | default(omit) }}"
-
-    - name: Create default image-mode organization as LDAP admin user
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/"
-        method: POST
-        validate_certs: false
-        headers:
-          Authorization: "Bearer {{ quay_api_token }}"
-        body_format: json
-        body:
-          name: "{{ quay_default_org }}"
-          email: "{{ quay_default_org }}@example.com"
-        status_code:
-          - 200
-          - 201
-          - 400
-      register: quay_create_org
-      no_log: true
-      failed_when: >
-        quay_create_org.status == 400 and
-        (
-          quay_create_org.json.error_message | default('') is not search('already exists')
-        )
-
-    - name: Verify default organization exists
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}"
-        method: GET
-        validate_certs: false
-        headers:
-          Authorization: "Bearer {{ quay_api_token }}"
-        status_code:
-          - 200
-      register: quay_verify_org
-      no_log: true
-
-    - name: Create or update writers team in image-mode organization
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}"
-        method: PUT
-        validate_certs: false
-        headers:
-          Authorization: "Bearer {{ quay_api_token }}"
-        body_format: json
-        body:
-          role: creator
-        status_code:
-          - 200
-          - 201
-      register: quay_create_team
-      no_log: true
-
-    - name: Initialize remaining LDAP admin users before team membership assignment
+    - name: Initialize LDAP-backed Quay users so writers membership can be assigned
       ansible.builtin.uri:
         url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/initialize"
         method: POST
@@ -646,7 +760,7 @@
       failed_when: false
       no_log: true
 
-    - name: Add LDAP admin users to image-mode writers team
+    - name: Add LDAP users to image-mode writers team
       ansible.builtin.uri:
         url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}/members/{{ item }}"
         method: PUT
@@ -679,16 +793,15 @@
         msg:
           - "Quay URL: https://{{ quay_hostname }}"
           - "Image: {{ quay_image }}"
-          - "Authentication: IdM LDAP from first boot"
+          - "Authentication: IdM LDAP"
           - "LDAP URI: {{ quay_ldap_uri }}"
           - "LDAP base DN: {{ quay_ldap_base_dn }}"
           - "LDAP login attribute: {{ quay_ldap_uid_attr }}"
-          - "LDAP org bootstrap user: {{ quay_org_bootstrap_user }}"
-          - "Quay superusers: {{ quay_admin_users | unique }}"
+          - "Quay superusers: {{ ([quay_superuser] + quay_admin_users) | unique }}"
           - "Default organization verified: {{ quay_verify_org.status == 200 }}"
           - "Writers team verified: {{ quay_verify_writer_team.status == 200 }}"
           - "Bootstrap token saved: true"
-          - "Note: The first LDAP admin user created the image-mode organization, and LDAP admin users were added to the writers team."
+          - "Note: Local bootstrap admin creates the org by API. LDAP users are initialized and added to the image-mode writers team."
 
     - name: Show running containers
       ansible.builtin.command: podman ps
