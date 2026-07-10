@@ -81,15 +81,24 @@ locals {
       }
     }
   ]...)
+
+  idm_server_keys = sort([
+    for name, server in local.flattened_servers :
+    name
+    if server.role == "idm"
+  ])
+
+  primary_idm_key      = local.idm_server_keys[0]
+  primary_idm_hostname = local.flattened_servers[local.primary_idm_key].hostname
 }
 
 resource "terraform_data" "validate_idm_server" {
-  input = local.flattened_servers
+  input = local.idm_server_keys
 
   lifecycle {
     precondition {
-      condition     = contains(keys(local.flattened_servers), "idm-1")
-      error_message = "var.servers must include an idm role with count >= 1 so Route53 Resolver can forward lab DNS queries to idm-1."
+      condition     = length(local.idm_server_keys) >= 1
+      error_message = "var.servers must include an idm role with count >= 1 so Route53 Resolver can forward lab DNS queries to the selected primary IdM server."
     }
   }
 }
@@ -517,6 +526,10 @@ resource "aws_instance" "server" {
   ]
 }
 
+locals {
+  primary_idm_private_ip = aws_instance.server[local.primary_idm_key].private_ip
+}
+
 resource "aws_ebs_volume" "extra" {
   for_each = {
     for name, server in local.flattened_servers :
@@ -614,7 +627,7 @@ resource "aws_route53_resolver_rule" "idm_forward" {
   resolver_endpoint_id = aws_route53_resolver_endpoint.outbound.id
 
   target_ip {
-    ip = aws_instance.server["idm-1"].private_ip
+    ip = local.primary_idm_private_ip
   }
 
   tags = {
@@ -657,8 +670,8 @@ resource "local_file" "ansible_inventory" {
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
-    idm_server_fqdn    = local.flattened_servers["idm-1"].hostname
-    idm_server_ip      = aws_instance.server["idm-1"].private_ip
+    idm_server_fqdn    = local.primary_idm_hostname
+    idm_server_ip      = local.primary_idm_private_ip
 
     servers = {
       for name, instance in aws_instance.server :
