@@ -359,6 +359,15 @@
         not quay_tls_cert_stat.stat.exists
         or not quay_tls_key_stat.stat.exists
 
+    - name: Ensure Quay configuration directory is readable by the container
+      ansible.builtin.file:
+        path: "{{ quay_root }}/config"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+
     - name: Generate self-signed TLS certificate for Quay
       ansible.builtin.command:
         argv:
@@ -587,7 +596,7 @@
         dest: "{{ quay_root }}/config/config.yaml"
         owner: root
         group: root
-        mode: "0600"
+        mode: "0644"
         content: |
           SERVER_HOSTNAME: "{{ quay_hostname }}"
           PREFERRED_URL_SCHEME: "https"
@@ -836,7 +845,7 @@
         dest: "{{ quay_root }}/config/config.yaml"
         owner: root
         group: root
-        mode: "0600"
+        mode: "0644"
         content: |
           SERVER_HOSTNAME: "{{ quay_hostname }}"
           PREFERRED_URL_SCHEME: "https"
