@@ -319,7 +319,7 @@
           - "--unattended"
           - "--no-reverse"
       register: ipa_install
-      no_log: true
+      no_log: false
       when: ipa_status.rc != 0
 
     - name: Verify IdM services are running
