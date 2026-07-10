@@ -11,8 +11,8 @@
 # - name: Configure Ansible Automation Platform For SSO
 #   ansible.builtin.import_playbook: configure-aap-idm-sso.yml
 
-- name: Deploy Quay
-  ansible.builtin.import_playbook: deploy-quay.yml
+# - name: Deploy Quay
+#   ansible.builtin.import_playbook: deploy-quay.yml
 
 # - name: Deploy Satellite
 #   ansible.builtin.import_playbook: deploy-satellite.yml
