@@ -28,12 +28,8 @@
     quay_default_org: image-mode
     quay_default_team: writers
 
-    quay_superuser: quayadmin
     quay_superuser_email: quayadmin@example.com
-
     quay_hostname: "{{ inventory_hostname }}"
-
-    idm_admin_group: idm-admins
 
     idm_base_dn: >-
       {{
@@ -82,6 +78,13 @@
       become: false
       no_log: true
 
+    - name: Read Quay superuser from AWS Secrets Manager
+      ansible.builtin.set_fact:
+        quay_superuser: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/superuser', region=aws_region, on_missing='error') }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
     - name: Read Quay database password from AWS Secrets Manager
       ansible.builtin.set_fact:
         quay_db_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/db_password', region=aws_region, on_missing='error') }}"
@@ -92,6 +95,13 @@
     - name: Read Quay secret key from AWS Secrets Manager
       ansible.builtin.set_fact:
         quay_secret_key: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/secret_key', region=aws_region, on_missing='error') }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Read Quay database secret key from AWS Secrets Manager
+      ansible.builtin.set_fact:
+        quay_database_secret_key: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/database_secret_key', region=aws_region, on_missing='error') }}"
       delegate_to: localhost
       become: false
       no_log: true
@@ -138,6 +148,7 @@
           - quay_db_user is defined
           - quay_db_password is defined
           - quay_secret_key is defined
+          - quay_database_secret_key is defined
           - quay_superuser is defined
           - quay_superuser_password is defined
           - quay_superuser_email is defined
@@ -359,7 +370,7 @@
           FEATURE_USER_INITIALIZE: true
           FEATURE_REQUIRE_EMAIL_VERIFICATION: false
 
-          DATABASE_SECRET_KEY: {{ quay_secret_key }}
+          DATABASE_SECRET_KEY: {{ quay_database_secret_key }}
           SECRET_KEY: {{ quay_secret_key }}
 
           DB_URI: postgresql://{{ quay_db_user }}:{{ quay_db_password | urlencode }}@127.0.0.1:5432/{{ quay_db_name }}
