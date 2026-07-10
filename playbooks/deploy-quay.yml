@@ -624,7 +624,7 @@
         status_code:
           - 200
       register: quay_verify_team
-      no_log: true
+      no_log: false
 
     - name: Add local bootstrap admin user to writers team
       ansible.builtin.uri:
