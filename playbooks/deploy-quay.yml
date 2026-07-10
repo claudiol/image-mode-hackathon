@@ -50,6 +50,16 @@
 
     quay_admin_users: "{{ idm_users | default([]) }}"
 
+    required_secret_paths:
+      redhat_registry_username: "redhat/registry_username"
+      redhat_registry_password: "redhat/registry_password"
+      quay_superuser: "quay/superuser"
+      quay_db_password: "quay/db_password"
+      quay_secret_key: "quay/secret_key"
+      quay_database_secret_key: "quay/database_secret_key"
+      quay_superuser_password: "quay/superuser_password"
+      idm_admin_password: "idm/admin_password"
+
   pre_tasks:
     - name: Validate required Terraform inventory variables
       ansible.builtin.assert:
@@ -64,73 +74,72 @@
           - idm_server_fqdn | length > 0
         fail_msg: "Missing secret_prefix, aws_region, idm_domain_name, or idm_server_fqdn from Terraform inventory."
 
-    - name: Read Red Hat registry username from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        redhat_registry_username: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/redhat/registry_username', region=aws_region, on_missing='error') }}"
+    - name: Read required secrets from AWS Secrets Manager using AWS CLI
+      ansible.builtin.command: >
+        aws secretsmanager get-secret-value
+        --secret-id {{ secret_prefix }}/{{ item.value }}
+        --region {{ aws_region }}
+        --query SecretString
+        --output text
+      loop: "{{ required_secret_paths | dict2items }}"
+      register: required_secret_results
       delegate_to: localhost
       become: false
+      changed_when: false
+      no_log: true
+      environment:
+        AWS_PROFILE: "{{ aws_profile | default(omit) }}"
+
+    - name: Build required secret fact map
+      ansible.builtin.set_fact:
+        quay_required_secrets: >-
+          {{
+            quay_required_secrets | default({})
+            | combine({ item.item.key: item.stdout })
+          }}
+      loop: "{{ required_secret_results.results }}"
       no_log: true
 
-    - name: Read Red Hat registry password from AWS Secrets Manager
+    - name: Apply required secrets as facts
       ansible.builtin.set_fact:
-        redhat_registry_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/redhat/registry_password', region=aws_region, on_missing='error') }}"
+        redhat_registry_username: "{{ quay_required_secrets.redhat_registry_username }}"
+        redhat_registry_password: "{{ quay_required_secrets.redhat_registry_password }}"
+        quay_superuser: "{{ quay_required_secrets.quay_superuser }}"
+        quay_db_password: "{{ quay_required_secrets.quay_db_password }}"
+        quay_secret_key: "{{ quay_required_secrets.quay_secret_key }}"
+        quay_database_secret_key: "{{ quay_required_secrets.quay_database_secret_key }}"
+        quay_superuser_password: "{{ quay_required_secrets.quay_superuser_password }}"
+        idm_admin_password: "{{ quay_required_secrets.idm_admin_password }}"
+      no_log: true
+
+    - name: Read optional existing Quay admin API token from AWS Secrets Manager using AWS CLI
+      ansible.builtin.command: >
+        aws secretsmanager get-secret-value
+        --secret-id {{ secret_prefix }}/quay/admin_access_token
+        --region {{ aws_region }}
+        --query SecretString
+        --output text
+      register: quay_admin_token_result
       delegate_to: localhost
       become: false
+      changed_when: false
+      failed_when: false
       no_log: true
+      environment:
+        AWS_PROFILE: "{{ aws_profile | default(omit) }}"
 
-    - name: Read Quay superuser from AWS Secrets Manager
+    - name: Normalize optional Quay API token
       ansible.builtin.set_fact:
-        quay_superuser: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/superuser', region=aws_region, on_missing='error') }}"
-      delegate_to: localhost
-      become: false
+        quay_admin_access_token: >-
+          {{
+            ''
+            if (
+              quay_admin_token_result.rc != 0 or
+              quay_admin_token_result.stdout | default('') in ['CHANGE_ME_AFTER_QUAY_DEPLOYMENT', '']
+            )
+            else quay_admin_token_result.stdout
+          }}
       no_log: true
-
-    - name: Read Quay database password from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        quay_db_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/db_password', region=aws_region, on_missing='error') }}"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Read Quay secret key from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        quay_secret_key: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/secret_key', region=aws_region, on_missing='error') }}"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Read Quay database secret key from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        quay_database_secret_key: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/database_secret_key', region=aws_region, on_missing='error') }}"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Read Quay local bootstrap password from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        quay_superuser_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/superuser_password', region=aws_region, on_missing='error') }}"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Read IdM admin password from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        idm_admin_password: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/idm/admin_password', region=aws_region, on_missing='error') }}"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Read optional existing Quay admin API token from AWS Secrets Manager
-      ansible.builtin.set_fact:
-        quay_admin_access_token: "{{ lookup('amazon.aws.aws_secret', secret_prefix ~ '/quay/admin_access_token', region=aws_region, on_missing='skip') | default('', true) }}"
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Normalize optional Quay API token placeholder
-      ansible.builtin.set_fact:
-        quay_admin_access_token: ""
-      when: quay_admin_access_token | default('') in ["CHANGE_ME_AFTER_QUAY_DEPLOYMENT", ""]
 
   tasks:
     - name: Validate required Quay variables
