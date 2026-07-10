@@ -286,7 +286,21 @@ resource "terraform_data" "preflight_cleanup" {
         >/dev/null 2>&1 || true
 
       echo "Deleting Secrets Manager secrets if they exist"
-${join("\n", [for secret_name in local.all_lab_secret_names : "      aws secretsmanager delete-secret --secret-id \"" + secret_name + "\" --force-delete-without-recovery >/dev/null 2>&1 || true"])}
+      cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
+${join("
+", [for secret_name in local.all_lab_secret_names : format("%s", secret_name)])}
+EOF_SECRETS
+
+      while IFS= read -r SECRET_NAME; do
+        [ -n "$SECRET_NAME" ] || continue
+        echo "  deleting secret: $SECRET_NAME"
+        aws secretsmanager delete-secret \
+          --secret-id "$SECRET_NAME" \
+          --force-delete-without-recovery \
+          >/dev/null 2>&1 || true
+      done < /tmp/image-mode-lab-secret-names.txt
+
+      rm -f /tmp/image-mode-lab-secret-names.txt
 
       echo "Cleaning up AAP IAM instance profile if it exists: $IAM_PROFILE_NAME"
       aws iam remove-role-from-instance-profile \
