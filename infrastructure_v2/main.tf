@@ -28,8 +28,9 @@ locals {
 
   discovered_domain_name     = length(local.discovered_opentlc_zone_ids) == 1 ? local.all_public_zones[local.discovered_opentlc_zone_ids[0]] : ""
   discovered_route53_zone_id = length(local.discovered_opentlc_zone_ids) == 1 ? local.discovered_opentlc_zone_ids[0] : ""
-  effective_domain_name      = trimspace(var.domain_name) != "" ? trimsuffix(var.domain_name, ".") : local.discovered_domain_name
-  public_route53_zone_id     = var.route53_zone_id != "" ? var.route53_zone_id : local.discovered_route53_zone_id
+
+  effective_domain_name  = trimspace(var.domain_name) != "" ? trimsuffix(var.domain_name, ".") : local.discovered_domain_name
+  public_route53_zone_id = var.route53_zone_id != "" ? var.route53_zone_id : local.discovered_route53_zone_id
 
   parent_domain_name = local.effective_domain_name
 
@@ -88,8 +89,8 @@ locals {
     if server.role == "idm"
   ])
 
-  primary_idm_key      = local.idm_server_keys[0]
-  primary_idm_hostname = local.flattened_servers[local.primary_idm_key].hostname
+  primary_idm_key      = try(local.idm_server_keys[0], null)
+  primary_idm_hostname = local.primary_idm_key != null ? local.flattened_servers[local.primary_idm_key].hostname : null
 }
 
 resource "terraform_data" "validate_idm_server" {
@@ -527,7 +528,7 @@ resource "aws_instance" "server" {
 }
 
 locals {
-  primary_idm_private_ip = aws_instance.server[local.primary_idm_key].private_ip
+  primary_idm_private_ip = try(aws_instance.server[local.primary_idm_key].private_ip, null)
 }
 
 resource "aws_ebs_volume" "extra" {
