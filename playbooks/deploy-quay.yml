@@ -247,7 +247,7 @@
     - name: Fail if selected LDAP org bootstrap user was not found
       ansible.builtin.fail:
         msg: "Selected LDAP org bootstrap user {{ quay_org_bootstrap_user }} was not found in IdM."
-      when: quay_ldap_bootstrap_user_check.stdout is not search('uid: ' ~ quay_org_bootstrap_user)
+      when: "quay_ldap_bootstrap_user_check.stdout is not search('uid: ' ~ quay_org_bootstrap_user)"
 
     - name: Create Podman auth directory
       ansible.builtin.file:
