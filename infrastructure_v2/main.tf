@@ -191,7 +191,6 @@ locals {
     "quay/database_secret_key",
     "quay/superuser_password",
     "quay/redis_password"
-
   ])
 
   static_secret_values = {
@@ -207,9 +206,7 @@ locals {
     "redhat/registry_username"  = var.redhat_registry_username
     "redhat/registry_password"  = var.redhat_registry_password
   }
-}
 
-locals {
   all_lab_secret_names = concat(
     [
       for secret_name in local.generated_secret_names :
@@ -232,25 +229,10 @@ locals {
 ############################################################
 # Preflight Cleanup For Lab Rebuilds
 ############################################################
-#
-# This intentionally removes duplicate-prone named AWS resources before
-# Terraform creates them. It is useful when a previous apply partially
-# completed or state was lost, leaving AWS objects behind.
-#
-# IMPORTANT:
-# - Do not reuse an old saved plan after a failed apply.
-# - Run a fresh terraform plan after editing this file.
-# - This cleanup targets only resources whose names commonly collide:
-#   EC2 key pair, Secrets Manager secrets, and AAP IAM role/profile/policies.
-#
-# Recommended rebuild flow:
-#
-#   rm -f lab.tfplan
-#   terraform plan -out lab.tfplan
-#   terraform apply lab.tfplan
-#
+
 resource "terraform_data" "preflight_cleanup" {
   input = {
+    cleanup_version  = 2
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -278,55 +260,95 @@ resource "terraform_data" "preflight_cleanup" {
       IAM_ROLE_NAME="${var.environment_name}-aap-role"
       IAM_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
 
-      echo "Preflight cleanup: duplicate-prone lab resources"
+      echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
 
-      echo "Deleting EC2 key pair if it exists: $KEY_PAIR_NAME"
-      aws ec2 delete-key-pair \
-        --key-name "$KEY_PAIR_NAME" \
-        >/dev/null 2>&1 || true
+      state_has() {
+        terraform state list 2>/dev/null | grep -q "^$1$"
+      }
 
-      echo "Deleting Secrets Manager secrets if they exist"
-      cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
+      echo "Checking EC2 key pair: $KEY_PAIR_NAME"
+      if state_has 'aws_key_pair.lab'; then
+        echo "Skipping key pair cleanup because aws_key_pair.lab is already managed by Terraform state."
+      else
+        aws ec2 delete-key-pair \
+          --key-name "$KEY_PAIR_NAME" \
+          >/dev/null 2>&1 || true
+      fi
+
+      echo "Checking Secrets Manager secrets"
+      if terraform state list 2>/dev/null | grep -q '^aws_secretsmanager_secret\.'; then
+        echo "Skipping Secrets Manager cleanup because secrets are already managed by Terraform state."
+      else
+        cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
 %{ for secret_name in local.all_lab_secret_names ~}
 ${secret_name}
 %{ endfor ~}
 EOF_SECRETS
 
-      while IFS= read -r SECRET_NAME; do
-        [ -n "$SECRET_NAME" ] || continue
-        aws secretsmanager delete-secret \
-          --secret-id "$SECRET_NAME" \
-          --force-delete-without-recovery \
+        while IFS= read -r SECRET_NAME; do
+          [ -n "$SECRET_NAME" ] || continue
+
+          echo "Deleting unmanaged secret if it exists: $SECRET_NAME"
+
+          aws secretsmanager delete-secret \
+            --secret-id "$SECRET_NAME" \
+            --force-delete-without-recovery \
+            >/dev/null 2>&1 || true
+
+          for i in $(seq 1 30); do
+            if aws secretsmanager describe-secret \
+              --secret-id "$SECRET_NAME" \
+              >/dev/null 2>&1; then
+              sleep 2
+            else
+              break
+            fi
+          done
+        done < /tmp/image-mode-lab-secret-names.txt
+
+        rm -f /tmp/image-mode-lab-secret-names.txt
+      fi
+
+      echo "Checking AAP IAM resources"
+
+      if state_has 'aws_iam_instance_profile.aap'; then
+        echo "Skipping IAM instance profile cleanup because it is managed by Terraform state."
+      else
+        aws iam remove-role-from-instance-profile \
+          --instance-profile-name "$IAM_PROFILE_NAME" \
+          --role-name "$IAM_ROLE_NAME" \
           >/dev/null 2>&1 || true
-      done < /tmp/image-mode-lab-secret-names.txt
 
-      rm -f /tmp/image-mode-lab-secret-names.txt
+        aws iam delete-instance-profile \
+          --instance-profile-name "$IAM_PROFILE_NAME" \
+          >/dev/null 2>&1 || true
+      fi
 
-      echo "Cleaning up AAP IAM instance profile if it exists: $IAM_PROFILE_NAME"
-      aws iam remove-role-from-instance-profile \
-        --instance-profile-name "$IAM_PROFILE_NAME" \
-        --role-name "$IAM_ROLE_NAME" \
-        >/dev/null 2>&1 || true
+      if state_has 'aws_iam_role_policy.aap_secrets_read'; then
+        echo "Skipping AAP secrets-read policy cleanup because it is managed by Terraform state."
+      else
+        aws iam delete-role-policy \
+          --role-name "$IAM_ROLE_NAME" \
+          --policy-name "${var.environment_name}-aap-secrets-read" \
+          >/dev/null 2>&1 || true
+      fi
 
-      aws iam delete-instance-profile \
-        --instance-profile-name "$IAM_PROFILE_NAME" \
-        >/dev/null 2>&1 || true
+      if state_has 'aws_iam_role_policy.aap_s3_read'; then
+        echo "Skipping AAP S3-read policy cleanup because it is managed by Terraform state."
+      else
+        aws iam delete-role-policy \
+          --role-name "$IAM_ROLE_NAME" \
+          --policy-name "${var.environment_name}-aap-s3-read" \
+          >/dev/null 2>&1 || true
+      fi
 
-      echo "Cleaning up AAP IAM inline policies if they exist: $IAM_ROLE_NAME"
-      aws iam delete-role-policy \
-        --role-name "$IAM_ROLE_NAME" \
-        --policy-name "${var.environment_name}-aap-secrets-read" \
-        >/dev/null 2>&1 || true
-
-      aws iam delete-role-policy \
-        --role-name "$IAM_ROLE_NAME" \
-        --policy-name "${var.environment_name}-aap-s3-read" \
-        >/dev/null 2>&1 || true
-
-      echo "Deleting AAP IAM role if it exists: $IAM_ROLE_NAME"
-      aws iam delete-role \
-        --role-name "$IAM_ROLE_NAME" \
-        >/dev/null 2>&1 || true
+      if state_has 'aws_iam_role.aap'; then
+        echo "Skipping AAP IAM role cleanup because it is managed by Terraform state."
+      else
+        aws iam delete-role \
+          --role-name "$IAM_ROLE_NAME" \
+          >/dev/null 2>&1 || true
+      fi
 
       echo "Preflight cleanup complete"
     EOT
@@ -362,6 +384,10 @@ resource "aws_secretsmanager_secret_version" "generated" {
 
   secret_id     = aws_secretsmanager_secret.generated[each.key].id
   secret_string = random_password.generated[each.key].result
+
+  depends_on = [
+    aws_secretsmanager_secret.generated
+  ]
 }
 
 resource "aws_secretsmanager_secret" "static" {
@@ -385,6 +411,10 @@ resource "aws_secretsmanager_secret_version" "static" {
 
   secret_id     = aws_secretsmanager_secret.static[each.key].id
   secret_string = each.value
+
+  depends_on = [
+    aws_secretsmanager_secret.static
+  ]
 }
 
 resource "aws_secretsmanager_secret" "redhat" {
@@ -408,6 +438,10 @@ resource "aws_secretsmanager_secret_version" "redhat" {
 
   secret_id     = aws_secretsmanager_secret.redhat[each.key].id
   secret_string = each.value
+
+  depends_on = [
+    aws_secretsmanager_secret.redhat
+  ]
 }
 
 resource "aws_secretsmanager_secret" "ssh_private_key" {
@@ -427,6 +461,10 @@ resource "aws_secretsmanager_secret" "ssh_private_key" {
 resource "aws_secretsmanager_secret_version" "ssh_private_key" {
   secret_id     = aws_secretsmanager_secret.ssh_private_key.id
   secret_string = tls_private_key.lab_ssh.private_key_pem
+
+  depends_on = [
+    aws_secretsmanager_secret.ssh_private_key
+  ]
 }
 
 ############################################################
@@ -477,6 +515,10 @@ resource "aws_iam_role_policy" "aap_secrets_read" {
 resource "aws_iam_instance_profile" "aap" {
   name = "${var.environment_name}-aap-instance-profile"
   role = aws_iam_role.aap.name
+
+  depends_on = [
+    aws_iam_role.aap
+  ]
 }
 
 resource "aws_iam_role_policy" "aap_s3_read" {
@@ -734,6 +776,7 @@ resource "aws_route53_record" "public_dns" {
   zone_id = local.public_route53_zone_id
   name    = each.value.hostname
   type    = "A"
+
   ttl             = 300
   allow_overwrite = true
   records         = [aws_eip.server[each.key].public_ip]
@@ -901,7 +944,6 @@ resource "terraform_data" "bootstrap_lab" {
       ansible-playbook \
         -i playbooks/inventory/hosts \
         playbooks/deploy-services.yml
-
     EOT
   }
 }
