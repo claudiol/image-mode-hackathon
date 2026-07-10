@@ -178,6 +178,7 @@
           - policycoreutils-python-utils
           - openssl
           - curl
+          - openldap-clients
         state: present
 
     - name: Stop old generated Quay systemd service if present
@@ -220,6 +221,19 @@
         permanent: true
         immediate: true
         state: enabled
+
+    - name: Verify IdM LDAP bind and user search from Quay server
+      ansible.builtin.command: >
+        ldapsearch -x
+        -H {{ quay_ldap_uri }}
+        -D {{ quay_ldap_bind_dn | quote }}
+        -w {{ idm_admin_password | quote }}
+        -b {{ ('cn=users,cn=accounts,' ~ idm_base_dn) | quote }}
+        {{ quay_ldap_user_filter | quote }}
+        uid
+      register: quay_ldap_search_check
+      changed_when: false
+      no_log: true
 
     - name: Create Podman auth directory
       ansible.builtin.file:
@@ -555,6 +569,23 @@
           - 400
       register: quay_create_org
       no_log: true
+      failed_when: >
+        quay_create_org.status == 400 and
+        (
+          quay_create_org.json.error_message | default('') is not search('already exists')
+        )
+
+    - name: Verify default organization exists
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_org
+      no_log: true
 
     - name: Create writers team in image-mode organization
       ansible.builtin.uri:
@@ -572,6 +603,23 @@
           - 400
       register: quay_create_team
       no_log: true
+      failed_when: >
+        quay_create_team.status == 400 and
+        (
+          quay_create_team.json.error_message | default('') is not search('already exists')
+        )
+
+    - name: Verify writers team exists
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_team
+      no_log: true
 
     - name: Add local bootstrap admin user to writers team
       ansible.builtin.uri:
@@ -584,8 +632,9 @@
           - 200
           - 201
           - 400
-      register: quay_add_team_member
+      register: quay_add_bootstrap_member
       no_log: true
+      failed_when: false
 
     - name: Stop Quay before switching to IdM LDAP authentication
       ansible.builtin.command: podman stop quay-registry
@@ -694,7 +743,7 @@
         msg: "Quay container started but HTTPS did not respond after switching to LDAP. Check Quay logs above."
       when: quay_ldap_https_check.rc != 0
 
-    - name: Display Quay IdM login configuration
+    - name: Display Quay deployment result
       ansible.builtin.debug:
         msg:
           - "Quay URL: https://{{ quay_hostname }}"
@@ -703,9 +752,10 @@
           - "LDAP URI: {{ quay_ldap_uri }}"
           - "LDAP base DN: {{ quay_ldap_base_dn }}"
           - "Quay superusers: {{ ([quay_superuser] + quay_admin_users) | unique }}"
-          - "Default organization created: {{ quay_default_org }}"
-          - "Default team created: {{ quay_default_team }}"
+          - "Default organization verified: {{ quay_verify_org.status == 200 }}"
+          - "Default team verified: {{ quay_verify_team.status == 200 }}"
           - "Bootstrap token saved: true"
+          - "Note: LDAP users can log in with IdM credentials. They may need to log in once before they can be added to teams by API."
 
     - name: Show running containers
       ansible.builtin.command: podman ps
