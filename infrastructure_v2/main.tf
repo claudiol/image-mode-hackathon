@@ -149,6 +149,10 @@ resource "aws_key_pair" "lab" {
   key_name   = "${var.environment_name}-ssh-key"
   public_key = tls_private_key.lab_ssh.public_key_openssh
 
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   tags = {
     Name        = "${var.environment_name}-ssh-key"
     Environment = var.environment_name
@@ -205,6 +209,116 @@ locals {
   }
 }
 
+locals {
+  all_lab_secret_names = concat(
+    [
+      for secret_name in local.generated_secret_names :
+      "${var.secret_prefix}/${secret_name}"
+    ],
+    [
+      for secret_name, secret_value in local.static_secret_values :
+      "${var.secret_prefix}/${secret_name}"
+    ],
+    [
+      for secret_name, secret_value in local.redhat_secret_values :
+      "${var.secret_prefix}/${secret_name}"
+    ],
+    [
+      local.lab_ssh_private_key_secret_name
+    ]
+  )
+}
+
+############################################################
+# Preflight Cleanup For Lab Rebuilds
+############################################################
+#
+# This intentionally removes duplicate-prone named AWS resources before
+# Terraform creates them. It is useful when a previous apply partially
+# completed or state was lost, leaving AWS objects behind.
+#
+# IMPORTANT:
+# - Do not reuse an old saved plan after a failed apply.
+# - Run a fresh terraform plan after editing this file.
+# - This cleanup targets only resources whose names commonly collide:
+#   EC2 key pair, Secrets Manager secrets, and AAP IAM role/profile/policies.
+#
+# Recommended rebuild flow:
+#
+#   rm -f lab.tfplan
+#   terraform plan -out lab.tfplan
+#   terraform apply lab.tfplan
+#
+resource "terraform_data" "preflight_cleanup" {
+  input = {
+    environment_name = var.environment_name
+    secret_prefix    = var.secret_prefix
+    aws_region       = var.aws_region
+    aws_profile      = var.aws_profile
+    key_pair_name    = "${var.environment_name}-ssh-key"
+    iam_role_name    = "${var.environment_name}-aap-role"
+    iam_profile_name = "${var.environment_name}-aap-instance-profile"
+    secrets          = local.all_lab_secret_names
+  }
+
+  provisioner "local-exec" {
+    working_dir = path.module
+
+    command = <<-EOT
+      set -euo pipefail
+
+      export AWS_REGION="${var.aws_region}"
+      export AWS_DEFAULT_REGION="${var.aws_region}"
+
+      if [ -n "${var.aws_profile}" ]; then
+        export AWS_PROFILE="${var.aws_profile}"
+      fi
+
+      KEY_PAIR_NAME="${var.environment_name}-ssh-key"
+      IAM_ROLE_NAME="${var.environment_name}-aap-role"
+      IAM_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
+
+      echo "Preflight cleanup: duplicate-prone lab resources"
+
+      echo "Deleting EC2 key pair if it exists: $KEY_PAIR_NAME"
+      aws ec2 delete-key-pair \
+        --key-name "$KEY_PAIR_NAME" \
+        >/dev/null 2>&1 || true
+
+      echo "Deleting Secrets Manager secrets if they exist"
+${join("\n", [for secret_name in local.all_lab_secret_names : "      aws secretsmanager delete-secret --secret-id \"" + secret_name + "\" --force-delete-without-recovery >/dev/null 2>&1 || true"])}
+
+      echo "Cleaning up AAP IAM instance profile if it exists: $IAM_PROFILE_NAME"
+      aws iam remove-role-from-instance-profile \
+        --instance-profile-name "$IAM_PROFILE_NAME" \
+        --role-name "$IAM_ROLE_NAME" \
+        >/dev/null 2>&1 || true
+
+      aws iam delete-instance-profile \
+        --instance-profile-name "$IAM_PROFILE_NAME" \
+        >/dev/null 2>&1 || true
+
+      echo "Cleaning up AAP IAM inline policies if they exist: $IAM_ROLE_NAME"
+      aws iam delete-role-policy \
+        --role-name "$IAM_ROLE_NAME" \
+        --policy-name "${var.environment_name}-aap-secrets-read" \
+        >/dev/null 2>&1 || true
+
+      aws iam delete-role-policy \
+        --role-name "$IAM_ROLE_NAME" \
+        --policy-name "${var.environment_name}-aap-s3-read" \
+        >/dev/null 2>&1 || true
+
+      echo "Deleting AAP IAM role if it exists: $IAM_ROLE_NAME"
+      aws iam delete-role \
+        --role-name "$IAM_ROLE_NAME" \
+        >/dev/null 2>&1 || true
+
+      echo "Preflight cleanup complete"
+    EOT
+  }
+}
+
 resource "random_password" "generated" {
   for_each = local.generated_secret_names
 
@@ -215,6 +329,10 @@ resource "random_password" "generated" {
 
 resource "aws_secretsmanager_secret" "generated" {
   for_each = local.generated_secret_names
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   name                    = "${var.secret_prefix}/${each.value}"
   recovery_window_in_days = 0
@@ -235,6 +353,10 @@ resource "aws_secretsmanager_secret_version" "generated" {
 resource "aws_secretsmanager_secret" "static" {
   for_each = local.static_secret_values
 
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   name                    = "${var.secret_prefix}/${each.key}"
   recovery_window_in_days = 0
 
@@ -254,6 +376,10 @@ resource "aws_secretsmanager_secret_version" "static" {
 resource "aws_secretsmanager_secret" "redhat" {
   for_each = local.redhat_secret_values
 
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   name                    = "${var.secret_prefix}/${each.key}"
   recovery_window_in_days = 0
 
@@ -271,6 +397,10 @@ resource "aws_secretsmanager_secret_version" "redhat" {
 }
 
 resource "aws_secretsmanager_secret" "ssh_private_key" {
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   name                    = local.lab_ssh_private_key_secret_name
   recovery_window_in_days = 0
 
@@ -291,6 +421,10 @@ resource "aws_secretsmanager_secret_version" "ssh_private_key" {
 
 resource "aws_iam_role" "aap" {
   name = "${var.environment_name}-aap-role"
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -586,8 +720,9 @@ resource "aws_route53_record" "public_dns" {
   zone_id = local.public_route53_zone_id
   name    = each.value.hostname
   type    = "A"
-  ttl     = 300
-  records = [aws_eip.server[each.key].public_ip]
+  ttl             = 300
+  allow_overwrite = true
+  records         = [aws_eip.server[each.key].public_ip]
 
   depends_on = [
     aws_eip_association.server,
