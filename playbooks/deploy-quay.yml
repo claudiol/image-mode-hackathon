@@ -338,30 +338,83 @@
       changed_when: false
       failed_when: false
 
-    - name: Generate self-signed TLS certificate for Quay
-      ansible.builtin.command: >
-        openssl req
-        -newkey rsa:4096
-        -nodes
-        -sha256
-        -keyout {{ quay_root }}/config/ssl.key
-        -x509
-        -days {{ quay_tls_cert_days }}
-        -out {{ quay_root }}/config/ssl.cert
-        -subj "/C={{ quay_tls_country }}/ST={{ quay_tls_state }}/L={{ quay_tls_city }}/O={{ quay_tls_org }}/OU={{ quay_tls_org_unit }}/CN={{ quay_hostname }}"
-        -addext "subjectAltName=DNS:{{ quay_hostname }}"
-      args:
-        creates: "{{ quay_root }}/config/ssl.cert"
+    - name: Check Quay TLS certificate
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config/ssl.cert"
+      register: quay_tls_cert_stat
 
-    - name: Set permissions on Quay TLS files
+    - name: Check Quay TLS private key
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config/ssl.key"
+      register: quay_tls_key_stat
+
+    - name: Remove incomplete Quay TLS certificate pair
       ansible.builtin.file:
         path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ quay_root }}/config/ssl.cert"
+        - "{{ quay_root }}/config/ssl.key"
+      when: >
+        not quay_tls_cert_stat.stat.exists
+        or not quay_tls_key_stat.stat.exists
+
+    - name: Generate self-signed TLS certificate for Quay
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -newkey
+          - rsa:4096
+          - -nodes
+          - -sha256
+          - -keyout
+          - "{{ quay_root }}/config/ssl.key"
+          - -x509
+          - -days
+          - "{{ quay_tls_cert_days | string }}"
+          - -out
+          - "{{ quay_root }}/config/ssl.cert"
+          - -subj
+          - "/C={{ quay_tls_country }}/ST={{ quay_tls_state }}/L={{ quay_tls_city }}/O={{ quay_tls_org }}/OU={{ quay_tls_org_unit }}/CN={{ quay_hostname }}"
+          - -addext
+          - "subjectAltName=DNS:{{ quay_hostname }}"
+      when: >
+        not quay_tls_cert_stat.stat.exists
+        or not quay_tls_key_stat.stat.exists
+
+    - name: Verify Quay TLS certificate was created
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config/ssl.cert"
+      register: quay_tls_cert_created
+
+    - name: Verify Quay TLS private key was created
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config/ssl.key"
+      register: quay_tls_key_created
+
+    - name: Fail when Quay TLS generation did not create both files
+      ansible.builtin.assert:
+        that:
+          - quay_tls_cert_created.stat.exists
+          - quay_tls_key_created.stat.exists
+        fail_msg: >-
+          OpenSSL did not create both {{ quay_root }}/config/ssl.cert
+          and {{ quay_root }}/config/ssl.key.
+
+    - name: Set permissions on Quay TLS private key
+      ansible.builtin.file:
+        path: "{{ quay_root }}/config/ssl.key"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Set permissions on Quay TLS certificate
+      ansible.builtin.file:
+        path: "{{ quay_root }}/config/ssl.cert"
         owner: root
         group: root
         mode: "0644"
-      loop:
-        - "{{ quay_root }}/config/ssl.key"
-        - "{{ quay_root }}/config/ssl.cert"
 
     - name: Create and start Quay pod
       containers.podman.podman_pod:
