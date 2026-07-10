@@ -324,7 +324,7 @@
           - 200
           - 201
       loop: "{{ quay_team_syncs }}"
-      no_log: true
+      no_log: false
 
     - name: Stop Quay before switching to IdM LDAP authentication
       ansible.builtin.command: podman stop quay-registry
