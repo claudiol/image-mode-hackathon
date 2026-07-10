@@ -61,8 +61,18 @@ output "ansible_inventory" {
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
-    idm_server_fqdn    = local.primary_idm_hostname
-    idm_server_ip      = local.primary_idm_private_ip
+
+    idm_server_fqdn = local.flattened_servers[sort([
+      for name, server in local.flattened_servers :
+      name
+      if server.role == "idm"
+    ])[0]].hostname
+
+    idm_server_ip = aws_instance.server[sort([
+      for name, server in local.flattened_servers :
+      name
+      if server.role == "idm"
+    ])[0]].private_ip
 
     servers = {
       for name, instance in aws_instance.server :
@@ -152,7 +162,12 @@ output "route53_resolver_forward_domain" {
 
 output "route53_resolver_forward_target" {
   description = "Private IP of the selected primary IdM DNS server used as the Route53 Resolver forwarding target."
-  value       = local.primary_idm_private_ip
+
+  value = aws_instance.server[sort([
+    for name, server in local.flattened_servers :
+    name
+    if server.role == "idm"
+  ])[0]].private_ip
 }
 
 output "server_fqdns" {
@@ -249,12 +264,22 @@ output "image_builder_servers" {
 
 output "primary_idm_fqdn" {
   description = "Primary IdM server FQDN selected dynamically."
-  value       = local.primary_idm_hostname
+
+  value = local.flattened_servers[sort([
+    for name, server in local.flattened_servers :
+    name
+    if server.role == "idm"
+  ])[0]].hostname
 }
 
 output "primary_idm_private_ip" {
   description = "Primary IdM server private IP selected dynamically."
-  value       = local.primary_idm_private_ip
+
+  value = aws_instance.server[sort([
+    for name, server in local.flattened_servers :
+    name
+    if server.role == "idm"
+  ])[0]].private_ip
 }
 
 output "aap_urls" {
@@ -305,7 +330,12 @@ output "quay_idm_ldap_settings" {
   description = "Derived IdM LDAP settings used by Quay."
 
   value = {
-    ldap_uri       = "ldap://${local.primary_idm_hostname}:389"
+    ldap_uri = "ldap://${local.flattened_servers[sort([
+      for name, server in local.flattened_servers :
+      name
+      if server.role == "idm"
+    ])[0]].hostname}:389"
+
     ldap_base_dn   = join(",", [for part in split(".", local.idm_domain_name) : "dc=${part}"])
     ldap_bind_user = "uid=admin,cn=users,cn=accounts,${join(",", [for part in split(".", local.idm_domain_name) : "dc=${part}"])}"
     admin_users    = var.idm_users
