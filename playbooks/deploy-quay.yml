@@ -636,23 +636,27 @@
             - "{{ quay_superuser }}"
       no_log: true
 
-    - name: Verify Quay container can read configuration and TLS files
-      ansible.builtin.command:
-        argv:
-          - podman
-          - run
-          - --rm
-          - --volume
-          - "{{ quay_root }}/config:/conf/stack:Z"
-          - "{{ quay_image }}"
-          - /bin/bash
-          - -c
-          - >-
-            test -r /conf/stack/config.yaml &&
-            test -r /conf/stack/ssl.cert &&
-            test -r /conf/stack/ssl.key
-      register: quay_config_readability
-      changed_when: false
+    # Follow the proven working deployment pattern: validate the host files,
+    # then let the Quay container consume the bind-mounted configuration directly.
+    # Do not launch a second temporary Quay container against the same :Z mount,
+    # because its entrypoint and SELinux relabeling can interfere with validation.
+    - name: Check generated Quay configuration and TLS files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ quay_root }}/config/config.yaml"
+        - "{{ quay_root }}/config/ssl.cert"
+        - "{{ quay_root }}/config/ssl.key"
+      register: quay_config_file_stats
+
+    - name: Verify generated Quay configuration and TLS files are readable
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - item.stat.readable
+        fail_msg: "Required Quay file {{ item.stat.path | default(item.item) }} is missing or unreadable."
+      loop: "{{ quay_config_file_stats.results }}"
 
     - name: Run Quay registry in bootstrap mode
       containers.podman.podman_container:
