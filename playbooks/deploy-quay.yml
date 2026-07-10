@@ -412,6 +412,7 @@
           FEATURE_MAILING: false
           FEATURE_USER_CREATION: true
           FEATURE_USER_INITIALIZE: true
+          FEATURE_USERNAME_CONFIRMATION: false
           FEATURE_REQUIRE_EMAIL_VERIFICATION: false
 
           DATABASE_SECRET_KEY: "{{ quay_database_secret_key }}"
@@ -652,6 +653,7 @@
           FEATURE_MAILING: false
           FEATURE_USER_CREATION: true
           FEATURE_USER_INITIALIZE: true
+          FEATURE_USERNAME_CONFIRMATION: false
           FEATURE_REQUIRE_EMAIL_VERIFICATION: false
 
           DATABASE_SECRET_KEY: "{{ quay_database_secret_key }}"
