@@ -853,7 +853,7 @@
 
     - name: Verify image-mode members team after LDAP user assignment
       ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_member_team }}"
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_member_team }}/members"
         method: GET
         validate_certs: false
         headers:
@@ -865,7 +865,7 @@
 
     - name: Verify image-mode writers team after LDAP user assignment
       ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}"
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}/members"
         method: GET
         validate_certs: false
         headers:
