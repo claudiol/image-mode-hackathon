@@ -824,16 +824,34 @@
         AWS_PROFILE: "{{ aws_profile | default(omit) }}"
 
     - name: Mark the bootstrap administrator email as confirmed
-      ansible.builtin.command: >
-        podman exec quay-postgres
-        psql
-        -U {{ quay_db_user }}
-        -d {{ quay_db_name }}
-        -v ON_ERROR_STOP=1
-        -c "UPDATE public.user SET email_confirmed = true WHERE username = '{{ quay_superuser | replace(\"'\", \"''\") }}';"
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - quay-postgres
+          - psql
+          - -U
+          - "{{ quay_db_user }}"
+          - -d
+          - "{{ quay_db_name }}"
+          - -v
+          - ON_ERROR_STOP=1
+          - -v
+          - "quay_username={{ quay_superuser }}"
+          - -c
+          - >-
+            UPDATE public.user
+            SET email_confirmed = true
+            WHERE username = :'quay_username';
       register: quay_confirm_email
       changed_when: "'UPDATE 1' in quay_confirm_email.stdout"
-      failed_when: false
+      failed_when: >
+        quay_confirm_email.rc != 0
+        or (
+          'UPDATE 1' not in quay_confirm_email.stdout
+          and 'UPDATE 0' not in quay_confirm_email.stdout
+        )
+      no_log: true
 
     - name: Ensure the image-mode organization exists
       ansible.builtin.uri:
