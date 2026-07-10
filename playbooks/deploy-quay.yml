@@ -27,6 +27,8 @@
 
     quay_default_org: image-mode
     quay_default_team: writers
+    quay_default_owner_team: owners
+    quay_default_member_team: members
 
     quay_superuser_email: quayadmin@example.com
     quay_hostname: "{{ inventory_hostname }}"
@@ -34,6 +36,7 @@
     quay_force_clean_rebuild: true
 
     idm_base_dn: "dc={{ idm_domain_name.split('.') | join(',dc=') }}"
+    idm_default_user_password: "RedHat123^"
 
     quay_ldap_uri: "ldap://{{ idm_server_fqdn }}:389"
     quay_ldap_base_dn: "{{ idm_base_dn }}"
@@ -162,6 +165,8 @@
           - redhat_registry_password is defined
           - quay_default_org is defined
           - quay_default_team is defined
+          - quay_default_owner_team is defined
+          - quay_default_member_team is defined
           - quay_ldap_uri is defined
           - quay_ldap_base_dn is defined
           - quay_ldap_bind_dn is defined
@@ -636,6 +641,36 @@
       no_log: true
       failed_when: false
 
+    - name: Add local bootstrap admin user to owners team
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_owner_team }}/members/{{ quay_superuser }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+      register: quay_add_bootstrap_owner
+      no_log: true
+      failed_when: false
+
+    - name: Add local bootstrap admin user to members team
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_member_team }}/members/{{ quay_superuser }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+      register: quay_add_bootstrap_org_member
+      no_log: true
+      failed_when: false
+
     - name: Stop Quay before switching to IdM LDAP authentication
       ansible.builtin.command: podman stop quay-registry
       changed_when: true
@@ -743,6 +778,109 @@
         msg: "Quay container started but HTTPS did not respond after switching to LDAP. Check Quay logs above."
       when: quay_ldap_https_check.rc != 0
 
+    - name: Initialize LDAP-backed Quay users so org membership can be assigned
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/initialize"
+        method: POST
+        validate_certs: false
+        body_format: json
+        body:
+          username: "{{ item }}"
+          password: "{{ idm_default_user_password }}"
+          email: "{{ item }}@example.com"
+          access_token: false
+        status_code:
+          - 200
+          - 400
+      loop: "{{ quay_admin_users | unique }}"
+      register: quay_initialize_ldap_users
+      failed_when: false
+      no_log: true
+
+    - name: Add LDAP users to image-mode owners team
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_owner_team }}/members/{{ item }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+      loop: "{{ quay_admin_users | unique }}"
+      register: quay_add_ldap_owners
+      failed_when: false
+      no_log: true
+
+    - name: Add LDAP users to image-mode members team
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_member_team }}/members/{{ item }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+      loop: "{{ quay_admin_users | unique }}"
+      register: quay_add_ldap_members
+      failed_when: false
+      no_log: true
+
+    - name: Add LDAP users to image-mode writers team
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}/members/{{ item }}"
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+      loop: "{{ quay_admin_users | unique }}"
+      register: quay_add_ldap_writers
+      failed_when: false
+      no_log: true
+
+    - name: Verify image-mode owners team after LDAP user assignment
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_owner_team }}"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_owner_team
+      no_log: true
+
+    - name: Verify image-mode members team after LDAP user assignment
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_member_team }}"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_member_team
+      no_log: true
+
+    - name: Verify image-mode writers team after LDAP user assignment
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/{{ quay_default_org }}/team/{{ quay_default_team }}"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+        status_code:
+          - 200
+      register: quay_verify_writer_team
+      no_log: true
+
     - name: Display Quay deployment result
       ansible.builtin.debug:
         msg:
@@ -751,11 +889,14 @@
           - "Authentication: IdM LDAP"
           - "LDAP URI: {{ quay_ldap_uri }}"
           - "LDAP base DN: {{ quay_ldap_base_dn }}"
+          - "LDAP login attribute: {{ quay_ldap_uid_attr }}"
           - "Quay superusers: {{ ([quay_superuser] + quay_admin_users) | unique }}"
           - "Default organization verified: {{ quay_verify_org.status == 200 }}"
-          - "Default team verified: {{ quay_verify_team.status == 200 }}"
+          - "Writers team verified: {{ quay_verify_writer_team.status == 200 }}"
+          - "Owners team verified: {{ quay_verify_owner_team.status == 200 }}"
+          - "Members team verified: {{ quay_verify_member_team.status == 200 }}"
           - "Bootstrap token saved: true"
-          - "Note: LDAP users can log in with IdM credentials. They may need to log in once before they can be added to teams by API."
+          - "Note: LDAP users are initialized in Quay and added to image-mode owners, members, and writers teams."
 
     - name: Show running containers
       ansible.builtin.command: podman ps
