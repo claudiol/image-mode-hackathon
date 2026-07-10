@@ -287,13 +287,13 @@ resource "terraform_data" "preflight_cleanup" {
 
       echo "Deleting Secrets Manager secrets if they exist"
       cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
-${join("
-", [for secret_name in local.all_lab_secret_names : format("%s", secret_name)])}
+%{ for secret_name in local.all_lab_secret_names ~}
+${secret_name}
+%{ endfor ~}
 EOF_SECRETS
 
       while IFS= read -r SECRET_NAME; do
         [ -n "$SECRET_NAME" ] || continue
-        echo "  deleting secret: $SECRET_NAME"
         aws secretsmanager delete-secret \
           --secret-id "$SECRET_NAME" \
           --force-delete-without-recovery \
