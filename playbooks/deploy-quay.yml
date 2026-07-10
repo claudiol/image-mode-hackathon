@@ -31,12 +31,7 @@
     quay_superuser_email: quayadmin@example.com
     quay_hostname: "{{ inventory_hostname }}"
 
-    idm_base_dn: >-
-      {{
-        idm_domain_name.split('.')
-        | map('regex_replace', '^(.*)$', 'dc=\\1')
-        | join(',')
-      }}
+    idm_base_dn: "dc={{ idm_domain_name.split('.') | join(',dc=') }}"
 
     quay_ldap_uri: "ldap://{{ idm_server_fqdn }}:389"
     quay_ldap_base_dn: "{{ idm_base_dn }}"
