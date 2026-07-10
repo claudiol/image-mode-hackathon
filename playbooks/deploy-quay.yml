@@ -416,7 +416,7 @@
         path: "{{ quay_root }}/config/ssl.key"
         owner: root
         group: root
-        mode: "0600"
+        mode: "0644"
 
     - name: Set permissions on Quay TLS certificate
       ansible.builtin.file:
@@ -636,6 +636,24 @@
             - "{{ quay_superuser }}"
       no_log: true
 
+    - name: Verify Quay container can read configuration and TLS files
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --rm
+          - --volume
+          - "{{ quay_root }}/config:/conf/stack:Z"
+          - "{{ quay_image }}"
+          - /bin/bash
+          - -c
+          - >-
+            test -r /conf/stack/config.yaml &&
+            test -r /conf/stack/ssl.cert &&
+            test -r /conf/stack/ssl.key
+      register: quay_config_readability
+      changed_when: false
+
     - name: Run Quay registry in bootstrap mode
       containers.podman.podman_container:
         name: quay-registry
@@ -663,20 +681,60 @@
       failed_when: false
 
     - name: Show Quay logs when bootstrap startup fails
-      ansible.builtin.command: podman logs quay-registry --tail 200
+      ansible.builtin.command:
+        argv:
+          - podman
+          - logs
+          - --tail
+          - "200"
+          - quay-registry
       register: quay_bootstrap_logs
       changed_when: false
       failed_when: false
       when: quay_bootstrap_https_check.rc != 0
 
-    - name: Display Quay logs when bootstrap startup fails
+    - name: Display Quay stdout when bootstrap startup fails
       ansible.builtin.debug:
         var: quay_bootstrap_logs.stdout_lines
+      when:
+        - quay_bootstrap_https_check.rc != 0
+        - quay_bootstrap_logs.stdout_lines | default([]) | length > 0
+
+    - name: Display Quay stderr when bootstrap startup fails
+      ansible.builtin.debug:
+        var: quay_bootstrap_logs.stderr_lines
+      when:
+        - quay_bootstrap_https_check.rc != 0
+        - quay_bootstrap_logs.stderr_lines | default([]) | length > 0
+
+    - name: Inspect Quay container state when bootstrap startup fails
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - quay-registry
+          - --format
+          - >-
+            Status={{ '{{' }}.State.Status{{ '}}' }}
+            Running={{ '{{' }}.State.Running{{ '}}' }}
+            ExitCode={{ '{{' }}.State.ExitCode{{ '}}' }}
+            Error={{ '{{' }}.State.Error{{ '}}' }}
+            RestartCount={{ '{{' }}.RestartCount{{ '}}' }}
+      register: quay_bootstrap_inspect
+      changed_when: false
+      failed_when: false
+      when: quay_bootstrap_https_check.rc != 0
+
+    - name: Display Quay container state after bootstrap failure
+      ansible.builtin.debug:
+        var: quay_bootstrap_inspect.stdout_lines
       when: quay_bootstrap_https_check.rc != 0
 
     - name: Fail when Quay bootstrap startup fails
       ansible.builtin.fail:
-        msg: "Quay did not respond in Database-authentication bootstrap mode."
+        msg: >-
+          Quay did not respond in Database-authentication bootstrap mode.
+          Review the Quay logs and container state displayed above.
       when: quay_bootstrap_https_check.rc != 0
 
     - name: Initialize the Quay bootstrap administrator
@@ -932,20 +990,60 @@
       failed_when: false
 
     - name: Show Quay logs when LDAP startup fails
-      ansible.builtin.command: podman logs quay-registry --tail 200
+      ansible.builtin.command:
+        argv:
+          - podman
+          - logs
+          - --tail
+          - "200"
+          - quay-registry
       register: quay_ldap_logs
       changed_when: false
       failed_when: false
       when: quay_ldap_https_check.rc != 0
 
-    - name: Display Quay logs when LDAP startup fails
+    - name: Display Quay stdout when LDAP startup fails
       ansible.builtin.debug:
         var: quay_ldap_logs.stdout_lines
+      when:
+        - quay_ldap_https_check.rc != 0
+        - quay_ldap_logs.stdout_lines | default([]) | length > 0
+
+    - name: Display Quay stderr when LDAP startup fails
+      ansible.builtin.debug:
+        var: quay_ldap_logs.stderr_lines
+      when:
+        - quay_ldap_https_check.rc != 0
+        - quay_ldap_logs.stderr_lines | default([]) | length > 0
+
+    - name: Inspect Quay container state when LDAP startup fails
+      ansible.builtin.command:
+        argv:
+          - podman
+          - inspect
+          - quay-registry
+          - --format
+          - >-
+            Status={{ '{{' }}.State.Status{{ '}}' }}
+            Running={{ '{{' }}.State.Running{{ '}}' }}
+            ExitCode={{ '{{' }}.State.ExitCode{{ '}}' }}
+            Error={{ '{{' }}.State.Error{{ '}}' }}
+            RestartCount={{ '{{' }}.RestartCount{{ '}}' }}
+      register: quay_ldap_inspect
+      changed_when: false
+      failed_when: false
+      when: quay_ldap_https_check.rc != 0
+
+    - name: Display Quay container state after LDAP failure
+      ansible.builtin.debug:
+        var: quay_ldap_inspect.stdout_lines
       when: quay_ldap_https_check.rc != 0
 
     - name: Fail when Quay does not start with LDAP
       ansible.builtin.fail:
-        msg: "Quay did not respond after switching to IdM LDAP authentication."
+        msg: >-
+          Quay did not respond after switching to IdM LDAP authentication.
+          Review the Quay logs and container state displayed above.
       when: quay_ldap_https_check.rc != 0
 
     - name: Enable LDAP synchronization for Quay teams
