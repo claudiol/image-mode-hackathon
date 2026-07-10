@@ -256,6 +256,16 @@
         - "{{ quay_root }}/postgres"
         - "{{ quay_root }}/redis"
 
+    - name: Verify Quay config directory exists after cleanup
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config"
+      register: quay_config_dir_after_cleanup
+
+    - name: Fail if Quay config directory was not created after cleanup
+      ansible.builtin.fail:
+        msg: "{{ quay_root }}/config was not created on {{ inventory_hostname }}."
+      when: not quay_config_dir_after_cleanup.stat.exists
+
     - name: Log in to Red Hat registry
       containers.podman.podman_login:
         registry: registry.redhat.io
@@ -346,6 +356,20 @@
       loop: "{{ quay_team_syncs }}"
       changed_when: false
       no_log: true
+
+    - name: Force-create Quay config path immediately before bootstrap config.yaml
+      ansible.builtin.command: install -d -m 0755 -o root -g root {{ quay_root }}/config
+      changed_when: false
+
+    - name: Verify Quay config directory exists before bootstrap config.yaml
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config"
+      register: quay_config_dir_before_bootstrap
+
+    - name: Fail if Quay config directory still does not exist before bootstrap config.yaml
+      ansible.builtin.fail:
+        msg: "{{ quay_root }}/config was not created on {{ inventory_hostname }} before writing bootstrap config.yaml."
+      when: not quay_config_dir_before_bootstrap.stat.exists
 
     - name: Create bootstrap Quay config.yaml using local Database authentication
       ansible.builtin.copy:
@@ -563,13 +587,9 @@
       changed_when: true
       failed_when: false
 
-    - name: Ensure Quay config directory still exists before final config write
-      ansible.builtin.file:
-        path: "{{ quay_root }}/config"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
+    - name: Force-create Quay config path immediately before final config.yaml
+      ansible.builtin.command: install -d -m 0755 -o root -g root {{ quay_root }}/config
+      changed_when: false
 
     - name: Create final Quay config.yaml with IdM LDAP authentication and team sync
       ansible.builtin.copy:
