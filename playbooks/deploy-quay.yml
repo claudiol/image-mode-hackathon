@@ -1037,7 +1037,7 @@
           else {}
         }}
 
-    - name: Mark the bootstrap administrator email as confirmed
+    - name: Verify that the bootstrap administrator exists and mark email as verified
       ansible.builtin.command:
         argv:
           - podman
@@ -1055,18 +1055,31 @@
           - "quay_username={{ quay_superuser }}"
           - -X
           - --no-psqlrc
+          - -t
+          - -A
         stdin: |
           UPDATE public."user"
-          SET email_confirmed = true
+          SET verified = true
           WHERE username = :'quay_username';
-      register: quay_confirm_email
-      changed_when: "'UPDATE 1' in quay_confirm_email.stdout"
-      failed_when:
-        - quay_confirm_email.rc != 0
-        - "'UPDATE 1' not in quay_confirm_email.stdout"
-        - "'UPDATE 0' not in quay_confirm_email.stdout"
-      no_log: false
 
+          SELECT CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM public."user"
+              WHERE username = :'quay_username'
+                AND verified = true
+            )
+            THEN 'BOOTSTRAP_ADMIN_VERIFIED'
+            ELSE 'BOOTSTRAP_ADMIN_NOT_FOUND'
+          END;
+      register: quay_verify_bootstrap_admin
+      changed_when: "'UPDATE 1' in quay_verify_bootstrap_admin.stdout"
+      failed_when: >
+        quay_verify_bootstrap_admin.rc != 0
+        or
+        'BOOTSTRAP_ADMIN_VERIFIED' not in quay_verify_bootstrap_admin.stdout
+      no_log: false
+      
     - name: Ensure the Quay organization exists
       ansible.builtin.uri:
         url: >-
