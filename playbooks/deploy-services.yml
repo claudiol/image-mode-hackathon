@@ -16,4 +16,3 @@
 
 # - name: Deploy Satellite
 #   ansible.builtin.import_playbook: deploy-satellite.yml
-
