@@ -28,8 +28,9 @@ locals {
 
   discovered_domain_name     = length(local.discovered_opentlc_zone_ids) == 1 ? local.all_public_zones[local.discovered_opentlc_zone_ids[0]] : ""
   discovered_route53_zone_id = length(local.discovered_opentlc_zone_ids) == 1 ? local.discovered_opentlc_zone_ids[0] : ""
-  effective_domain_name      = trimspace(var.domain_name) != "" ? trimsuffix(var.domain_name, ".") : local.discovered_domain_name
-  public_route53_zone_id     = var.route53_zone_id != "" ? var.route53_zone_id : local.discovered_route53_zone_id
+
+  effective_domain_name  = trimspace(var.domain_name) != "" ? trimsuffix(var.domain_name, ".") : local.discovered_domain_name
+  public_route53_zone_id = var.route53_zone_id != "" ? var.route53_zone_id : local.discovered_route53_zone_id
 
   parent_domain_name = local.effective_domain_name
 
@@ -81,15 +82,24 @@ locals {
       }
     }
   ]...)
+
+  idm_server_keys = sort([
+    for name, server in local.flattened_servers :
+    name
+    if server.role == "idm"
+  ])
+
+  primary_idm_key      = try(local.idm_server_keys[0], null)
+  primary_idm_hostname = local.primary_idm_key != null ? local.flattened_servers[local.primary_idm_key].hostname : null
 }
 
 resource "terraform_data" "validate_idm_server" {
-  input = local.flattened_servers
+  input = local.idm_server_keys
 
   lifecycle {
     precondition {
-      condition     = contains(keys(local.flattened_servers), "idm-1")
-      error_message = "var.servers must include an idm role with count >= 1 so Route53 Resolver can forward lab DNS queries to idm-1."
+      condition     = length(local.idm_server_keys) >= 1
+      error_message = "var.servers must include an idm role with count >= 1 so Route53 Resolver can forward lab DNS queries to the selected primary IdM server."
     }
   }
 }
@@ -139,6 +149,10 @@ resource "aws_key_pair" "lab" {
   key_name   = "${var.environment_name}-ssh-key"
   public_key = tls_private_key.lab_ssh.public_key_openssh
 
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   tags = {
     Name        = "${var.environment_name}-ssh-key"
     Environment = var.environment_name
@@ -169,15 +183,14 @@ locals {
     "aap/automationmetrics_pg_password",
     "aap/automationmetrics_controller_read_pg_password",
     "aap/vault_password",
-
     "idm/admin_password",
     "idm/directory_manager_password",
-
     "satellite/admin_password",
-
     "quay/db_password",
     "quay/secret_key",
-    "quay/superuser_password"
+    "quay/database_secret_key",
+    "quay/superuser_password",
+    "quay/redis_password"
   ])
 
   static_secret_values = {
@@ -193,6 +206,153 @@ locals {
     "redhat/registry_username"  = var.redhat_registry_username
     "redhat/registry_password"  = var.redhat_registry_password
   }
+
+  all_lab_secret_names = concat(
+    [
+      for secret_name in local.generated_secret_names :
+      "${var.secret_prefix}/${secret_name}"
+    ],
+    [
+      for secret_name, secret_value in local.static_secret_values :
+      "${var.secret_prefix}/${secret_name}"
+    ],
+    [
+      for secret_name, secret_value in local.redhat_secret_values :
+      "${var.secret_prefix}/${secret_name}"
+    ],
+    [
+      local.lab_ssh_private_key_secret_name
+    ]
+  )
+}
+
+############################################################
+# Preflight Cleanup For Lab Rebuilds
+############################################################
+
+resource "terraform_data" "preflight_cleanup" {
+  input = {
+    cleanup_version  = 2
+    environment_name = var.environment_name
+    secret_prefix    = var.secret_prefix
+    aws_region       = var.aws_region
+    aws_profile      = var.aws_profile
+    key_pair_name    = "${var.environment_name}-ssh-key"
+    iam_role_name    = "${var.environment_name}-aap-role"
+    iam_profile_name = "${var.environment_name}-aap-instance-profile"
+    secrets          = local.all_lab_secret_names
+  }
+
+  provisioner "local-exec" {
+    working_dir = path.module
+
+    command = <<-EOT
+      set -euo pipefail
+
+      export AWS_REGION="${var.aws_region}"
+      export AWS_DEFAULT_REGION="${var.aws_region}"
+
+      if [ -n "${var.aws_profile}" ]; then
+        export AWS_PROFILE="${var.aws_profile}"
+      fi
+
+      KEY_PAIR_NAME="${var.environment_name}-ssh-key"
+      IAM_ROLE_NAME="${var.environment_name}-aap-role"
+      IAM_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
+
+      echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
+
+      state_has() {
+        terraform state list 2>/dev/null | grep -q "^$1$"
+      }
+
+      echo "Checking EC2 key pair: $KEY_PAIR_NAME"
+      if state_has 'aws_key_pair.lab'; then
+        echo "Skipping key pair cleanup because aws_key_pair.lab is already managed by Terraform state."
+      else
+        aws ec2 delete-key-pair \
+          --key-name "$KEY_PAIR_NAME" \
+          >/dev/null 2>&1 || true
+      fi
+
+      echo "Checking Secrets Manager secrets"
+      if terraform state list 2>/dev/null | grep -q '^aws_secretsmanager_secret\.'; then
+        echo "Skipping Secrets Manager cleanup because secrets are already managed by Terraform state."
+      else
+        cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
+%{ for secret_name in local.all_lab_secret_names ~}
+${secret_name}
+%{ endfor ~}
+EOF_SECRETS
+
+        while IFS= read -r SECRET_NAME; do
+          [ -n "$SECRET_NAME" ] || continue
+
+          echo "Deleting unmanaged secret if it exists: $SECRET_NAME"
+
+          aws secretsmanager delete-secret \
+            --secret-id "$SECRET_NAME" \
+            --force-delete-without-recovery \
+            >/dev/null 2>&1 || true
+
+          for i in $(seq 1 30); do
+            if aws secretsmanager describe-secret \
+              --secret-id "$SECRET_NAME" \
+              >/dev/null 2>&1; then
+              sleep 2
+            else
+              break
+            fi
+          done
+        done < /tmp/image-mode-lab-secret-names.txt
+
+        rm -f /tmp/image-mode-lab-secret-names.txt
+      fi
+
+      echo "Checking AAP IAM resources"
+
+      if state_has 'aws_iam_instance_profile.aap'; then
+        echo "Skipping IAM instance profile cleanup because it is managed by Terraform state."
+      else
+        aws iam remove-role-from-instance-profile \
+          --instance-profile-name "$IAM_PROFILE_NAME" \
+          --role-name "$IAM_ROLE_NAME" \
+          >/dev/null 2>&1 || true
+
+        aws iam delete-instance-profile \
+          --instance-profile-name "$IAM_PROFILE_NAME" \
+          >/dev/null 2>&1 || true
+      fi
+
+      if state_has 'aws_iam_role_policy.aap_secrets_read'; then
+        echo "Skipping AAP secrets-read policy cleanup because it is managed by Terraform state."
+      else
+        aws iam delete-role-policy \
+          --role-name "$IAM_ROLE_NAME" \
+          --policy-name "${var.environment_name}-aap-secrets-read" \
+          >/dev/null 2>&1 || true
+      fi
+
+      if state_has 'aws_iam_role_policy.aap_s3_read'; then
+        echo "Skipping AAP S3-read policy cleanup because it is managed by Terraform state."
+      else
+        aws iam delete-role-policy \
+          --role-name "$IAM_ROLE_NAME" \
+          --policy-name "${var.environment_name}-aap-s3-read" \
+          >/dev/null 2>&1 || true
+      fi
+
+      if state_has 'aws_iam_role.aap'; then
+        echo "Skipping AAP IAM role cleanup because it is managed by Terraform state."
+      else
+        aws iam delete-role \
+          --role-name "$IAM_ROLE_NAME" \
+          >/dev/null 2>&1 || true
+      fi
+
+      echo "Preflight cleanup complete"
+    EOT
+  }
 }
 
 resource "random_password" "generated" {
@@ -205,6 +365,10 @@ resource "random_password" "generated" {
 
 resource "aws_secretsmanager_secret" "generated" {
   for_each = local.generated_secret_names
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   name                    = "${var.secret_prefix}/${each.value}"
   recovery_window_in_days = 0
@@ -220,10 +384,18 @@ resource "aws_secretsmanager_secret_version" "generated" {
 
   secret_id     = aws_secretsmanager_secret.generated[each.key].id
   secret_string = random_password.generated[each.key].result
+
+  depends_on = [
+    aws_secretsmanager_secret.generated
+  ]
 }
 
 resource "aws_secretsmanager_secret" "static" {
   for_each = local.static_secret_values
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   name                    = "${var.secret_prefix}/${each.key}"
   recovery_window_in_days = 0
@@ -239,10 +411,18 @@ resource "aws_secretsmanager_secret_version" "static" {
 
   secret_id     = aws_secretsmanager_secret.static[each.key].id
   secret_string = each.value
+
+  depends_on = [
+    aws_secretsmanager_secret.static
+  ]
 }
 
 resource "aws_secretsmanager_secret" "redhat" {
   for_each = local.redhat_secret_values
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   name                    = "${var.secret_prefix}/${each.key}"
   recovery_window_in_days = 0
@@ -258,9 +438,17 @@ resource "aws_secretsmanager_secret_version" "redhat" {
 
   secret_id     = aws_secretsmanager_secret.redhat[each.key].id
   secret_string = each.value
+
+  depends_on = [
+    aws_secretsmanager_secret.redhat
+  ]
 }
 
 resource "aws_secretsmanager_secret" "ssh_private_key" {
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   name                    = local.lab_ssh_private_key_secret_name
   recovery_window_in_days = 0
 
@@ -273,6 +461,10 @@ resource "aws_secretsmanager_secret" "ssh_private_key" {
 resource "aws_secretsmanager_secret_version" "ssh_private_key" {
   secret_id     = aws_secretsmanager_secret.ssh_private_key.id
   secret_string = tls_private_key.lab_ssh.private_key_pem
+
+  depends_on = [
+    aws_secretsmanager_secret.ssh_private_key
+  ]
 }
 
 ############################################################
@@ -281,6 +473,10 @@ resource "aws_secretsmanager_secret_version" "ssh_private_key" {
 
 resource "aws_iam_role" "aap" {
   name = "${var.environment_name}-aap-role"
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -319,6 +515,10 @@ resource "aws_iam_role_policy" "aap_secrets_read" {
 resource "aws_iam_instance_profile" "aap" {
   name = "${var.environment_name}-aap-instance-profile"
   role = aws_iam_role.aap.name
+
+  depends_on = [
+    aws_iam_role.aap
+  ]
 }
 
 resource "aws_iam_role_policy" "aap_s3_read" {
@@ -517,6 +717,10 @@ resource "aws_instance" "server" {
   ]
 }
 
+locals {
+  primary_idm_private_ip = try(aws_instance.server[local.primary_idm_key].private_ip, null)
+}
+
 resource "aws_ebs_volume" "extra" {
   for_each = {
     for name, server in local.flattened_servers :
@@ -572,8 +776,10 @@ resource "aws_route53_record" "public_dns" {
   zone_id = local.public_route53_zone_id
   name    = each.value.hostname
   type    = "A"
-  ttl     = 300
-  records = [aws_eip.server[each.key].public_ip]
+
+  ttl             = 300
+  allow_overwrite = true
+  records         = [aws_eip.server[each.key].public_ip]
 
   depends_on = [
     aws_eip_association.server,
@@ -614,7 +820,7 @@ resource "aws_route53_resolver_rule" "idm_forward" {
   resolver_endpoint_id = aws_route53_resolver_endpoint.outbound.id
 
   target_ip {
-    ip = aws_instance.server["idm-1"].private_ip
+    ip = local.primary_idm_private_ip
   }
 
   tags = {
@@ -657,8 +863,8 @@ resource "local_file" "ansible_inventory" {
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
-    idm_server_fqdn    = local.flattened_servers["idm-1"].hostname
-    idm_server_ip      = aws_instance.server["idm-1"].private_ip
+    idm_server_fqdn    = local.primary_idm_hostname
+    idm_server_ip      = local.primary_idm_private_ip
 
     servers = {
       for name, instance in aws_instance.server :
@@ -738,7 +944,6 @@ resource "terraform_data" "bootstrap_lab" {
       ansible-playbook \
         -i playbooks/inventory/hosts \
         playbooks/deploy-services.yml
-
     EOT
   }
 }

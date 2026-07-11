@@ -14,5 +14,5 @@
 # - name: Deploy Satellite
 #   ansible.builtin.import_playbook: deploy-satellite.yml
 
-# - name: Deploy Quay
-#   ansible.builtin.import_playbook: deploy-quay.yml
+- name: Deploy Quay
+  ansible.builtin.import_playbook: deploy-quay.yml
