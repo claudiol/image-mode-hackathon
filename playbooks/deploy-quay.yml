@@ -798,7 +798,7 @@
           - -w
           - "{{ idm_admin_password }}"
           - -b
-          - "{{ item.group_dn }}"
+          - "{{ item.full_group_dn }}"
           - "(objectClass=*)"
           - dn
           - cn
