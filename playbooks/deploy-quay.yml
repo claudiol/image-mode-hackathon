@@ -805,7 +805,7 @@
           - member
       loop: "{{ quay_team_syncs }}"
       changed_when: false
-      no_log: false
+      no_log: true
 
     ###########################################################################
     # Quay bootstrap configuration
@@ -1149,7 +1149,7 @@
         quay_verify_bootstrap_admin.rc != 0
         or
         'BOOTSTRAP_ADMIN_VERIFIED' not in quay_verify_bootstrap_admin.stdout
-      no_log: false
+      no_log: true
 
     - name: Ensure the Quay organization exists
       ansible.builtin.uri:
@@ -1437,7 +1437,7 @@
           - 400
       loop: "{{ quay_team_syncs }}"
       register: quay_enable_team_sync
-      no_log: false
+      no_log: true
       failed_when: >
         quay_enable_team_sync.status == 400
         and (
