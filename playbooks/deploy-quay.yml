@@ -1065,7 +1065,7 @@
           'UPDATE 1' not in quay_confirm_email.stdout
           and 'UPDATE 0' not in quay_confirm_email.stdout
         )
-      no_log: true
+      no_log: false
 
     - name: Ensure the Quay organization exists
       ansible.builtin.uri:
@@ -1084,7 +1084,7 @@
           - 201
           - 400
       register: quay_create_org
-      no_log: false
+      no_log: true
       failed_when: >
         quay_create_org.status == 400
         and (
