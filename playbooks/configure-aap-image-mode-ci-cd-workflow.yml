@@ -12,6 +12,8 @@
     - ../vars/organizations.yml
     - ../vars/credential_types.yml
     - ../vars/credentials.yml
+    - ../vars/inventories.yml
+    - ../vars/hosts.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
     - ../vars/job_templates.yml
