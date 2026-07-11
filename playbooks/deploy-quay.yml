@@ -47,13 +47,33 @@
     # Set true only when intentionally destroying and rebuilding the deployment.
     quay_force_clean_rebuild: false
 
+    ###########################################################################
+    # IdM LDAP directory structure
+    ###########################################################################
+
     idm_base_dn: "dc={{ idm_domain_name.split('.') | join(',dc=') }}"
-    idm_user_container_dn: "cn=users,cn=accounts,{{ idm_base_dn }}"
-    idm_group_container_dn: "cn=groups,cn=accounts,{{ idm_base_dn }}"
+
+    # Relative container DNs beneath idm_base_dn.
+    idm_user_container_relative_dn: "cn=users,cn=accounts"
+    idm_group_container_relative_dn: "cn=groups,cn=accounts"
+
+    # Full container DNs used for direct LDAP operations.
+    idm_user_container_dn: >-
+      {{ idm_user_container_relative_dn }},{{ idm_base_dn }}
+
+    idm_group_container_dn: >-
+      {{ idm_group_container_relative_dn }},{{ idm_base_dn }}
+
+    ###########################################################################
+    # Quay LDAP authentication
+    ###########################################################################
 
     quay_ldap_uri: "ldaps://{{ idm_server_fqdn }}:636"
+
     quay_ldap_ca_remote_path: /etc/ipa/ca.crt
     quay_ldap_ca_host_path: "{{ quay_root }}/config/extra_ca_certs/idm-ca.crt"
+
+    # Quay appends this base DN when resolving relative LDAP paths.
     quay_ldap_base_dn: "{{ idm_base_dn }}"
 
     quay_ldap_user_rdn:
@@ -62,37 +82,88 @@
 
     quay_ldap_uid_attr: uid
     quay_ldap_email_attr: mail
+
+    # Full bind DN required for LDAP authentication.
     quay_ldap_bind_dn: "uid=admin,{{ idm_user_container_dn }}"
+
     quay_ldap_user_filter: "(&(objectClass=person)(uid=*))"
+
+    # How frequently Quay considers synchronized LDAP team membership stale.
     quay_ldap_team_sync_stale_time: 60m
+
+    ###########################################################################
+    # Quay users
+    ###########################################################################
 
     quay_admin_users: "{{ idm_users | default([]) | unique }}"
     quay_org_member_users: "{{ quay_admin_users }}"
 
+    ###########################################################################
+    # IdM groups used by Quay
+    ###########################################################################
+
     quay_idm_owner_group: "quay-{{ quay_default_org }}-owners"
     quay_idm_writer_group: "quay-{{ quay_default_org }}-writers"
 
+    # Relative group DNs.
+    #
+    # These values are passed to the Quay team synchronization API because
+    # Quay resolves them relative to LDAP_BASE_DN.
+    quay_idm_owner_group_relative_dn: >-
+      cn={{ quay_idm_owner_group }},{{ idm_group_container_relative_dn }}
+
+    quay_idm_writer_group_relative_dn: >-
+      cn={{ quay_idm_writer_group }},{{ idm_group_container_relative_dn }}
+
+    # Full group DNs.
+    #
+    # These values are used for IdM operations, ldapsearch validation, and
+    # filters that compare against the user's full memberOf attribute.
     quay_idm_owner_group_dn: >-
-      cn={{ quay_idm_owner_group }},{{ idm_group_container_dn }}
+      {{ quay_idm_owner_group_relative_dn }},{{ idm_base_dn }}
 
     quay_idm_writer_group_dn: >-
-      cn={{ quay_idm_writer_group }},{{ idm_group_container_dn }}
+      {{ quay_idm_writer_group_relative_dn }},{{ idm_base_dn }}
 
+    # The memberOf attribute contains a complete LDAP DN, so this filter must
+    # use the full owner-group DN rather than the relative API value.
     quay_ldap_superuser_filter: >-
       (memberOf={{ quay_idm_owner_group_dn }})
+
+    ###########################################################################
+    # Quay team-to-IdM synchronization mappings
+    ###########################################################################
 
     quay_team_syncs:
       - team: "{{ quay_owner_team }}"
         role: "{{ quay_owner_team_role }}"
         idm_group: "{{ quay_idm_owner_group }}"
-        group_dn: "{{ quay_idm_owner_group_dn }}"
+
+        # Passed to:
+        # POST /api/v1/organization/<org>/team/<team>/syncing
+        group_dn: "{{ quay_idm_owner_group_relative_dn }}"
+
+        # Used only for direct LDAP validation and diagnostics.
+        full_group_dn: "{{ quay_idm_owner_group_dn }}"
+
         users: "{{ quay_admin_users }}"
 
       - team: "{{ quay_default_team }}"
         role: "{{ quay_default_team_role }}"
         idm_group: "{{ quay_idm_writer_group }}"
-        group_dn: "{{ quay_idm_writer_group_dn }}"
+
+        # Passed to:
+        # POST /api/v1/organization/<org>/team/<team>/syncing
+        group_dn: "{{ quay_idm_writer_group_relative_dn }}"
+
+        # Used only for direct LDAP validation and diagnostics.
+        full_group_dn: "{{ quay_idm_writer_group_dn }}"
+
         users: "{{ quay_org_member_users }}"
+
+    ###########################################################################
+    # AWS Secrets Manager paths
+    ###########################################################################
 
     required_secret_paths:
       redhat_registry_username: redhat/registry_username
