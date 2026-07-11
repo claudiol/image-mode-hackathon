@@ -805,7 +805,7 @@
           - member
       loop: "{{ quay_team_syncs }}"
       changed_when: false
-      no_log: true
+      no_log: false
 
     ###########################################################################
     # Quay bootstrap configuration
