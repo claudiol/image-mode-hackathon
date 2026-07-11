@@ -1504,6 +1504,14 @@
             IdM group synchronization controls Quay team membership,
             and members of the IdM owner group become Quay superusers.
 
+    - name: Show running containers
+      ansible.builtin.command:
+        argv:
+          - podman
+          - ps
+      register: podman_ps
+      changed_when: false
+
     - name: Display running containers
       ansible.builtin.debug:
-        var: podman_ps.stdout_lines
+        msg: "{{ podman_ps.stdout_lines | default(['podman ps was not executed']) }}"
