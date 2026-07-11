@@ -1445,12 +1445,12 @@
           is not search('already|exists|enabled')
         )
 
-    - name: Read synchronized Quay team members
+    - name: Read synchronized Quay team configuration
       ansible.builtin.uri:
         url: >-
           https://127.0.0.1:{{ quay_https_port
           }}/api/v1/organization/{{ quay_default_org
-          }}/team/{{ item.team }}/members
+          }}/team/{{ item.team }}/permissions
         method: GET
         validate_certs: false
         headers:
@@ -1463,14 +1463,18 @@
         label: "{{ item.team }}"
       register: quay_synced_teams
       changed_when: false
-      no_log: false
+      no_log: true
 
-    - name: Show synchronized Quay team membership
+    - name: Show synchronized Quay team validation
       ansible.builtin.debug:
         msg:
           team: "{{ item.item.team }}"
+          role: "{{ item.item.role }}"
           idm_group: "{{ item.item.idm_group }}"
-          members: "{{ item.json.members | default(item.json) }}"
+          group_dn: "{{ item.item.group_dn }}"
+          api_status: "{{ item.status }}"
+          repository_permissions: >-
+            {{ item.json.permissions | default([]) }}
       loop: "{{ quay_synced_teams.results }}"
       loop_control:
         label: "{{ item.item.team }}"
