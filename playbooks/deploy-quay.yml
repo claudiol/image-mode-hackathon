@@ -1459,7 +1459,7 @@
           - 200
       loop: "{{ quay_team_syncs }}"
       register: quay_synced_teams
-      no_log: true
+      no_log: false
 
     - name: Show running containers
       ansible.builtin.command:
