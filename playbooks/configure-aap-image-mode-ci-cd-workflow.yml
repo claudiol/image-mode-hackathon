@@ -43,8 +43,6 @@
     aap_gateway_password_secret_name: >-
       {{ secret_prefix }}/aap/gateway_admin_password
 
-    aap_vault_password_secret_name: >-
-      {{ secret_prefix }}/aap/vault_password
 
     redhat_registry_username_secret_name: >-
       {{ secret_prefix }}/redhat/registry_username
@@ -404,29 +402,6 @@
       changed_when: false
       no_log: true
 
-    ###########################################################################
-    # Read AAP vault credential
-    ###########################################################################
-
-    - name: Read AAP vault password
-      ansible.builtin.command:
-        argv:
-          - aws
-          - secretsmanager
-          - get-secret-value
-          - --secret-id
-          - "{{ aap_vault_password_secret_name }}"
-          - --region
-          - "{{ resolved_aws_region }}"
-          - --profile
-          - "{{ resolved_aws_profile }}"
-          - --query
-          - SecretString
-          - --output
-          - text
-      register: aap_vault_password_secret_result
-      changed_when: false
-      no_log: true
 
     ###########################################################################
     # Map AWS command results to variables used by AAP configuration files
@@ -485,11 +460,6 @@
           {{ redhat_registry_password_secret_result.stdout | trim }}
       no_log: true
 
-    - name: Set AAP vault credential variables
-      ansible.builtin.set_fact:
-        ansible_vault_password: >-
-          {{ aap_vault_password_secret_result.stdout | trim }}
-      no_log: true
 
     ###########################################################################
     # Validate retrieved secrets
@@ -543,15 +513,6 @@
           Manager.
       no_log: true
 
-    - name: Validate AAP vault password
-      ansible.builtin.assert:
-        that:
-          - ansible_vault_password | length > 0
-          - ansible_vault_password != "None"
-        fail_msg: >-
-          The AAP vault password could not be retrieved from AWS Secrets
-          Manager.
-      no_log: true
 
     ###########################################################################
     # Resolve Image Mode image names
@@ -727,7 +688,6 @@
     # redhat_registry_host
     # redhat_registry_username
     # redhat_registry_password
-    # ansible_vault_password
     # git_username
     # git_token
     ###########################################################################
