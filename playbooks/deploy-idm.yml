@@ -5,6 +5,10 @@
   gather_facts: true
 
   vars:
+    ###########################################################################
+    # IdM identity settings
+    ###########################################################################
+
     idm_short_name: "{{ inventory_hostname_short }}"
 
     idm_parent_domain: "{{ parent_domain_name }}"
@@ -12,31 +16,75 @@
     idm_realm: "{{ idm_realm_name }}"
     idm_fqdn: "{{ idm_server_fqdn }}"
 
-    idm_forward_policy: "only"
+    idm_forward_policy: only
+
+    ###########################################################################
+    # IdM authorization settings
+    ###########################################################################
 
     idm_admin_group: idm-admins
     idm_sudo_rule: allow_idm_admins_all
 
-    idm_admin_password_secret_name: "{{ secret_prefix }}/idm/admin_password"
-    idm_dm_password_secret_name: "{{ secret_prefix }}/idm/directory_manager_password"
-    idm_default_user_password_secret_name: "{{ secret_prefix }}/idm/default_user_password"
+    ###########################################################################
+    # AWS Secrets Manager settings
+    ###########################################################################
+
+    idm_admin_password_secret_name: >-
+      {{ secret_prefix }}/idm/admin_password
+
+    idm_dm_password_secret_name: >-
+      {{ secret_prefix }}/idm/directory_manager_password
+
+    idm_default_user_password_secret_name: >-
+      {{ secret_prefix }}/idm/default_user_password
+
+    ###########################################################################
+    # IdM installer controls
+    ###########################################################################
+
+    # Maximum amount of time allowed for ipa-server-install.
+    idm_install_timeout_seconds: 3600
+
+    # Ansible reports installer polling status at this interval.
+    idm_install_poll_seconds: 30
+
+    idm_install_log: /var/log/ipaserver-install.log
+    idm_install_wrapper_log: /var/log/ansible-idm-install.log
+
+    idm_install_diagnostics_log: >-
+      /var/log/ansible-idm-install-diagnostics.log
+
+    ###########################################################################
+    # Minimum resource requirements
+    ###########################################################################
+
+    idm_minimum_memory_mb: 1800
+    idm_minimum_root_disk_mb: 4096
+
+    ###########################################################################
+    # Firewall ports
+    ###########################################################################
 
     required_tcp_ports:
-      - 80
-      - 443
-      - 389
-      - 636
-      - 88
-      - 464
       - 53
+      - 80
+      - 88
+      - 389
+      - 443
+      - 464
+      - 636
 
     required_udp_ports:
-      - 88
-      - 464
       - 53
+      - 88
       - 123
+      - 464
 
   pre_tasks:
+    ###########################################################################
+    # Validate inventory and AWS settings
+    ###########################################################################
+
     - name: Validate required AWS lookup inputs
       ansible.builtin.assert:
         that:
@@ -46,9 +94,15 @@
           - aws_region | length > 0
           - aws_profile is defined
           - aws_profile | length > 0
-        fail_msg: "Missing secret_prefix, aws_region, or aws_profile from inventory."
+        fail_msg: >-
+          Missing secret_prefix, aws_region, or aws_profile from the
+          generated Ansible inventory.
 
-    - name: Read IdM admin password from AWS Secrets Manager using AWS CLI
+    ###########################################################################
+    # Read IdM secrets from AWS Secrets Manager
+    ###########################################################################
+
+    - name: Read IdM admin password from AWS Secrets Manager
       ansible.builtin.command:
         argv:
           - aws
@@ -70,7 +124,7 @@
       changed_when: false
       no_log: true
 
-    - name: Read IdM Directory Manager password from AWS Secrets Manager using AWS CLI
+    - name: Read IdM Directory Manager password from AWS Secrets Manager
       ansible.builtin.command:
         argv:
           - aws
@@ -92,7 +146,7 @@
       changed_when: false
       no_log: true
 
-    - name: Read IdM default user password from AWS Secrets Manager using AWS CLI
+    - name: Read IdM default user password from AWS Secrets Manager
       ansible.builtin.command:
         argv:
           - aws
@@ -116,12 +170,15 @@
 
     - name: Set IdM password facts
       ansible.builtin.set_fact:
-        idm_vault_admin_password: "{{ idm_admin_secret_result.stdout }}"
-        idm_vault_dm_password: "{{ idm_dm_secret_result.stdout }}"
-        idm_default_user_password: "{{ idm_default_user_password_result.stdout }}"
+        idm_vault_admin_password: >-
+          {{ idm_admin_secret_result.stdout | trim }}
+        idm_vault_dm_password: >-
+          {{ idm_dm_secret_result.stdout | trim }}
+        idm_default_user_password: >-
+          {{ idm_default_user_password_result.stdout | trim }}
       no_log: true
 
-    - name: Validate required AWS secret variables
+    - name: Validate required AWS secret values
       ansible.builtin.assert:
         that:
           - idm_vault_dm_password is defined
@@ -130,8 +187,14 @@
           - idm_vault_admin_password | length > 0
           - idm_default_user_password is defined
           - idm_default_user_password | length > 0
-        fail_msg: "Missing IdM AWS Secrets Manager values. Check Terraform-created IdM secrets."
+        fail_msg: >-
+          Missing IdM values from AWS Secrets Manager. Verify that Terraform
+          created the IdM secrets and stored secret versions successfully.
       no_log: true
+
+    ###########################################################################
+    # Validate Terraform-generated DNS settings
+    ###########################################################################
 
     - name: Validate Terraform-provided DNS variables
       ansible.builtin.assert:
@@ -146,18 +209,62 @@
           - idm_server_fqdn | length > 0
           - aws_dns_resolver is defined
           - aws_dns_resolver | length > 0
-        fail_msg: "Missing Terraform DNS inventory variables. Check inventory.tpl and Terraform templatefile vars."
+        fail_msg: >-
+          Missing Terraform DNS inventory variables. Check inventory.tpl and
+          the variables passed to Terraform templatefile().
 
     - name: Validate AWS private IPv4 discovery
       ansible.builtin.assert:
         that:
-          - private_ip is defined or ansible_facts["default_ipv4"]["address"] is defined
-        fail_msg: "Could not detect private IPv4 address."
+          - >-
+            idm_server_ip is defined
+            or private_ip is defined
+            or ansible_facts["default_ipv4"]["address"] is defined
+        fail_msg: >-
+          Could not detect the private IPv4 address for the IdM server.
 
-    - name: Set discovered network facts
+    - name: Set discovered IdM network facts
       ansible.builtin.set_fact:
-        idm_private_ip: "{{ idm_server_ip | default(private_ip | default(ansible_facts['default_ipv4']['address'], true), true) }}"
-        idm_nm_connection: "{{ ansible_facts['default_ipv4']['interface'] }}"
+        idm_private_ip: >-
+          {{
+            idm_server_ip
+            | default(
+                private_ip
+                | default(
+                    ansible_facts["default_ipv4"]["address"],
+                    true
+                  ),
+                true
+              )
+          }}
+        idm_network_interface: >-
+          {{ ansible_facts["default_ipv4"]["interface"] }}
+
+    - name: Determine active NetworkManager connection name
+      ansible.builtin.command:
+        argv:
+          - nmcli
+          - -g
+          - GENERAL.CONNECTION
+          - device
+          - show
+          - "{{ idm_network_interface }}"
+      register: idm_nm_connection_result
+      changed_when: false
+
+    - name: Set NetworkManager connection fact
+      ansible.builtin.set_fact:
+        idm_nm_connection: >-
+          {{ idm_nm_connection_result.stdout | trim }}
+
+    - name: Validate NetworkManager connection discovery
+      ansible.builtin.assert:
+        that:
+          - idm_nm_connection | length > 0
+          - idm_nm_connection != "--"
+        fail_msg: >-
+          Could not determine the active NetworkManager connection for
+          interface {{ idm_network_interface }}.
 
     - name: Validate IdM DNS relationship
       ansible.builtin.assert:
@@ -166,30 +273,42 @@
           - idm_fqdn == idm_short_name ~ "." ~ idm_domain
           - idm_realm == idm_domain | upper
         fail_msg: >-
-          DNS mismatch detected. Expected idm_fqdn={{ idm_short_name }}.{{ idm_domain }},
-          idm_domain=lab.{{ idm_parent_domain }}, realm={{ idm_domain | upper }}.
+          DNS relationship mismatch detected. Expected:
+          idm_fqdn={{ idm_short_name }}.{{ idm_domain }},
+          idm_domain=lab.{{ idm_parent_domain }},
+          idm_realm={{ idm_domain | upper }}.
 
     - name: Validate Terraform-provided IdM users
       ansible.builtin.assert:
         that:
           - idm_users is defined
           - idm_users | length > 0
-        fail_msg: "idm_users missing. Check Terraform variables.tf, terraform.tfvars, and inventory.tpl."
+        fail_msg: >-
+          idm_users is missing. Check variables.tf, terraform.tfvars, and
+          inventory.tpl.
 
   tasks:
+    ###########################################################################
+    # Install operating-system prerequisites
+    ###########################################################################
+
     - name: Ensure required IdM packages are installed
       ansible.builtin.dnf:
         name:
-          - firewalld
-          - chrony
           - bind-utils
-          - NetworkManager
-          - python3-libselinux
+          - chrony
+          - firewalld
           - ipa-server
           - ipa-server-dns
+          - NetworkManager
+          - python3-libselinux
         state: present
 
-    - name: Set persistent IdM lab hostname
+    ###########################################################################
+    # Configure hostname
+    ###########################################################################
+
+    - name: Set persistent IdM hostname
       ansible.builtin.hostname:
         name: "{{ idm_fqdn }}"
 
@@ -207,15 +326,23 @@
         path: /etc/nsswitch.conf
         regexp: '^(hosts:\s+.*)\s+myhostname(\s*.*)$'
         replace: '\1\2'
+        backup: true
 
-    - name: Ensure IdM lab hostname resolves to private AWS IP
+    - name: Ensure IdM hostname resolves to its private AWS address
       ansible.builtin.blockinfile:
         path: /etc/hosts
         marker: "# {mark} ANSIBLE MANAGED IDM HOSTS"
         block: |
           {{ idm_private_ip }} {{ idm_fqdn }} {{ idm_short_name }}
+        owner: root
+        group: root
+        mode: "0644"
 
-    - name: Ensure IPv6 loopback is enabled
+    ###########################################################################
+    # Configure IPv6 loopback
+    ###########################################################################
+
+    - name: Ensure IPv6 is enabled
       ansible.posix.sysctl:
         name: "{{ item }}"
         value: "0"
@@ -227,17 +354,54 @@
         - net.ipv6.conf.all.disable_ipv6
         - net.ipv6.conf.default.disable_ipv6
 
-    - name: Ensure ::1 exists on loopback
-      ansible.builtin.command: ip -6 addr add ::1/128 dev lo
-      register: ipv6_loopback
-      failed_when: false
-      changed_when: ipv6_loopback.rc == 0
+    - name: Check whether IPv6 loopback address exists
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -6
+          - address
+          - show
+          - dev
+          - lo
+      register: idm_ipv6_loopback_status
+      changed_when: false
+
+    - name: Add IPv6 loopback address when missing
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -6
+          - address
+          - add
+          - "::1/128"
+          - dev
+          - lo
+      when: "'inet6 ::1/128' not in idm_ipv6_loopback_status.stdout"
+
+    ###########################################################################
+    # Configure time synchronization
+    ###########################################################################
 
     - name: Enable and start chronyd
       ansible.builtin.service:
         name: chronyd
         state: started
         enabled: true
+
+    - name: Wait for chronyd to report tracking information
+      ansible.builtin.command:
+        argv:
+          - chronyc
+          - tracking
+      register: idm_chrony_tracking
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: idm_chrony_tracking.rc == 0
+
+    ###########################################################################
+    # Configure firewall
+    ###########################################################################
 
     - name: Enable and start firewalld
       ansible.builtin.service:
@@ -261,7 +425,433 @@
         state: enabled
       loop: "{{ required_udp_ports }}"
 
-    - name: Configure NetworkManager DNS for IdM host
+    ###########################################################################
+    # Configure pre-install DNS
+    #
+    # Do not configure 127.0.0.1 as DNS until IdM named is operational.
+    ###########################################################################
+
+    - name: Configure AWS resolver as pre-install DNS server
+      community.general.nmcli:
+        conn_name: "{{ idm_nm_connection }}"
+        dns4:
+          - "{{ aws_dns_resolver }}"
+        dns4_ignore_auto: true
+        state: present
+      register: idm_preinstall_nmcli_dns
+
+    - name: Reapply NetworkManager connection after pre-install DNS change
+      ansible.builtin.command:
+        argv:
+          - nmcli
+          - device
+          - reapply
+          - "{{ idm_network_interface }}"
+      register: idm_preinstall_nmcli_reapply
+      changed_when: idm_preinstall_nmcli_reapply.rc == 0
+      when: idm_preinstall_nmcli_dns.changed
+
+    - name: Wait for resolver configuration to settle
+      ansible.builtin.pause:
+        seconds: 3
+      when: idm_preinstall_nmcli_dns.changed
+
+    ###########################################################################
+    # Preflight validation
+    ###########################################################################
+
+    - name: Verify configured fully qualified hostname
+      ansible.builtin.command:
+        argv:
+          - hostname
+          - --fqdn
+      register: idm_hostname_check
+      changed_when: false
+      failed_when: >-
+        idm_hostname_check.rc != 0
+        or idm_hostname_check.stdout | trim != idm_fqdn
+
+    - name: Verify IdM hostname resolves locally to private address
+      ansible.builtin.command:
+        argv:
+          - getent
+          - ahostsv4
+          - "{{ idm_fqdn }}"
+      register: idm_hostname_resolution
+      changed_when: false
+      failed_when: >-
+        idm_hostname_resolution.rc != 0
+        or idm_private_ip not in idm_hostname_resolution.stdout
+
+    - name: Verify AWS DNS resolver answers UDP queries
+      ansible.builtin.command:
+        argv:
+          - dig
+          - "+time=3"
+          - "+tries=1"
+          - "+short"
+          - "@{{ aws_dns_resolver }}"
+          - amazon.com
+          - A
+      register: idm_aws_dns_udp_test
+      changed_when: false
+      retries: 3
+      delay: 3
+      until:
+        - idm_aws_dns_udp_test.rc == 0
+        - idm_aws_dns_udp_test.stdout_lines | length > 0
+
+    - name: Verify AWS DNS resolver answers TCP queries
+      ansible.builtin.command:
+        argv:
+          - dig
+          - "+tcp"
+          - "+time=3"
+          - "+tries=1"
+          - "+short"
+          - "@{{ aws_dns_resolver }}"
+          - amazon.com
+          - A
+      register: idm_aws_dns_tcp_test
+      changed_when: false
+      retries: 3
+      delay: 3
+      until:
+        - idm_aws_dns_tcp_test.rc == 0
+        - idm_aws_dns_tcp_test.stdout_lines | length > 0
+
+    - name: Gather available root filesystem space
+      ansible.builtin.command:
+        argv:
+          - df
+          - --output=avail
+          - --block-size=1M
+          - /
+      register: idm_root_disk_available
+      changed_when: false
+
+    - name: Set available root disk fact
+      ansible.builtin.set_fact:
+        idm_root_disk_available_mb: >-
+          {{ idm_root_disk_available.stdout_lines[-1] | trim | int }}
+
+    - name: Validate available memory and disk space
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.memtotal_mb | int >= idm_minimum_memory_mb
+          - idm_root_disk_available_mb | int >= idm_minimum_root_disk_mb
+        fail_msg: >-
+          IdM resource validation failed. Required:
+          memory={{ idm_minimum_memory_mb }} MB,
+          root_disk={{ idm_minimum_root_disk_mb }} MB.
+          Detected:
+          memory={{ ansible_facts.memtotal_mb }} MB,
+          root_disk={{ idm_root_disk_available_mb }} MB.
+
+    - name: Display IdM preflight summary
+      ansible.builtin.debug:
+        msg:
+          - "IdM preflight checks passed."
+          - "Hostname: {{ idm_fqdn }}"
+          - "Private IP: {{ idm_private_ip }}"
+          - "Network interface: {{ idm_network_interface }}"
+          - "NetworkManager connection: {{ idm_nm_connection }}"
+          - "AWS DNS resolver: {{ aws_dns_resolver }}"
+          - "Memory: {{ ansible_facts.memtotal_mb }} MB"
+          - "Free root disk: {{ idm_root_disk_available_mb }} MB"
+
+    ###########################################################################
+    # Detect existing installation or partial installation
+    ###########################################################################
+
+    - name: Check whether IdM services are fully operational
+      ansible.builtin.command:
+        argv:
+          - ipactl
+          - status
+      register: ipa_status
+      failed_when: false
+      changed_when: false
+
+    - name: Check for existing IdM default configuration
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: ipa_default_conf
+
+    - name: Check for existing IPA installation marker
+      ansible.builtin.stat:
+        path: /var/lib/ipa/sysrestore/sysrestore.state
+      register: ipa_sysrestore_state
+
+    - name: Report partial IdM installation detection
+      ansible.builtin.debug:
+        msg: >-
+          Existing IdM configuration was found, but ipactl status failed.
+          The incomplete installation will be removed before reinstalling.
+      when:
+        - ipa_status.rc != 0
+        - >-
+          ipa_default_conf.stat.exists
+          or ipa_sysrestore_state.stat.exists
+
+    - name: Remove failed partial IdM installation
+      ansible.builtin.command:
+        argv:
+          - ipa-server-install
+          - --uninstall
+          - --unattended
+      async: 1200
+      poll: 15
+      register: ipa_partial_uninstall
+      changed_when: ipa_partial_uninstall.rc == 0
+      failed_when: false
+      when:
+        - ipa_status.rc != 0
+        - >-
+          ipa_default_conf.stat.exists
+          or ipa_sysrestore_state.stat.exists
+
+    - name: Remove stale IdM installation logs before clean installation
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ idm_install_wrapper_log }}"
+        - "{{ idm_install_diagnostics_log }}"
+      when: ipa_status.rc != 0
+
+    ###########################################################################
+    # Install IdM
+    ###########################################################################
+
+    - name: Install IdM server with integrated DNS for lab subdomain
+      when: ipa_status.rc != 0
+      block:
+        - name: Display IdM installation start information
+          ansible.builtin.debug:
+            msg:
+              - "Starting Red Hat IdM server installation."
+              - "Hostname: {{ idm_fqdn }}"
+              - "Private IP: {{ idm_private_ip }}"
+              - "Domain: {{ idm_domain }}"
+              - "Realm: {{ idm_realm }}"
+              - "DNS forwarder: {{ aws_dns_resolver }}"
+              - >-
+                Installer timeout:
+                {{ idm_install_timeout_seconds }} seconds
+              - >-
+                Ansible poll interval:
+                {{ idm_install_poll_seconds }} seconds
+              - "Installer log: {{ idm_install_log }}"
+              - "Wrapper log: {{ idm_install_wrapper_log }}"
+
+        - name: Run bounded IdM server installation
+          ansible.builtin.shell: |
+            set -o pipefail
+
+            ipa-server-install \
+              --hostname="{{ idm_fqdn }}" \
+              --ip-address="{{ idm_private_ip }}" \
+              --domain="{{ idm_domain }}" \
+              --realm="{{ idm_realm }}" \
+              --ds-password="${IDM_DM_PASSWORD}" \
+              --admin-password="${IDM_ADMIN_PASSWORD}" \
+              --setup-dns \
+              --forwarder="{{ aws_dns_resolver }}" \
+              --forward-policy="{{ idm_forward_policy }}" \
+              --no-dnssec-validation \
+              --no-host-dns \
+              --no-reverse \
+              --no-ntp \
+              --unattended \
+              > "{{ idm_install_wrapper_log }}" 2>&1
+          args:
+            executable: /bin/bash
+          environment:
+            IDM_DM_PASSWORD: "{{ idm_vault_dm_password }}"
+            IDM_ADMIN_PASSWORD: "{{ idm_vault_admin_password }}"
+          async: "{{ idm_install_timeout_seconds }}"
+          poll: "{{ idm_install_poll_seconds }}"
+          register: ipa_install
+          changed_when: ipa_install.rc == 0
+          no_log: true
+
+        - name: Wait for IdM services to become operational
+          ansible.builtin.command:
+            argv:
+              - ipactl
+              - status
+          register: ipa_post_install_status
+          changed_when: false
+          retries: 20
+          delay: 15
+          until: ipa_post_install_status.rc == 0
+
+      rescue:
+        - name: Capture IdM installation diagnostics
+          ansible.builtin.shell: |
+            {
+              echo "============================================================"
+              echo "IdM installation diagnostics"
+              echo "Generated: $(date --iso-8601=seconds)"
+              echo "============================================================"
+
+              echo
+              echo "HOSTNAME"
+              hostnamectl || true
+              hostname --fqdn || true
+
+              echo
+              echo "HOSTNAME RESOLUTION"
+              getent ahostsv4 "{{ idm_fqdn }}" || true
+
+              echo
+              echo "HOSTS FILE"
+              cat /etc/hosts || true
+
+              echo
+              echo "RESOLVER CONFIGURATION"
+              cat /etc/resolv.conf || true
+              resolvectl status || true
+              nmcli device show "{{ idm_network_interface }}" || true
+
+              echo
+              echo "AWS RESOLVER UDP TEST"
+              dig +time=3 +tries=1 \
+                "@{{ aws_dns_resolver }}" amazon.com A || true
+
+              echo
+              echo "AWS RESOLVER TCP TEST"
+              dig +tcp +time=3 +tries=1 \
+                "@{{ aws_dns_resolver }}" amazon.com A || true
+
+              echo
+              echo "IDM DOMAIN LOOKUP"
+              dig +time=3 +tries=1 \
+                "@{{ aws_dns_resolver }}" "{{ idm_domain }}" SOA || true
+
+              echo
+              echo "SYSTEM TIME"
+              timedatectl || true
+              chronyc tracking || true
+              chronyc sources -v || true
+
+              echo
+              echo "FILESYSTEM"
+              df -h || true
+              df -i || true
+
+              echo
+              echo "MEMORY"
+              free -m || true
+
+              echo
+              echo "LISTENING PORTS"
+              ss -lntup || true
+
+              echo
+              echo "RUNNING IPA INSTALLER PROCESSES"
+              ps -ef | grep -E \
+                'ipa-server-install|pkispawn|dscreate' |
+                grep -v grep || true
+
+              echo
+              echo "FAILED SYSTEMD SERVICES"
+              systemctl --failed --no-pager || true
+
+              echo
+              echo "IPA SERVICE STATUS"
+              ipactl status || true
+
+              echo
+              echo "DIRECTORY SERVER SERVICES"
+              systemctl --no-pager --full status 'dirsrv@*' || true
+
+              echo
+              echo "PKI TOMCAT STATUS"
+              systemctl --no-pager --full status \
+                pki-tomcatd@pki-tomcat.service || true
+
+              echo
+              echo "NAMED STATUS"
+              systemctl --no-pager --full status \
+                named-pkcs11.service named.service || true
+
+              echo
+              echo "WRAPPER LOG - LAST 300 LINES"
+              tail -n 300 "{{ idm_install_wrapper_log }}" || true
+
+              echo
+              echo "IPA INSTALLER LOG - LAST 500 LINES"
+              tail -n 500 "{{ idm_install_log }}" || true
+
+              echo
+              echo "IPA INSTALLER ERROR LOG"
+              tail -n 300 /var/log/ipaserver-install.log || true
+
+              echo
+              echo "DIRECTORY SERVER JOURNAL"
+              journalctl --no-pager -n 200 -u 'dirsrv@*' || true
+
+              echo
+              echo "PKI TOMCAT JOURNAL"
+              journalctl --no-pager -n 200 \
+                -u pki-tomcatd@pki-tomcat.service || true
+
+              echo
+              echo "NAMED JOURNAL"
+              journalctl --no-pager -n 200 \
+                -u named-pkcs11.service \
+                -u named.service || true
+
+              echo
+              echo "RECENT SYSTEM JOURNAL"
+              journalctl --no-pager -n 500 || true
+            } > "{{ idm_install_diagnostics_log }}" 2>&1
+
+            cat "{{ idm_install_diagnostics_log }}"
+          args:
+            executable: /bin/bash
+          register: idm_install_diagnostics
+          changed_when: false
+          failed_when: false
+
+        - name: Display IdM installation diagnostics
+          ansible.builtin.debug:
+            var: idm_install_diagnostics.stdout_lines
+
+        - name: Stop after failed or timed-out IdM installation
+          ansible.builtin.fail:
+            msg: >-
+              IdM installation failed or exceeded the
+              {{ idm_install_timeout_seconds }}-second timeout.
+              Review {{ idm_install_log }},
+              {{ idm_install_wrapper_log }}, and
+              {{ idm_install_diagnostics_log }} on
+              {{ inventory_hostname }}.
+
+    ###########################################################################
+    # Verify installation
+    ###########################################################################
+
+    - name: Verify IdM services are running
+      ansible.builtin.command:
+        argv:
+          - ipactl
+          - status
+      register: ipa_verify
+      changed_when: false
+      retries: 10
+      delay: 15
+      until: ipa_verify.rc == 0
+
+    ###########################################################################
+    # Configure post-install DNS
+    #
+    # IdM named is now operational, so localhost can safely become primary DNS.
+    ###########################################################################
+
+    - name: Configure local IdM DNS as primary resolver
       community.general.nmcli:
         conn_name: "{{ idm_nm_connection }}"
         dns4:
@@ -269,71 +859,61 @@
           - "{{ aws_dns_resolver }}"
         dns4_ignore_auto: true
         state: present
-      register: nmcli_dns
-      failed_when: false
+      register: idm_postinstall_nmcli_dns
 
-    - name: Restart NetworkManager when DNS pinning changed
-      ansible.builtin.service:
-        name: NetworkManager
-        state: restarted
-      when: nmcli_dns.changed | default(false)
-
-    - name: Check whether IdM is fully installed
-      ansible.builtin.command: ipactl status
-      register: ipa_status
-      failed_when: false
-      changed_when: false
-
-    - name: Check for existing partial IdM config
-      ansible.builtin.stat:
-        path: /etc/ipa/default.conf
-      register: ipa_default_conf
-
-    - name: Remove failed partial IdM install when config exists but services are down
+    - name: Reapply NetworkManager connection after IdM DNS installation
       ansible.builtin.command:
         argv:
-          - ipa-server-install
-          - --uninstall
-          - --unattended
-      register: ipa_partial_uninstall
-      failed_when: false
-      changed_when: ipa_partial_uninstall.rc == 0
-      when:
-        - ipa_status.rc != 0
-        - ipa_default_conf.stat.exists
+          - nmcli
+          - device
+          - reapply
+          - "{{ idm_network_interface }}"
+      register: idm_postinstall_nmcli_reapply
+      changed_when: idm_postinstall_nmcli_reapply.rc == 0
+      when: idm_postinstall_nmcli_dns.changed
 
-    - name: Install IdM server with integrated DNS for lab subdomain
+    - name: Wait for local IdM DNS server to answer
       ansible.builtin.command:
         argv:
-          - ipa-server-install
-          - "--hostname={{ idm_fqdn }}"
-          - "--ip-address={{ idm_private_ip }}"
-          - "--domain={{ idm_domain }}"
-          - "--realm={{ idm_realm }}"
-          - "--ds-password={{ idm_vault_dm_password }}"
-          - "--admin-password={{ idm_vault_admin_password }}"
-          - "--setup-dns"
-          - "--forwarder={{ aws_dns_resolver }}"
-          - "--forward-policy={{ idm_forward_policy }}"
-          - "--no-dnssec-validation"
-          - "--unattended"
-          - "--no-reverse"
-      register: ipa_install
-      no_log: true
-      when: ipa_status.rc != 0
-
-    - name: Verify IdM services are running
-      ansible.builtin.command: ipactl status
-      register: ipa_verify
+          - dig
+          - "+time=2"
+          - "+tries=1"
+          - "+short"
+          - "@127.0.0.1"
+          - "{{ idm_fqdn }}"
+          - A
+      register: idm_local_dns_ready
       changed_when: false
-      failed_when: ipa_verify.rc != 0
+      retries: 30
+      delay: 5
+      until:
+        - idm_local_dns_ready.rc == 0
+        - idm_private_ip in idm_local_dns_ready.stdout_lines
+
+    ###########################################################################
+    # Authenticate to IdM
+    ###########################################################################
 
     - name: Authenticate to IdM as admin
-      ansible.builtin.command: kinit admin
+      ansible.builtin.command:
+        argv:
+          - kinit
+          - admin
       args:
         stdin: "{{ idm_vault_admin_password }}"
       changed_when: false
       no_log: true
+
+    - name: Verify Kerberos credentials
+      ansible.builtin.command:
+        argv:
+          - klist
+          - -s
+      changed_when: false
+
+    ###########################################################################
+    # Create DNS records for inventory hosts
+    ###########################################################################
 
     - name: Check existing IdM DNS A records for inventory hosts
       ansible.builtin.command:
@@ -363,8 +943,12 @@
       changed_when: idm_dns_record_add.rc == 0
       failed_when:
         - idm_dns_record_add.rc != 0
-        - "'already exists' not in (idm_dns_record_add.stderr | default(''))"
-        - "'already exists' not in (idm_dns_record_add.stdout | default(''))"
+        - >-
+          'already exists'
+          not in (idm_dns_record_add.stderr | default(''))
+        - >-
+          'already exists'
+          not in (idm_dns_record_add.stdout | default(''))
       loop: "{{ idm_dns_record_checks.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
@@ -373,7 +957,7 @@
         - item.rc != 0
         - hostvars[item.item].private_ip is defined
 
-    - name: Update existing IdM DNS A records for inventory hosts
+    - name: Update incorrect IdM DNS A records for inventory hosts
       ansible.builtin.command:
         argv:
           - ipa
@@ -382,11 +966,17 @@
           - "{{ item.item.split('.')[0] }}"
           - "--a-rec={{ hostvars[item.item].private_ip }}"
       register: idm_dns_record_mod
-      changed_when: "'Modified record' in (idm_dns_record_mod.stdout | default(''))"
+      changed_when: >-
+        'Modified record'
+        in (idm_dns_record_mod.stdout | default(''))
       failed_when:
         - idm_dns_record_mod.rc != 0
-        - "'no modifications to be performed' not in (idm_dns_record_mod.stderr | default(''))"
-        - "'no modifications to be performed' not in (idm_dns_record_mod.stdout | default(''))"
+        - >-
+          'no modifications to be performed'
+          not in (idm_dns_record_mod.stderr | default(''))
+        - >-
+          'no modifications to be performed'
+          not in (idm_dns_record_mod.stdout | default(''))
       loop: "{{ idm_dns_record_checks.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
@@ -394,24 +984,36 @@
         - item.rc is defined
         - item.rc == 0
         - hostvars[item.item].private_ip is defined
-        - "'A record: ' ~ hostvars[item.item].private_ip not in (item.stdout | default(''))"
+        - >-
+          'A record: ' ~ hostvars[item.item].private_ip
+          not in (item.stdout | default(''))
 
-    - name: Verify IdM DNS resolves all inventory hosts to private IPs
+    - name: Verify IdM DNS resolves inventory hosts to private addresses
       ansible.builtin.command:
         argv:
           - dig
+          - "+time=3"
+          - "+tries=1"
           - "+short"
           - "@127.0.0.1"
           - "{{ item }}"
           - A
       register: idm_dns_verify
       changed_when: false
-      failed_when: hostvars[item].private_ip not in idm_dns_verify.stdout_lines
+      retries: 5
+      delay: 3
+      until:
+        - idm_dns_verify.rc == 0
+        - hostvars[item].private_ip in idm_dns_verify.stdout_lines
       loop: "{{ groups['all'] }}"
       loop_control:
         label: "{{ item }}"
       when:
         - hostvars[item].private_ip is defined
+
+    ###########################################################################
+    # Create IdM administrative group
+    ###########################################################################
 
     - name: Ensure global IdM admin group exists
       ansible.builtin.command:
@@ -419,13 +1021,22 @@
           - ipa
           - group-add
           - "{{ idm_admin_group }}"
-          - "--desc=Global IdM administrators with sudo and IdM console access"
+          - >-
+            --desc=Global IdM administrators with sudo and IdM console access
       register: idm_admin_group_add
       changed_when: idm_admin_group_add.rc == 0
       failed_when:
         - idm_admin_group_add.rc != 0
-        - "'already exists' not in (idm_admin_group_add.stderr | default(''))"
-        - "'already exists' not in (idm_admin_group_add.stdout | default(''))"
+        - >-
+          'already exists'
+          not in (idm_admin_group_add.stderr | default(''))
+        - >-
+          'already exists'
+          not in (idm_admin_group_add.stdout | default(''))
+
+    ###########################################################################
+    # Create IdM users
+    ###########################################################################
 
     - name: Ensure IdM users exist
       ansible.builtin.command:
@@ -434,14 +1045,20 @@
           - user-add
           - "{{ item }}"
           - "--first={{ item }}"
-          - "--last=User"
+          - --last=User
       register: idm_user_add
       changed_when: idm_user_add.rc == 0
       failed_when:
         - idm_user_add.rc != 0
-        - "'already exists' not in (idm_user_add.stderr | default(''))"
-        - "'already exists' not in (idm_user_add.stdout | default(''))"
+        - >-
+          'already exists'
+          not in (idm_user_add.stderr | default(''))
+        - >-
+          'already exists'
+          not in (idm_user_add.stdout | default(''))
       loop: "{{ idm_users }}"
+      loop_control:
+        label: "{{ item }}"
 
     - name: Set temporary password for newly created IdM users
       ansible.builtin.command:
@@ -463,6 +1080,10 @@
         - item.rc is defined
         - item.rc == 0
 
+    ###########################################################################
+    # Grant administrative membership
+    ###########################################################################
+
     - name: Add users to global IdM admin group
       ansible.builtin.command:
         argv:
@@ -471,14 +1092,22 @@
           - "{{ idm_admin_group }}"
           - "--users={{ item }}"
       register: idm_group_member_add
-      changed_when: "'Number of members added 1' in (idm_group_member_add.stdout | default(''))"
+      changed_when: >-
+        'Number of members added 1'
+        in (idm_group_member_add.stdout | default(''))
       failed_when:
         - idm_group_member_add.rc != 0
-        - "'This entry is already a member' not in (idm_group_member_add.stderr | default(''))"
-        - "'This entry is already a member' not in (idm_group_member_add.stdout | default(''))"
+        - >-
+          'This entry is already a member'
+          not in (idm_group_member_add.stderr | default(''))
+        - >-
+          'This entry is already a member'
+          not in (idm_group_member_add.stdout | default(''))
       loop: "{{ idm_users }}"
+      loop_control:
+        label: "{{ item }}"
 
-    - name: Add global admin group to IdM built-in admins group
+    - name: Add global admin group to built-in IdM admins group
       ansible.builtin.command:
         argv:
           - ipa
@@ -486,11 +1115,21 @@
           - admins
           - "--groups={{ idm_admin_group }}"
       register: idm_console_admin_add
-      changed_when: "'Number of members added 1' in (idm_console_admin_add.stdout | default(''))"
+      changed_when: >-
+        'Number of members added 1'
+        in (idm_console_admin_add.stdout | default(''))
       failed_when:
         - idm_console_admin_add.rc != 0
-        - "'This entry is already a member' not in (idm_console_admin_add.stderr | default(''))"
-        - "'This entry is already a member' not in (idm_console_admin_add.stdout | default(''))"
+        - >-
+          'This entry is already a member'
+          not in (idm_console_admin_add.stderr | default(''))
+        - >-
+          'This entry is already a member'
+          not in (idm_console_admin_add.stdout | default(''))
+
+    ###########################################################################
+    # Configure IdM sudo rule
+    ###########################################################################
 
     - name: Ensure sudo rule exists for global IdM admins
       ansible.builtin.command:
@@ -503,8 +1142,12 @@
       changed_when: idm_sudo_rule_add.rc == 0
       failed_when:
         - idm_sudo_rule_add.rc != 0
-        - "'already exists' not in (idm_sudo_rule_add.stderr | default(''))"
-        - "'already exists' not in (idm_sudo_rule_add.stdout | default(''))"
+        - >-
+          'already exists'
+          not in (idm_sudo_rule_add.stderr | default(''))
+        - >-
+          'already exists'
+          not in (idm_sudo_rule_add.stdout | default(''))
 
     - name: Allow sudo rule to apply to all hosts
       ansible.builtin.command:
@@ -512,13 +1155,19 @@
           - ipa
           - sudorule-mod
           - "{{ idm_sudo_rule }}"
-          - "--hostcat=all"
+          - --hostcat=all
       register: idm_sudo_hostcat
-      changed_when: "'Modified Sudo Rule' in (idm_sudo_hostcat.stdout | default(''))"
+      changed_when: >-
+        'Modified Sudo Rule'
+        in (idm_sudo_hostcat.stdout | default(''))
       failed_when:
         - idm_sudo_hostcat.rc != 0
-        - "'no modifications to be performed' not in (idm_sudo_hostcat.stderr | default(''))"
-        - "'no modifications to be performed' not in (idm_sudo_hostcat.stdout | default(''))"
+        - >-
+          'no modifications to be performed'
+          not in (idm_sudo_hostcat.stderr | default(''))
+        - >-
+          'no modifications to be performed'
+          not in (idm_sudo_hostcat.stdout | default(''))
 
     - name: Allow sudo rule to run all commands
       ansible.builtin.command:
@@ -526,13 +1175,19 @@
           - ipa
           - sudorule-mod
           - "{{ idm_sudo_rule }}"
-          - "--cmdcat=all"
+          - --cmdcat=all
       register: idm_sudo_cmdcat
-      changed_when: "'Modified Sudo Rule' in (idm_sudo_cmdcat.stdout | default(''))"
+      changed_when: >-
+        'Modified Sudo Rule'
+        in (idm_sudo_cmdcat.stdout | default(''))
       failed_when:
         - idm_sudo_cmdcat.rc != 0
-        - "'no modifications to be performed' not in (idm_sudo_cmdcat.stderr | default(''))"
-        - "'no modifications to be performed' not in (idm_sudo_cmdcat.stdout | default(''))"
+        - >-
+          'no modifications to be performed'
+          not in (idm_sudo_cmdcat.stderr | default(''))
+        - >-
+          'no modifications to be performed'
+          not in (idm_sudo_cmdcat.stdout | default(''))
 
     - name: Add IdM admin group to sudo rule
       ansible.builtin.command:
@@ -542,23 +1197,58 @@
           - "{{ idm_sudo_rule }}"
           - "--groups={{ idm_admin_group }}"
       register: idm_sudo_group_add
-      changed_when: "'Number of members added 1' in (idm_sudo_group_add.stdout | default(''))"
+      changed_when: >-
+        'Number of members added 1'
+        in (idm_sudo_group_add.stdout | default(''))
       failed_when:
         - idm_sudo_group_add.rc != 0
-        - "'This entry is already a member' not in (idm_sudo_group_add.stderr | default(''))"
-        - "'This entry is already a member' not in (idm_sudo_group_add.stdout | default(''))"
+        - >-
+          'This entry is already a member'
+          not in (idm_sudo_group_add.stderr | default(''))
+        - >-
+          'This entry is already a member'
+          not in (idm_sudo_group_add.stdout | default(''))
 
-    - name: Show IdM install status
+    ###########################################################################
+    # Final validation
+    ###########################################################################
+
+    - name: Verify final IdM service status
+      ansible.builtin.command:
+        argv:
+          - ipactl
+          - status
+      register: idm_final_status
+      changed_when: false
+      failed_when: idm_final_status.rc != 0
+
+    - name: Verify admin group membership
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-show
+          - "{{ idm_admin_group }}"
+          - --all
+      register: idm_admin_group_verify
+      changed_when: false
+      failed_when: idm_admin_group_verify.rc != 0
+
+    - name: Show IdM installation status
       ansible.builtin.debug:
         msg:
-          - "IdM install completed and verified."
+          - "IdM installation completed and verified."
           - "AWS parent DNS domain: {{ idm_parent_domain }}"
           - "IdM DNS domain: {{ idm_domain }}"
           - "IdM FQDN: {{ idm_fqdn }}"
           - "IdM realm: {{ idm_realm }}"
           - "IdM private IP: {{ idm_private_ip }}"
           - "AWS DNS forwarder: {{ aws_dns_resolver }}"
-          - "IdM DNS A records were created/updated for inventory hosts."
-          - "Created/verified users: {{ idm_users | join(', ') }}"
-          - "Admin sudo group: {{ idm_admin_group }}"
+          - "Primary local resolver: 127.0.0.1"
+          - "NetworkManager connection: {{ idm_nm_connection }}"
+          - >-
+            Created or verified users:
+            {{ idm_users | join(', ') }}
+          - "Admin group: {{ idm_admin_group }}"
           - "Sudo rule: {{ idm_sudo_rule }}"
+          - "Installer log: {{ idm_install_log }}"
+          - "Wrapper log: {{ idm_install_wrapper_log }}"
