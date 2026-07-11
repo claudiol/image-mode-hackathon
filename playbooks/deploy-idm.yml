@@ -674,7 +674,7 @@
           poll: "{{ idm_install_poll_seconds }}"
           register: ipa_install
           changed_when: ipa_install.rc == 0
-          no_log: true
+          no_log: false
 
         - name: Wait for IdM services to become operational
           ansible.builtin.command:
