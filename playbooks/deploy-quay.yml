@@ -1079,7 +1079,7 @@
         or
         'BOOTSTRAP_ADMIN_VERIFIED' not in quay_verify_bootstrap_admin.stdout
       no_log: false
-      
+
     - name: Ensure the Quay organization exists
       ansible.builtin.uri:
         url: >-
@@ -1366,7 +1366,7 @@
           - 400
       loop: "{{ quay_team_syncs }}"
       register: quay_enable_team_sync
-      no_log: true
+      no_log: false
       failed_when: >
         quay_enable_team_sync.status == 400
         and (
