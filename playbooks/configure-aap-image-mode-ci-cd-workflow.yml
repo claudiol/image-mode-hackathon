@@ -924,6 +924,19 @@
             Image builder hosts:
             {{ terraform_image_builder_hosts | join(', ') }}
 
+      
+    ###########################################################################
+    # Set Image Builder Job template trigger info
+    ########################################################################### 
+      configure_image_builder_job_template_name: >-
+        Configure Image Mode Builder Hosts
+
+      launch_image_builder_configuration: true
+
+      image_builder_job_timeout: 3600
+      image_builder_job_poll_interval: 10
+
+
   tasks:
     ###########################################################################
     # Bootstrap required AAP organization
@@ -1162,6 +1175,278 @@
       #   AWS_PROFILE: "{{ resolved_aws_profile }}"
 
   post_tasks:
+
+    ###########################################################################
+    # Automatically launch the Image Mode Builder configuration
+    ###########################################################################
+
+    - name: Look up Configure Image Mode Builder Hosts job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/job_templates/?name='
+            ~ (
+                configure_image_builder_job_template_name
+                | urlencode
+              )
+          }}
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: configure_image_builder_template_lookup
+      changed_when: false
+      no_log: true
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Validate Configure Image Mode Builder Hosts job template lookup
+      ansible.builtin.assert:
+        that:
+          - configure_image_builder_template_lookup.json is defined
+          - configure_image_builder_template_lookup.json.count | int == 1
+          - >-
+            configure_image_builder_template_lookup.json.results
+            | length
+            == 1
+          - >-
+            configure_image_builder_template_lookup.json.results[0].id
+            is defined
+          - >-
+            configure_image_builder_template_lookup.json.results[0].name
+            == configure_image_builder_job_template_name
+        fail_msg: >-
+          The '{{ configure_image_builder_job_template_name }}' job template
+          was not found uniquely in Automation Controller after the CaaC
+          configuration completed.
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Set Configure Image Mode Builder Hosts template facts
+      ansible.builtin.set_fact:
+        configure_image_builder_template_id: >-
+          {{
+            configure_image_builder_template_lookup
+            .json
+            .results[0]
+            .id
+            | int
+          }}
+
+        configure_image_builder_template_url: >-
+          {{
+            configure_image_builder_template_lookup
+            .json
+            .results[0]
+            .url
+          }}
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Launch Configure Image Mode Builder Hosts job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/job_templates/'
+            ~ configure_image_builder_template_id
+            ~ '/launch/'
+          }}
+        method: POST
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code:
+          - 201
+          - 202
+        timeout: 30
+        return_content: true
+        body_format: json
+        body: {}
+      register: configure_image_builder_launch_result
+      changed_when: true
+      no_log: true
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Validate Configure Image Mode Builder Hosts launch response
+      ansible.builtin.assert:
+        that:
+          - configure_image_builder_launch_result.json is defined
+          - configure_image_builder_launch_result.json.id is defined
+          - configure_image_builder_launch_result.json.id | int > 0
+        fail_msg: >-
+          Automation Controller accepted the launch request but did not return
+          a valid job identifier for
+          '{{ configure_image_builder_job_template_name }}'.
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Set launched Image Mode Builder job facts
+      ansible.builtin.set_fact:
+        configure_image_builder_job_id: >-
+          {{
+            configure_image_builder_launch_result.json.id
+            | int
+          }}
+
+        configure_image_builder_job_api_url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/jobs/'
+            ~ (
+                configure_image_builder_launch_result.json.id
+                | string
+              )
+            ~ '/'
+          }}
+
+        configure_image_builder_job_ui_url: >-
+          {{
+            controller_host
+            ~ '/execution/jobs/playbook/'
+            ~ (
+                configure_image_builder_launch_result.json.id
+                | string
+              )
+            ~ '/output'
+          }}
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Display launched Image Mode Builder configuration job
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Launched job template:
+            {{ configure_image_builder_job_template_name }}
+          - "Job ID: {{ configure_image_builder_job_id }}"
+          - "Job URL: {{ configure_image_builder_job_ui_url }}"
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Wait for Image Mode Builder configuration job to finish
+      ansible.builtin.uri:
+        url: "{{ configure_image_builder_job_api_url }}"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: configure_image_builder_job_status
+      changed_when: false
+      failed_when: false
+      until:
+        - configure_image_builder_job_status.json is defined
+        - configure_image_builder_job_status.json.status is defined
+        - >-
+          configure_image_builder_job_status.json.status
+          in
+          [
+            'successful',
+            'failed',
+            'error',
+            'canceled'
+          ]
+      retries: >-
+        {{
+          (
+            image_builder_job_timeout
+            | int
+          )
+          //
+          (
+            image_builder_job_poll_interval
+            | int
+          )
+        }}
+      delay: "{{ image_builder_job_poll_interval | int }}"
+      no_log: true
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Validate Image Mode Builder configuration job result
+      ansible.builtin.assert:
+        that:
+          - configure_image_builder_job_status.json is defined
+          - configure_image_builder_job_status.json.status is defined
+          - >-
+            configure_image_builder_job_status.json.status
+            == 'successful'
+        fail_msg:
+          - >-
+            The '{{ configure_image_builder_job_template_name }}' job did not
+            complete successfully.
+          - >-
+            Job ID:
+            {{
+              configure_image_builder_job_id
+              | default('unknown')
+            }}
+          - >-
+            Final status:
+            {{
+              configure_image_builder_job_status.json.status
+              | default('unknown')
+            }}
+          - >-
+            Explanation:
+            {{
+              configure_image_builder_job_status.json.job_explanation
+              | default('No job explanation was returned.')
+            }}
+          - >-
+            Review the job output:
+            {{
+              configure_image_builder_job_ui_url
+              | default(controller_host)
+            }}
+        success_msg: >-
+          The '{{ configure_image_builder_job_template_name }}' job completed
+          successfully on the Image Builder inventory.
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    ###########################################################################
+    # Display completed configuration
+    ###########################################################################
+
     - name: Display completed AAP configuration
       ansible.builtin.debug:
         msg:
@@ -1182,3 +1467,25 @@
             {{ terraform_image_builder_hosts | length }}
           - "Machine credential key source: AWS Secrets Manager"
           - "Quay credential source: AWS Secrets Manager"
+          - >-
+            Builder configuration automatically launched:
+            {{
+              (
+                launch_image_builder_configuration
+                | bool
+                and not ansible_check_mode
+              )
+              | ternary('yes', 'no')
+            }}
+          - >-
+            Builder configuration job ID:
+            {{
+              configure_image_builder_job_id
+              | default('not launched')
+            }}
+          - >-
+            Builder configuration job status:
+            {{
+              configure_image_builder_job_status.json.status
+              | default('not launched')
+            }}
