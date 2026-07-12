@@ -218,13 +218,18 @@
 
     ###########################################################################
     # Resolve AAP endpoint information
+    #
+    # This is the endpoint used by this localhost CaaC playbook to contact
+    # AAP. It may use the public address because the playbook can run outside
+    # the AWS VPC. This is separate from the private IP addresses assigned to
+    # managed hosts inside Automation Controller.
     ###########################################################################
 
     - name: Set primary AAP inventory hostname
       ansible.builtin.set_fact:
         resolved_aap_inventory_hostname: "{{ groups['aap'][0] }}"
 
-    - name: Resolve AAP FQDN and public IP
+    - name: Resolve AAP FQDN and public API IP
       ansible.builtin.set_fact:
         resolved_aap_fqdn: >-
           {{
@@ -234,13 +239,14 @@
 
         resolved_aap_controller_ip: >-
           {{
-            hostvars[resolved_aap_inventory_hostname].ansible_host
+            hostvars[resolved_aap_inventory_hostname].public_ip
             | default(
-                hostvars[resolved_aap_inventory_hostname].public_ip
+                hostvars[resolved_aap_inventory_hostname].ansible_host
                 | default('', true),
                 true
               )
             | string
+            | trim
             | regex_replace('^_', '')
           }}
 
@@ -250,7 +256,7 @@
           - resolved_aap_fqdn | length > 0
           - resolved_aap_controller_ip | length > 0
         fail_msg: >-
-          The AAP FQDN or public IP could not be resolved from the
+          The AAP FQDN or public API IP could not be resolved from the
           Terraform-generated [aap] inventory group.
 
     ###########################################################################
@@ -265,14 +271,18 @@
       ansible.builtin.set_fact:
         resolved_quay_hostname: >-
           {{
-            hostvars[resolved_quay_inventory_hostname].fqdn
-            | default(resolved_quay_inventory_hostname, true)
+            hostvars[resolved_quay_inventory_hostname].quay_hostname
+            | default(
+                hostvars[resolved_quay_inventory_hostname].fqdn
+                | default(resolved_quay_inventory_hostname, true),
+                true
+              )
           }}
 
     - name: Validate resolved Quay registry hostname
       ansible.builtin.assert:
         that:
-          - resolved_quay_hostname | length > 0
+          - resolved_quay_hostname | string | trim | length > 0
         fail_msg: >-
           The Quay hostname could not be resolved from the Terraform-generated
           [quay] inventory group.
@@ -323,6 +333,72 @@
         fail_msg: >-
           Terraform infrastructure hosts could not be resolved. Expected
           groups: {{ terraform_infrastructure_groups | join(', ') }}.
+
+    - name: Build combined list of Terraform-managed hosts
+      ansible.builtin.set_fact:
+        terraform_managed_hosts: >-
+          {{
+            (
+              terraform_infrastructure_hosts
+              +
+              terraform_image_builder_hosts
+            )
+            | unique
+            | list
+          }}
+
+    ###########################################################################
+    # Validate private connectivity information
+    #
+    # Terraform currently stores each EC2 public address in ansible_host and
+    # the VPC address in private_ip. AAP must use private_ip when connecting
+    # to managed hosts.
+    ###########################################################################
+
+    - name: Validate private IP for every Terraform-managed host
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].private_ip is defined
+          - hostvars[item].private_ip | string | trim | length > 0
+          - >-
+            (
+              hostvars[item].private_ip
+              | string
+              | trim
+            )
+            is match(
+              '^(?:'
+              ~ '(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\\.'
+              ~ '){3}'
+              ~ '(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})$'
+            )
+        fail_msg: >-
+          Terraform host '{{ item }}' does not define a valid private_ip.
+          Automation Controller managed hosts must use their AWS VPC private
+          addresses rather than their public EC2 addresses.
+      loop: "{{ terraform_managed_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Build Terraform private IP map
+      ansible.builtin.set_fact:
+        terraform_private_ip_map: >-
+          {{
+            terraform_private_ip_map
+            | default({})
+            | combine(
+                {
+                  item: (
+                    hostvars[item].private_ip
+                    | string
+                    | trim
+                  )
+                }
+              )
+          }}
+      loop: "{{ terraform_managed_hosts }}"
+      loop_control:
+        label: "{{ item }}"
 
     ###########################################################################
     # Read AAP administrator credentials
@@ -672,7 +748,7 @@
             AAP administrator authentication failed against every controller
             endpoint.
           - "Tried FQDN: https://{{ resolved_aap_fqdn }}"
-          - "Tried IP: https://{{ resolved_aap_controller_ip }}"
+          - "Tried public IP: https://{{ resolved_aap_controller_ip }}"
           - >-
             Verify AWS Secrets Manager secret:
             {{ aap_gateway_username_secret_name }}
@@ -723,6 +799,13 @@
       ansible.builtin.set_fact:
         controller_hosts: []
 
+    ###########################################################################
+    # Infrastructure inventory hosts
+    #
+    # The AAP connection address is explicitly set to private_ip.
+    # The Terraform ansible_host value is retained as public_ip metadata.
+    ###########################################################################
+
     - name: Add Terraform hosts to infrastructure inventory
       ansible.builtin.set_fact:
         controller_hosts: >-
@@ -738,27 +821,30 @@
                 'description': (
                   'Terraform-generated '
                   ~ (
-                    (
-                      hostvars[item].group_names
-                      | default([])
-                      | intersect(resolved_terraform_infrastructure_groups)
-                      | first
-                    )
-                    | default('infrastructure', true)
+                    hostvars[item].role
+                    | default(
+                        (
+                          hostvars[item].group_names
+                          | default([])
+                          | intersect(
+                              resolved_terraform_infrastructure_groups
+                            )
+                          | first
+                        )
+                        | default('infrastructure', true),
+                        true
+                      )
                   )
-                  ~ ' host'
+                  ~ ' host using VPC private connectivity'
                 ),
                 'inventory': infrastructure_inventory_name,
                 'enabled': true,
                 'state': 'present',
                 'variables': {
                   'ansible_host': (
-                    hostvars[item].ansible_host
-                    | default(
-                        hostvars[item].public_ip
-                        | default(item, true),
-                        true
-                      )
+                    hostvars[item].private_ip
+                    | string
+                    | trim
                   ),
                   'ansible_user': (
                     hostvars[item].ansible_user
@@ -770,7 +856,8 @@
                   ),
                   'private_ip': (
                     hostvars[item].private_ip
-                    | default('', true)
+                    | string
+                    | trim
                   ),
                   'public_ip': (
                     hostvars[item].public_ip
@@ -781,13 +868,19 @@
                       )
                   ),
                   'terraform_role': (
-                    (
-                      hostvars[item].group_names
-                      | default([])
-                      | intersect(resolved_terraform_infrastructure_groups)
-                      | first
-                    )
-                    | default('', true)
+                    hostvars[item].role
+                    | default(
+                        (
+                          hostvars[item].group_names
+                          | default([])
+                          | intersect(
+                              resolved_terraform_infrastructure_groups
+                            )
+                          | first
+                        )
+                        | default('', true),
+                        true
+                      )
                   ),
                   'aws_region': resolved_aws_region,
                   'aws_profile': resolved_aws_profile,
@@ -805,6 +898,14 @@
           }}
       no_log: true
 
+    ###########################################################################
+    # Image Builder inventory hosts
+    #
+    # The same Image Builder can also exist in the infrastructure inventory.
+    # Each inventory has an independent host record, and both records use the
+    # builder's VPC private IP for ansible_host.
+    ###########################################################################
+
     - name: Add Terraform image builders to Image Builders inventory
       ansible.builtin.set_fact:
         controller_hosts: >-
@@ -817,18 +918,18 @@
                   hostvars[item].fqdn
                   | default(item, true)
                 ),
-                'description': 'Terraform-generated Image Mode builder',
+                'description': (
+                  'Terraform-generated Image Mode builder using VPC private '
+                  ~ 'connectivity'
+                ),
                 'inventory': image_builder_inventory_name,
                 'enabled': true,
                 'state': 'present',
                 'variables': {
                   'ansible_host': (
-                    hostvars[item].ansible_host
-                    | default(
-                        hostvars[item].public_ip
-                        | default(item, true),
-                        true
-                      )
+                    hostvars[item].private_ip
+                    | string
+                    | trim
                   ),
                   'ansible_user': (
                     hostvars[item].ansible_user
@@ -840,7 +941,8 @@
                   ),
                   'private_ip': (
                     hostvars[item].private_ip
-                    | default('', true)
+                    | string
+                    | trim
                   ),
                   'public_ip': (
                     hostvars[item].public_ip
@@ -850,7 +952,10 @@
                         true
                       )
                   ),
-                  'terraform_role': 'image-builder',
+                  'terraform_role': (
+                    hostvars[item].role
+                    | default('image-builder', true)
+                  ),
                   'aws_region': resolved_aws_region,
                   'aws_profile': resolved_aws_profile,
                   'secret_prefix': secret_prefix,
@@ -908,13 +1013,39 @@
               terraform_image_builder_hosts
               | length
             )
+
+          - >-
+            (
+              controller_hosts
+              | selectattr('variables.ansible_host', 'defined')
+              | list
+              | length
+            )
+            ==
+            (
+              controller_hosts
+              | length
+            )
+
         fail_msg: >-
           Dynamic AAP host definitions were not generated correctly.
+
+    - name: Validate generated hosts use private IP addresses
+      ansible.builtin.assert:
+        that:
+          - item.variables.ansible_host == item.variables.private_ip
+          - item.variables.ansible_host | string | trim | length > 0
+        fail_msg: >-
+          Generated AAP host '{{ item.name }}' in inventory
+          '{{ item.inventory }}' is not configured to use its private IP.
+      loop: "{{ controller_hosts }}"
+      loop_control:
+        label: "{{ item.inventory }} / {{ item.name }}"
 
     - name: Show selected deployment configuration
       ansible.builtin.debug:
         msg:
-          - "AAP controller endpoint: {{ controller_host }}"
+          - "AAP controller API endpoint: {{ controller_host }}"
           - "AAP administrator username: {{ controller_username }}"
           - "Quay registry hostname: {{ resolved_quay_hostname }}"
           - "AWS region: {{ resolved_aws_region }}"
@@ -931,6 +1062,12 @@
           - >-
             Image builder hosts:
             {{ terraform_image_builder_hosts | join(', ') }}
+          - >-
+            Managed-host connection mode:
+            AWS VPC private IP addresses
+          - >-
+            Managed-host private IP map:
+            {{ terraform_private_ip_map }}
 
   tasks:
     ###########################################################################
@@ -1424,7 +1561,8 @@
             }}
         success_msg: >-
           The '{{ configure_image_builder_job_template_name }}' job completed
-          successfully on the Image Builder inventory.
+          successfully on the Image Builder inventory using private VPC
+          connectivity.
       when:
         - launch_image_builder_configuration | bool
         - not ansible_check_mode
@@ -1440,7 +1578,7 @@
         msg:
           - "AAP Image Mode CI/CD configuration completed."
           - "Organization: {{ aap_organization_name }}"
-          - "AAP endpoint: {{ controller_host }}"
+          - "AAP API endpoint: {{ controller_host }}"
           - "AAP administrator username: {{ controller_username }}"
           - >-
             Infrastructure inventory:
@@ -1453,6 +1591,9 @@
           - >-
             Image builder hosts configured:
             {{ terraform_image_builder_hosts | length }}
+          - >-
+            Managed-host connection addresses:
+            private_ip from the Terraform-generated inventory
           - "Machine credential key source: AWS Secrets Manager"
           - "Quay credential source: AWS Secrets Manager"
           - >-
