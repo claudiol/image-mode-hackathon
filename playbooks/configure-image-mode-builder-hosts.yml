@@ -381,6 +381,14 @@
         executable: pip3
       when: image_mode_install_yq | bool
 
+    - name: Create yq symbolic link
+      ansible.builtin.file:
+        src: "/usr/local/bin/yq"
+        dest: /usr/bin/yq
+        state: link
+        force: true
+
+
     - name: Locate installed yq command
       ansible.builtin.command:
         argv:
