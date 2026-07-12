@@ -205,7 +205,7 @@
       no_log: true
 
     ###########################################################################
-    # Resolve AAP endpoint
+    # Resolve AAP endpoint information
     ###########################################################################
 
     - name: Set primary AAP inventory hostname
@@ -242,7 +242,7 @@
           Terraform-generated [aap] inventory group.
 
     ###########################################################################
-    # Resolve Quay endpoint
+    # Resolve Quay endpoint information
     ###########################################################################
 
     - name: Set primary Quay inventory hostname
@@ -313,7 +313,7 @@
           groups: {{ terraform_infrastructure_groups | join(', ') }}.
 
     ###########################################################################
-    # Read AAP gateway credentials
+    # Read AAP administrator credentials
     ###########################################################################
 
     - name: Read AAP gateway administrator username
@@ -354,6 +354,39 @@
           - text
       register: aap_gateway_password_secret_result
       changed_when: false
+      no_log: true
+
+    - name: Set AAP administrator credentials
+      ansible.builtin.set_fact:
+        gateway_admin_username: >-
+          {{ aap_gateway_username_secret_result.stdout | trim }}
+
+        gateway_admin_password: >-
+          {{ aap_gateway_password_secret_result.stdout | trim }}
+
+        controller_username: >-
+          {{ aap_gateway_username_secret_result.stdout | trim }}
+
+        controller_password: >-
+          {{ aap_gateway_password_secret_result.stdout | trim }}
+
+        controller_validate_certs: false
+      no_log: true
+
+    - name: Validate AAP administrator credentials
+      ansible.builtin.assert:
+        that:
+          - controller_username is defined
+          - controller_password is defined
+          - controller_username | string | trim | length > 0
+          - controller_password | string | trim | length > 0
+          - controller_username != "None"
+          - controller_password != "None"
+        fail_msg: >-
+          The AAP administrator username or password could not be retrieved.
+          Verify these AWS Secrets Manager secrets:
+          {{ aap_gateway_username_secret_name }} and
+          {{ aap_gateway_password_secret_name }}.
       no_log: true
 
     ###########################################################################
@@ -400,8 +433,38 @@
       changed_when: false
       no_log: true
 
+    - name: Set Quay registry credentials
+      ansible.builtin.set_fact:
+        quay_superuser: >-
+          {{ quay_superuser_secret_result.stdout | trim }}
+
+        quay_superuser_password: >-
+          {{ quay_superuser_password_secret_result.stdout | trim }}
+
+        quay_hostname: "{{ resolved_quay_hostname }}"
+        quay_registry_host: "{{ resolved_quay_hostname }}"
+
+        quay_registry_username: >-
+          {{ quay_superuser_secret_result.stdout | trim }}
+
+        quay_registry_password: >-
+          {{ quay_superuser_password_secret_result.stdout | trim }}
+      no_log: true
+
+    - name: Validate Quay registry credentials
+      ansible.builtin.assert:
+        that:
+          - quay_registry_username | string | trim | length > 0
+          - quay_registry_password | string | trim | length > 0
+          - quay_registry_username != "None"
+          - quay_registry_password != "None"
+        fail_msg: >-
+          Quay registry credentials could not be retrieved from AWS Secrets
+          Manager.
+      no_log: true
+
     ###########################################################################
-    # Read Terraform SSH private key
+    # Read Terraform-generated SSH private key
     ###########################################################################
 
     - name: Read Terraform-generated SSH private key
@@ -422,6 +485,24 @@
           - text
       register: lab_ssh_private_key_secret_result
       changed_when: false
+      no_log: true
+
+    - name: Set Image Mode machine credential private key
+      ansible.builtin.set_fact:
+        image_mode_ssh_private_key: >-
+          {{ lab_ssh_private_key_secret_result.stdout }}
+      no_log: true
+
+    - name: Validate Terraform-generated SSH private key
+      ansible.builtin.assert:
+        that:
+          - image_mode_ssh_private_key | length > 0
+          - "'BEGIN' in image_mode_ssh_private_key"
+          - "'PRIVATE KEY' in image_mode_ssh_private_key"
+          - "'END' in image_mode_ssh_private_key"
+        fail_msg: >-
+          The Terraform-generated SSH private key could not be retrieved or is
+          not a valid PEM private key.
       no_log: true
 
     ###########################################################################
@@ -468,51 +549,6 @@
       changed_when: false
       no_log: true
 
-    ###########################################################################
-    # Map secret values
-    ###########################################################################
-
-    - name: Set AAP controller credentials
-      ansible.builtin.set_fact:
-        gateway_admin_username: >-
-          {{ aap_gateway_username_secret_result.stdout | trim }}
-
-        gateway_admin_password: >-
-          {{ aap_gateway_password_secret_result.stdout | trim }}
-
-        controller_username: >-
-          {{ aap_gateway_username_secret_result.stdout | trim }}
-
-        controller_password: >-
-          {{ aap_gateway_password_secret_result.stdout | trim }}
-
-        controller_validate_certs: false
-      no_log: true
-
-    - name: Set Quay registry credentials
-      ansible.builtin.set_fact:
-        quay_superuser: >-
-          {{ quay_superuser_secret_result.stdout | trim }}
-
-        quay_superuser_password: >-
-          {{ quay_superuser_password_secret_result.stdout | trim }}
-
-        quay_hostname: "{{ resolved_quay_hostname }}"
-        quay_registry_host: "{{ resolved_quay_hostname }}"
-
-        quay_registry_username: >-
-          {{ quay_superuser_secret_result.stdout | trim }}
-
-        quay_registry_password: >-
-          {{ quay_superuser_password_secret_result.stdout | trim }}
-      no_log: true
-
-    - name: Set Image Mode machine credential private key
-      ansible.builtin.set_fact:
-        image_mode_ssh_private_key: >-
-          {{ lab_ssh_private_key_secret_result.stdout }}
-      no_log: true
-
     - name: Set Red Hat registry credentials
       ansible.builtin.set_fact:
         redhat_registry_username: >-
@@ -522,51 +558,11 @@
           {{ redhat_registry_password_secret_result.stdout | trim }}
       no_log: true
 
-    ###########################################################################
-    # Validate credentials
-    ###########################################################################
-
-    - name: Validate AAP gateway credentials
-      ansible.builtin.assert:
-        that:
-          - controller_username | length > 0
-          - controller_password | length > 0
-          - controller_username != "None"
-          - controller_password != "None"
-        fail_msg: >-
-          AAP gateway credentials could not be retrieved from AWS Secrets
-          Manager.
-      no_log: true
-
-    - name: Validate Quay registry credentials
-      ansible.builtin.assert:
-        that:
-          - quay_registry_username | length > 0
-          - quay_registry_password | length > 0
-          - quay_registry_username != "None"
-          - quay_registry_password != "None"
-        fail_msg: >-
-          Quay registry credentials could not be retrieved from AWS Secrets
-          Manager.
-      no_log: true
-
-    - name: Validate Terraform-generated SSH private key
-      ansible.builtin.assert:
-        that:
-          - image_mode_ssh_private_key | length > 0
-          - "'BEGIN' in image_mode_ssh_private_key"
-          - "'PRIVATE KEY' in image_mode_ssh_private_key"
-          - "'END' in image_mode_ssh_private_key"
-        fail_msg: >-
-          The Terraform-generated SSH private key could not be retrieved or is
-          not a valid PEM private key.
-      no_log: true
-
     - name: Validate Red Hat registry credentials
       ansible.builtin.assert:
         that:
-          - redhat_registry_username | length > 0
-          - redhat_registry_password | length > 0
+          - redhat_registry_username | string | trim | length > 0
+          - redhat_registry_password | string | trim | length > 0
           - redhat_registry_username != "None"
           - redhat_registry_password != "None"
         fail_msg: >-
@@ -614,7 +610,7 @@
           }}
 
     ###########################################################################
-    # Find reachable AAP endpoint
+    # Authenticate against reachable AAP endpoint
     ###########################################################################
 
     - name: Build preferred AAP controller endpoint list
@@ -623,31 +619,35 @@
           - "https://{{ resolved_aap_fqdn }}"
           - "https://{{ resolved_aap_controller_ip }}"
 
-    - name: Check available AAP controller endpoints
+    - name: Check authenticated AAP controller endpoints
       ansible.builtin.uri:
-        url: "{{ item }}/api/gateway/v1/status/"
+        url: "{{ item }}/api/gateway/v1/me/"
         method: GET
+
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+
         validate_certs: false
-        status_code:
-          - 200
-          - 401
-          - 403
-        timeout: 15
+        status_code: 200
+        timeout: 30
+        return_content: false
       loop: "{{ aap_controller_endpoint_candidates }}"
       loop_control:
         label: "{{ item }}"
       register: aap_endpoint_checks
       failed_when: false
       changed_when: false
+      no_log: true
 
-    - name: Select first reachable AAP controller endpoint
+    - name: Select first authenticated AAP controller endpoint
       ansible.builtin.set_fact:
         controller_host: >-
           {{
             (
               aap_endpoint_checks.results
               | selectattr('status', 'defined')
-              | selectattr('status', 'in', [200, 401, 403])
+              | selectattr('status', 'equalto', 200)
               | map(attribute='item')
               | list
               | first
@@ -655,12 +655,20 @@
             | default('')
           }}
 
-    - name: Fail if no AAP controller endpoint is reachable
+    - name: Fail if no authenticated AAP controller endpoint is available
       ansible.builtin.fail:
         msg:
-          - "AAP controller is not reachable using its FQDN or public IP."
+          - >-
+            AAP administrator authentication failed against every controller
+            endpoint.
           - "Tried FQDN: https://{{ resolved_aap_fqdn }}"
           - "Tried IP: https://{{ resolved_aap_controller_ip }}"
+          - >-
+            Verify AWS Secrets Manager secret:
+            {{ aap_gateway_username_secret_name }}
+          - >-
+            Verify AWS Secrets Manager secret:
+            {{ aap_gateway_password_secret_name }}
       when: controller_host | length == 0
 
     ###########################################################################
@@ -670,25 +678,32 @@
     - name: Set controller connection variables
       ansible.builtin.set_fact:
         controller_hostname: "{{ controller_host }}"
+        controller_host: "{{ controller_host }}"
+
+        controller_username: "{{ gateway_admin_username }}"
+        controller_password: "{{ gateway_admin_password }}"
         controller_validate_certs: false
 
         aap_hostname: "{{ controller_host }}"
-        aap_username: "{{ controller_username }}"
-        aap_password: "{{ controller_password }}"
+        aap_username: "{{ gateway_admin_username }}"
+        aap_password: "{{ gateway_admin_password }}"
         aap_validate_certs: false
       no_log: true
 
-    - name: Verify AAP gateway authentication
+    - name: Verify selected AAP endpoint and administrator account
       ansible.builtin.uri:
         url: "{{ controller_host }}/api/gateway/v1/me/"
         method: GET
+
         user: "{{ controller_username }}"
         password: "{{ controller_password }}"
         force_basic_auth: true
+
         validate_certs: false
         status_code: 200
         timeout: 30
-      register: aap_authentication_check
+        return_content: true
+      register: aap_authenticated_user_result
       changed_when: false
       no_log: true
 
@@ -892,6 +907,7 @@
       ansible.builtin.debug:
         msg:
           - "AAP controller endpoint: {{ controller_host }}"
+          - "AAP administrator username: {{ controller_username }}"
           - "Quay registry hostname: {{ resolved_quay_hostname }}"
           - "AWS region: {{ resolved_aws_region }}"
           - "AWS profile: {{ resolved_aws_profile }}"
@@ -940,7 +956,7 @@
             name: infra.aap_configuration.controller_credentials
           tags:
             - credentials
-          no_log: false
+          no_log: true
 
         #######################################################################
         # 4. Inventories
@@ -961,6 +977,7 @@
             name: "{{ item.name }}"
             inventory: "{{ item.inventory }}"
             state: absent
+
             controller_host: "{{ controller_host }}"
             controller_username: "{{ controller_username }}"
             controller_password: "{{ controller_password }}"
@@ -1048,11 +1065,12 @@
         msg:
           - "AAP Image Mode CI/CD configuration completed."
           - "Organization: {{ aap_organization_name }}"
+          - "AAP endpoint: {{ controller_host }}"
+          - "AAP administrator username: {{ controller_username }}"
           - >-
             Infrastructure inventory:
             {{ infrastructure_inventory_name }}
           - "Image builder inventory: {{ image_builder_inventory_name }}"
-          - "AAP endpoint: {{ controller_host }}"
           - "Quay registry: {{ resolved_quay_hostname }}"
           - >-
             Infrastructure hosts configured:
