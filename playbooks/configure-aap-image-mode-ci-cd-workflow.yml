@@ -925,15 +925,88 @@
             {{ terraform_image_builder_hosts | join(', ') }}
 
   tasks:
+    ###########################################################################
+    # Bootstrap required AAP organization
+    #
+    # Credentials, inventories, projects, and templates all reference this
+    # organization. Create it explicitly before invoking the CaaC roles.
+    ###########################################################################
+
+    - name: Ensure Image Mode Lab organization exists
+      ansible.controller.organization:
+        name: "{{ aap_organization_name }}"
+        description: "AAP Image Mode CI/CD lab organization"
+        state: present
+        controller_host: "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+      register: image_mode_organization_result
+      no_log: true
+      tags:
+        - organizations
+        - always
+
+    - name: Verify Image Mode Lab organization exists
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/organizations/?name='
+            ~ (aap_organization_name | urlencode)
+          }}
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        return_content: true
+        timeout: 30
+      register: image_mode_organization_check
+      changed_when: false
+      no_log: true
+      tags:
+        - organizations
+        - always
+
+    - name: Validate Image Mode Lab organization lookup
+      ansible.builtin.assert:
+        that:
+          - image_mode_organization_check.json is defined
+          - image_mode_organization_check.json.count | int == 1
+          - image_mode_organization_check.json.results | length == 1
+          - >-
+            image_mode_organization_check.json.results[0].name
+            == aap_organization_name
+        fail_msg: >-
+          The Image Mode Lab organization was not found in Automation
+          Controller after it was created.
+      tags:
+        - organizations
+        - always
+
+    ###########################################################################
+    # Configure AAP objects
+    ###########################################################################
+
     - name: Configure AAP Image Mode CI/CD objects
       block:
         #######################################################################
         # 1. Organizations
+        #
+        # The organization was already bootstrapped explicitly. This role
+        # reconciles any additional organizations in organizations.yml.
         #######################################################################
 
         - name: Configure AAP organizations
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_organizations
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - organizations
 
@@ -944,6 +1017,11 @@
         - name: Configure AAP credential types
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credential_types
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - credential_types
 
@@ -954,9 +1032,14 @@
         - name: Configure AAP credentials
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - credentials
-          no_log: false
+          no_log: true
 
         #######################################################################
         # 4. Inventories
@@ -965,6 +1048,11 @@
         - name: Configure AAP inventories
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_inventories
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - inventories
 
@@ -977,10 +1065,9 @@
             name: "{{ item.name }}"
             inventory: "{{ item.inventory }}"
             state: absent
-
             controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
             validate_certs: false
           loop: "{{ legacy_static_controller_hosts }}"
           loop_control:
@@ -991,12 +1078,17 @@
           no_log: true
 
         #######################################################################
-        # 5. Hosts
+        # 5. Terraform-generated hosts
         #######################################################################
 
         - name: Configure Terraform-generated AAP hosts
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_hosts
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - hosts
           no_log: true
@@ -1008,6 +1100,11 @@
         - name: Configure AAP execution environments
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_execution_environments
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - execution_environments
 
@@ -1018,6 +1115,11 @@
         - name: Configure AAP projects
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_projects
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - projects
 
@@ -1028,6 +1130,11 @@
         - name: Configure AAP job templates
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_job_templates
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           tags:
             - job_templates
 
@@ -1038,6 +1145,11 @@
         - name: Configure AAP workflow job templates
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_workflow_job_templates
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
           when:
             - controller_workflows is defined
             - controller_workflows | length > 0
@@ -1048,16 +1160,6 @@
         AWS_REGION: "{{ resolved_aws_region }}"
         AWS_DEFAULT_REGION: "{{ resolved_aws_region }}"
         AWS_PROFILE: "{{ resolved_aws_profile }}"
-
-        CONTROLLER_HOST: "{{ controller_host }}"
-        CONTROLLER_USERNAME: "{{ controller_username }}"
-        CONTROLLER_PASSWORD: "{{ controller_password }}"
-        CONTROLLER_VERIFY_SSL: "false"
-
-        TOWER_HOST: "{{ controller_host }}"
-        TOWER_USERNAME: "{{ controller_username }}"
-        TOWER_PASSWORD: "{{ controller_password }}"
-        TOWER_VERIFY_SSL: "false"
 
   post_tasks:
     - name: Display completed AAP configuration
