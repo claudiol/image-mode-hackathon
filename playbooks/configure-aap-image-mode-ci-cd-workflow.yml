@@ -43,8 +43,6 @@
 
     ###########################################################################
     # Obsolete static hosts
-    #
-    # These were created by the original static hosts.yml file.
     ###########################################################################
 
     legacy_static_controller_hosts:
@@ -91,11 +89,6 @@
 
     ###########################################################################
     # Git configuration
-    #
-    # Supply Git credentials through environment variables when required:
-    #
-    # export IMAGE_MODE_GIT_USERNAME="username"
-    # export IMAGE_MODE_GIT_TOKEN="token"
     ###########################################################################
 
     git_username: >-
@@ -916,136 +909,138 @@
             {{ terraform_image_builder_hosts | join(', ') }}
 
   tasks:
-    ###########################################################################
-    # 1. Organizations
-    ###########################################################################
+    - name: Configure AAP Image Mode CI/CD objects
+      block:
+        #######################################################################
+        # 1. Organizations
+        #######################################################################
 
-    - name: Configure AAP organizations
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_organizations
-      tags:
-        - organizations
+        - name: Configure AAP organizations
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_organizations
+          tags:
+            - organizations
 
-    ###########################################################################
-    # 2. Credential types
-    ###########################################################################
+        #######################################################################
+        # 2. Credential types
+        #######################################################################
 
-    - name: Configure AAP credential types
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_credential_types
-      tags:
-        - credential_types
+        - name: Configure AAP credential types
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_credential_types
+          tags:
+            - credential_types
 
-    ###########################################################################
-    # 3. Credentials
-    ###########################################################################
+        #######################################################################
+        # 3. Credentials
+        #######################################################################
 
-    - name: Configure AAP credentials
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_credentials
-      tags:
-        - credentials
-      no_log: true
+        - name: Configure AAP credentials
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_credentials
+          tags:
+            - credentials
+          no_log: true
 
-    ###########################################################################
-    # 4. Inventories
-    ###########################################################################
+        #######################################################################
+        # 4. Inventories
+        #######################################################################
 
-    - name: Configure AAP inventories
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_inventories
-      tags:
-        - inventories
+        - name: Configure AAP inventories
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_inventories
+          tags:
+            - inventories
 
-    ###########################################################################
-    # Remove previous static hosts
-    ###########################################################################
+        #######################################################################
+        # Remove previous static hosts
+        #######################################################################
 
-    - name: Remove obsolete static AAP hosts
-      ansible.controller.host:
-        name: "{{ item.name }}"
-        inventory: "{{ item.inventory }}"
-        state: absent
-        controller_host: "{{ controller_host }}"
-        controller_username: "{{ controller_username }}"
-        controller_password: "{{ controller_password }}"
-        validate_certs: false
-      loop: "{{ legacy_static_controller_hosts }}"
-      loop_control:
-        label: "{{ item.inventory }} / {{ item.name }}"
-      tags:
-        - hosts
-        - cleanup
-      no_log: true
+        - name: Remove obsolete static AAP hosts
+          ansible.controller.host:
+            name: "{{ item.name }}"
+            inventory: "{{ item.inventory }}"
+            state: absent
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ controller_username }}"
+            controller_password: "{{ controller_password }}"
+            validate_certs: false
+          loop: "{{ legacy_static_controller_hosts }}"
+          loop_control:
+            label: "{{ item.inventory }} / {{ item.name }}"
+          tags:
+            - hosts
+            - cleanup
+          no_log: true
 
-    ###########################################################################
-    # 5. Hosts
-    ###########################################################################
+        #######################################################################
+        # 5. Hosts
+        #######################################################################
 
-    - name: Configure Terraform-generated AAP hosts
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_hosts
-      tags:
-        - hosts
-      no_log: true
+        - name: Configure Terraform-generated AAP hosts
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_hosts
+          tags:
+            - hosts
+          no_log: true
 
-    ###########################################################################
-    # 6. Execution environments
-    ###########################################################################
+        #######################################################################
+        # 6. Execution environments
+        #######################################################################
 
-    - name: Configure AAP execution environments
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_execution_environments
-      tags:
-        - execution_environments
+        - name: Configure AAP execution environments
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_execution_environments
+          tags:
+            - execution_environments
 
-    ###########################################################################
-    # 7. Projects
-    ###########################################################################
+        #######################################################################
+        # 7. Projects
+        #######################################################################
 
-    - name: Configure AAP projects
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_projects
-      tags:
-        - projects
+        - name: Configure AAP projects
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_projects
+          tags:
+            - projects
 
-    ###########################################################################
-    # 8. Job templates
-    ###########################################################################
+        #######################################################################
+        # 8. Job templates
+        #######################################################################
 
-    - name: Configure AAP job templates
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_job_templates
-      tags:
-        - job_templates
+        - name: Configure AAP job templates
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_job_templates
+          tags:
+            - job_templates
 
-    ###########################################################################
-    # 9. Workflow job templates
-    ###########################################################################
+        #######################################################################
+        # 9. Workflow job templates
+        #######################################################################
 
-    - name: Configure AAP workflow job templates
-      ansible.builtin.include_role:
-        name: infra.aap_configuration.controller_workflow_job_templates
-      when:
-        - controller_workflows is defined
-        - controller_workflows | length > 0
-      tags:
-        - workflow_job_templates
+        - name: Configure AAP workflow job templates
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_workflow_job_templates
+          when:
+            - controller_workflows is defined
+            - controller_workflows | length > 0
+          tags:
+            - workflow_job_templates
 
-  environment:
-    AWS_REGION: "{{ resolved_aws_region }}"
-    AWS_DEFAULT_REGION: "{{ resolved_aws_region }}"
-    AWS_PROFILE: "{{ resolved_aws_profile }}"
+      environment:
+        AWS_REGION: "{{ resolved_aws_region }}"
+        AWS_DEFAULT_REGION: "{{ resolved_aws_region }}"
+        AWS_PROFILE: "{{ resolved_aws_profile }}"
 
-    CONTROLLER_HOST: "{{ controller_host }}"
-    CONTROLLER_USERNAME: "{{ controller_username }}"
-    CONTROLLER_PASSWORD: "{{ controller_password }}"
-    CONTROLLER_VERIFY_SSL: "false"
+        CONTROLLER_HOST: "{{ controller_host }}"
+        CONTROLLER_USERNAME: "{{ controller_username }}"
+        CONTROLLER_PASSWORD: "{{ controller_password }}"
+        CONTROLLER_VERIFY_SSL: "false"
 
-    TOWER_HOST: "{{ controller_host }}"
-    TOWER_USERNAME: "{{ controller_username }}"
-    TOWER_PASSWORD: "{{ controller_password }}"
-    TOWER_VERIFY_SSL: "false"
+        TOWER_HOST: "{{ controller_host }}"
+        TOWER_USERNAME: "{{ controller_username }}"
+        TOWER_PASSWORD: "{{ controller_password }}"
+        TOWER_VERIFY_SSL: "false"
 
   post_tasks:
     - name: Display completed AAP configuration
