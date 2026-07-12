@@ -146,6 +146,18 @@
     image_mode_ee_repository: "image-mode-ee"
     image_mode_ee_tag: "latest"
 
+    ###########################################################################
+    # Image Builder job template launch configuration
+    ###########################################################################
+
+    configure_image_builder_job_template_name: >-
+      Configure Image Mode Builder Hosts
+
+    launch_image_builder_configuration: true
+
+    image_builder_job_timeout: 3600
+    image_builder_job_poll_interval: 10
+
   pre_tasks:
     ###########################################################################
     # Validate Terraform inventory
@@ -623,11 +635,9 @@
       ansible.builtin.uri:
         url: "{{ item }}/api/gateway/v1/me/"
         method: GET
-
         user: "{{ controller_username }}"
         password: "{{ controller_password }}"
         force_basic_auth: true
-
         validate_certs: false
         status_code: 200
         timeout: 30
@@ -694,11 +704,9 @@
       ansible.builtin.uri:
         url: "{{ controller_host }}/api/gateway/v1/me/"
         method: GET
-
         user: "{{ controller_username }}"
         password: "{{ controller_password }}"
         force_basic_auth: true
-
         validate_certs: false
         status_code: 200
         timeout: 30
@@ -924,19 +932,6 @@
             Image builder hosts:
             {{ terraform_image_builder_hosts | join(', ') }}
 
-      
-    ###########################################################################
-    # Set Image Builder Job template trigger info
-    ########################################################################### 
-      configure_image_builder_job_template_name: >-
-        Configure Image Mode Builder Hosts
-
-      launch_image_builder_configuration: true
-
-      image_builder_job_timeout: 3600
-      image_builder_job_poll_interval: 10
-
-
   tasks:
     ###########################################################################
     # Bootstrap required AAP organization
@@ -1007,9 +1002,6 @@
       block:
         #######################################################################
         # 1. Organizations
-        #
-        # The organization was already bootstrapped explicitly. This role
-        # reconciles any additional organizations in organizations.yml.
         #######################################################################
 
         - name: Configure AAP organizations
@@ -1155,27 +1147,29 @@
         # 9. Workflow job templates
         #######################################################################
 
-      #   - name: Configure AAP workflow job templates
-      #     ansible.builtin.include_role:
-      #       name: infra.aap_configuration.controller_workflow_job_templates
-      #     vars:
-      #       controller_hostname: "{{ controller_host }}"
-      #       controller_username: "{{ gateway_admin_username }}"
-      #       controller_password: "{{ gateway_admin_password }}"
-      #       controller_validate_certs: false
-      #     when:
-      #       - controller_workflows is defined
-      #       - controller_workflows | length > 0
-      #     tags:
-      #       - workflow_job_templates
+        # - name: Configure AAP workflow job templates
+        #   ansible.builtin.include_role:
+        #     name: infra.aap_configuration.controller_workflow_job_templates
+        #   vars:
+        #     controller_hostname: "{{ controller_host }}"
+        #     controller_username: "{{ gateway_admin_username }}"
+        #     controller_password: "{{ gateway_admin_password }}"
+        #     controller_validate_certs: false
+        #   when:
+        #     - controller_workflows is defined
+        #     - controller_workflows | length > 0
+        #   tags:
+        #     - workflow_job_templates
 
+      # Uncomment this environment block if the included roles or lookups need
+      # AWS CLI environment variables.
+      #
       # environment:
       #   AWS_REGION: "{{ resolved_aws_region }}"
       #   AWS_DEFAULT_REGION: "{{ resolved_aws_region }}"
       #   AWS_PROFILE: "{{ resolved_aws_profile }}"
 
   post_tasks:
-
     ###########################################################################
     # Automatically launch the Image Mode Builder configuration
     ###########################################################################
@@ -1237,19 +1231,13 @@
       ansible.builtin.set_fact:
         configure_image_builder_template_id: >-
           {{
-            configure_image_builder_template_lookup
-            .json
-            .results[0]
-            .id
+            configure_image_builder_template_lookup.json.results[0].id
             | int
           }}
 
         configure_image_builder_template_url: >-
           {{
-            configure_image_builder_template_lookup
-            .json
-            .results[0]
-            .url
+            configure_image_builder_template_lookup.json.results[0].url
           }}
       when:
         - launch_image_builder_configuration | bool
@@ -1263,7 +1251,7 @@
           {{
             controller_host
             ~ '/api/controller/v2/job_templates/'
-            ~ configure_image_builder_template_id
+            ~ (configure_image_builder_template_id | string)
             ~ '/launch/'
           }}
         method: POST
@@ -1486,6 +1474,13 @@
           - >-
             Builder configuration job status:
             {{
-              configure_image_builder_job_status.json.status
-              | default('not launched')
+              (
+                configure_image_builder_job_status.json.status
+                if (
+                  configure_image_builder_job_status is defined
+                  and configure_image_builder_job_status.json is defined
+                  and configure_image_builder_job_status.json.status is defined
+                )
+                else 'not launched'
+              )
             }}
