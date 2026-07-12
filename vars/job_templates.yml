@@ -1,12 +1,12 @@
 ---
 controller_templates:
 
-  - name: Deploy Quay
+  - name: Configure Image Mode Builder Hosts
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Mode Lab Infrastructure"
     limit: "quay"
-    playbook: "playbooks/deploy-quay.yml"
+    playbook: "playbooks/configure-image-mode-builder-hosts.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "Image Mode Machine Credential"
