@@ -4,7 +4,7 @@ controller_templates:
   - name: Configure Image Mode Builder Hosts
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Lab Infrastructure"
+    inventory: "Image Builders"
     limit: "quay"
     playbook: "playbooks/configure-image-mode-builder-hosts.yml"
     execution_environment: "Image Mode EE"
