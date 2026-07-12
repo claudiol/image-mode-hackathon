@@ -685,7 +685,7 @@
         authfile: "{{ root_container_auth_file }}"
         tlsverify: "{{ quay_registry_tls_verify | bool }}"
       when: image_mode_configure_quay_login | bool
-      no_log: true
+      no_log: false
 
     - name: Check for container authentication file
       ansible.builtin.stat:
