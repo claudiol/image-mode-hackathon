@@ -12,6 +12,12 @@
 #
 # image-builder
 #
+# Required collections:
+#
+# ansible-galaxy collection install \
+#   ansible.posix \
+#   containers.podman
+#
 # Sensitive values must be provided through:
 #
 # - AAP credentials
@@ -26,6 +32,10 @@
   hosts: all
   become: true
   gather_facts: true
+
+  collections:
+    - ansible.posix
+    - containers.podman
 
   vars:
     ###########################################################################
@@ -96,8 +106,8 @@
 
     # When true, registry credentials must be supplied.
     #
-    # When false, the playbook uses credentials when available and otherwise
-    # attempts to use any existing Podman authentication on the host.
+    # When false, credentials are used when available. Otherwise, the
+    # playbook attempts to use existing Podman authentication on the host.
     image_mode_require_redhat_registry_login: false
 
     ###########################################################################
@@ -169,11 +179,27 @@
       }}
 
     ###########################################################################
-    # Cockpit
+    # Cockpit and firewall
     ###########################################################################
 
     cockpit_port: 9090
     cockpit_firewall_zone: public
+
+    image_mode_firewall_ports:
+      - 80/tcp
+      - 443/tcp
+      - "{{ cockpit_port }}/tcp"
+
+    ###########################################################################
+    # Python yq installation
+    #
+    # The Python yq package provides the yq command and uses jq internally.
+    # jq is installed through DNF, while yq is installed through pip.
+    ###########################################################################
+
+    image_mode_install_yq: true
+    image_mode_yq_pip_package: yq
+    image_mode_yq_command: /usr/local/bin/yq
 
     ###########################################################################
     # Podman authentication
@@ -210,12 +236,15 @@
       - rhc
       - subscription-manager
 
+      # Python and pip
+      - python3
+      - python3-pip
+
       # Development and source control
       - git
       - git-lfs
       - make
       - jq
-      - yq
       - rsync
       - tar
       - gzip
@@ -323,6 +352,9 @@
           - "Bootc Image Builder: {{ bootc_image_builder_image }}"
           - "Cockpit URL: https://{{ inventory_hostname }}:{{ cockpit_port }}"
           - "Workspace: {{ image_mode_root }}"
+          - >-
+            Firewall ports:
+            {{ image_mode_firewall_ports | join(', ') }}
 
   tasks:
     ###########################################################################
@@ -337,6 +369,47 @@
       ansible.builtin.dnf:
         name: "{{ image_mode_core_packages }}"
         state: present
+
+    ###########################################################################
+    # Python yq
+    ###########################################################################
+
+    - name: Install yq from Python Package Index
+      ansible.builtin.pip:
+        name: "{{ image_mode_yq_pip_package }}"
+        state: present
+        executable: pip3
+      when: image_mode_install_yq | bool
+
+    - name: Locate installed yq command
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -lc
+          - command -v yq
+      register: image_mode_yq_command_lookup
+      changed_when: false
+      when: image_mode_install_yq | bool
+
+    - name: Set installed yq command path
+      ansible.builtin.set_fact:
+        image_mode_yq_command: >-
+          {{
+            image_mode_yq_command_lookup.stdout
+            | trim
+          }}
+      when:
+        - image_mode_install_yq | bool
+        - image_mode_yq_command_lookup.stdout | trim | length > 0
+
+    - name: Verify yq installation
+      ansible.builtin.command:
+        argv:
+          - "{{ image_mode_yq_command }}"
+          - --version
+      register: image_mode_yq_version
+      changed_when: false
+      when: image_mode_install_yq | bool
 
     - name: Enable Git LFS system-wide
       ansible.builtin.command:
@@ -481,13 +554,22 @@
           | `{{ image_mode_logs_directory }}` | Build logs |
           | `{{ image_mode_tmp_directory }}` | Temporary build data |
 
-          ## Container Image tools
+          ## Container image tools
 
           ```bash
           podman --version
           buildah --version
           skopeo --version
           bootc --version
+          ```
+
+          ## YAML processing
+
+          The Python yq implementation uses jq syntax:
+
+          ```bash
+          yq --version
+          yq '.name' example.yaml
           ```
 
           ## Build a bootable disk image
@@ -531,6 +613,14 @@
           ```
 
           Local system users authenticate through Cockpit.
+
+          ## Open firewall ports
+
+          ```text
+          80/tcp
+          443/tcp
+          {{ cockpit_port }}/tcp
+          ```
 
     ###########################################################################
     # Container configuration
@@ -764,6 +854,12 @@
               }"
           fi
 
+          # Normalize the generated default path. The individual variable
+          # expansion above is retained for readability in generated files.
+          if [[ -z "${OUTPUT_DIRECTORY}" ]]; then
+              OUTPUT_DIRECTORY="${OUTPUT_ROOT}/${SAFE_IMAGE_NAME}/${IMAGE_TYPE}/${TIMESTAMP}"
+          fi
+
           WORK_DIRECTORY="${BUILD_ROOT}/${TIMESTAMP}"
 
           install \
@@ -855,6 +951,22 @@
           echo "Build completed."
           echo "Artifacts: ${OUTPUT_DIRECTORY}"
 
+    - name: Correct generated image-mode-build output path expression
+      ansible.builtin.replace:
+        path: /usr/local/bin/image-mode-build
+        regexp: |-
+          OUTPUT_DIRECTORY="\$\{
+          \s+OUTPUT_ROOT
+          \s+\}/\$\{
+          \s+SAFE_IMAGE_NAME
+          \s+\}/\$\{
+          \s+IMAGE_TYPE
+          \s+\}/\$\{
+          \s+TIMESTAMP
+          \s+\}"
+        replace: >-
+          OUTPUT_DIRECTORY="${OUTPUT_ROOT}/${SAFE_IMAGE_NAME}/${IMAGE_TYPE}/${TIMESTAMP}"
+
     - name: Install image-mode-registry-copy helper command
       ansible.builtin.copy:
         dest: /usr/local/bin/image-mode-registry-copy
@@ -933,7 +1045,7 @@
       changed_when: false
 
     ###########################################################################
-    # Cockpit
+    # Firewall and Cockpit
     ###########################################################################
 
     - name: Enable and start firewalld
@@ -942,51 +1054,38 @@
         enabled: true
         state: started
 
-    - name: Check permanent Cockpit firewall service
-      ansible.builtin.command:
-        argv:
-          - firewall-cmd
-          - --permanent
-          - "--zone={{ cockpit_firewall_zone }}"
-          - --query-service=cockpit
-      register: cockpit_firewall_permanent_query
-      changed_when: false
-      failed_when:
-        - cockpit_firewall_permanent_query.rc not in [0, 1]
+    - name: Open required Image Mode ports permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ image_mode_firewall_ports }}"
 
-    - name: Open permanent Cockpit firewall service
-      ansible.builtin.command:
-        argv:
-          - firewall-cmd
-          - --permanent
-          - "--zone={{ cockpit_firewall_zone }}"
-          - --add-service=cockpit
-      register: cockpit_firewall_permanent
-      changed_when: cockpit_firewall_permanent.rc == 0
-      when: cockpit_firewall_permanent_query.rc == 1
-      notify:
-        - Reload firewalld
+    - name: Enable HTTP firewall service permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        service: http
+        permanent: true
+        immediate: true
+        state: enabled
 
-    - name: Check runtime Cockpit firewall service
-      ansible.builtin.command:
-        argv:
-          - firewall-cmd
-          - "--zone={{ cockpit_firewall_zone }}"
-          - --query-service=cockpit
-      register: cockpit_firewall_runtime_query
-      changed_when: false
-      failed_when:
-        - cockpit_firewall_runtime_query.rc not in [0, 1]
+    - name: Enable HTTPS firewall service permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        service: https
+        permanent: true
+        immediate: true
+        state: enabled
 
-    - name: Open runtime Cockpit firewall service
-      ansible.builtin.command:
-        argv:
-          - firewall-cmd
-          - "--zone={{ cockpit_firewall_zone }}"
-          - --add-service=cockpit
-      register: cockpit_firewall_runtime
-      changed_when: cockpit_firewall_runtime.rc == 0
-      when: cockpit_firewall_runtime_query.rc == 1
+    - name: Enable Cockpit firewall service permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        service: cockpit
+        permanent: true
+        immediate: true
+        state: enabled
 
     - name: Enable and start Cockpit socket
       ansible.builtin.systemd_service:
@@ -1000,6 +1099,38 @@
         port: "{{ cockpit_port }}"
         state: started
         timeout: 60
+
+    - name: Verify permanent firewall ports
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - "--zone={{ cockpit_firewall_zone }}"
+          - "--query-port={{ item }}"
+      loop: "{{ image_mode_firewall_ports }}"
+      register: image_mode_permanent_firewall_checks
+      changed_when: false
+      failed_when: image_mode_permanent_firewall_checks.rc != 0
+
+    - name: Verify runtime firewall ports
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - "--zone={{ cockpit_firewall_zone }}"
+          - "--query-port={{ item }}"
+      loop: "{{ image_mode_firewall_ports }}"
+      register: image_mode_runtime_firewall_checks
+      changed_when: false
+      failed_when: image_mode_runtime_firewall_checks.rc != 0
+
+    - name: Display active firewall configuration
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - "--zone={{ cockpit_firewall_zone }}"
+          - --list-all
+      register: image_mode_firewall_configuration
+      changed_when: false
 
     ###########################################################################
     # Red Hat Insights
@@ -1165,6 +1296,12 @@
           printf 'git: '
           git --version
 
+          printf 'jq: '
+          jq --version
+
+          printf 'yq: '
+          yq --version
+
           printf 'composer-cli: '
           composer-cli --version 2>/dev/null || rpm -q composer-cli
 
@@ -1203,7 +1340,11 @@
         msg:
           - "Image Mode builder configuration completed successfully."
           - "Builder host: {{ inventory_hostname }}"
+          - "HTTP port: 80/tcp"
+          - "HTTPS port: 443/tcp"
+          - "Cockpit port: {{ cockpit_port }}/tcp"
           - "Cockpit URL: https://{{ inventory_hostname }}:{{ cockpit_port }}"
+          - "Firewall zone: {{ cockpit_firewall_zone }}"
           - "Workspace root: {{ image_mode_root }}"
           - "Source repositories: {{ image_mode_source_directory }}"
           - "Containerfiles: {{ image_mode_containerfiles_directory }}"
@@ -1216,11 +1357,6 @@
           - |-
             Installed tools:
             {{ image_mode_tool_versions.stdout }}
-
-  handlers:
-    - name: Reload firewalld
-      ansible.builtin.command:
-        argv:
-          - firewall-cmd
-          - --reload
-      changed_when: true
+          - |-
+            Firewall configuration:
+            {{ image_mode_firewall_configuration.stdout }}
