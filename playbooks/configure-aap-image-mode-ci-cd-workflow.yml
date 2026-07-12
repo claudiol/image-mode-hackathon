@@ -940,7 +940,7 @@
             name: infra.aap_configuration.controller_credentials
           tags:
             - credentials
-          no_log: true
+          no_log: false
 
         #######################################################################
         # 4. Inventories
