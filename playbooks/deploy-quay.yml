@@ -1049,6 +1049,7 @@
           - 201
           - 400
       loop: "{{ quay_team_syncs }}"
+      register: quay_create_teams
       no_log: false
 
     - name: Add bootstrap administrator to owners
