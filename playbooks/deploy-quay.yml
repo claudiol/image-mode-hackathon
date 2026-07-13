@@ -15,9 +15,6 @@
     postgres_image: registry.redhat.io/rhel8/postgresql-13:latest
     redis_image: registry.redhat.io/rhel8/redis-6:latest
 
-    # Quay runs as a non-root user inside the quay-rhel8 image.
-    # Configuration files containing secrets remain inaccessible to
-    # unprivileged host users while remaining readable by Quay.
     quay_container_uid: "1001"
     quay_container_gid: "0"
 
@@ -31,7 +28,13 @@
     quay_tls_org: Red Hat
     quay_tls_org_unit: Image Mode Lab
 
+    ###########################################################################
+    # Existing/default Quay organization and repository
+    ###########################################################################
+
     quay_default_org: image-mode
+    quay_default_repository: image-mode
+
     quay_default_team: writers
     quay_default_team_role: creator
 
@@ -43,9 +46,31 @@
 
     redhat_registry_host: registry.redhat.io
 
-    # Preserve database and registry data on normal reruns.
-    # Set true only when intentionally destroying and rebuilding the deployment.
     quay_force_clean_rebuild: false
+
+    ###########################################################################
+    # AAP robot account in the existing image-mode organization
+    ###########################################################################
+
+    quay_aap_robot_short_name: aap
+
+    quay_aap_robot_username: >-
+      {{ quay_default_org }}+{{ quay_aap_robot_short_name }}
+
+    quay_aap_robot_description: >-
+      AAP automation account for building and publishing Image Mode images
+
+    # Explicit repository permission. write includes pull and push.
+    quay_aap_repository_permission: write
+
+    # The robot is also added to the existing writers team.
+    quay_aap_team: "{{ quay_default_team }}"
+
+    quay_aap_robot_secret_name: >-
+      {{ secret_prefix }}/quay/aap_robot
+
+    quay_aap_robot_authfile: >-
+      /root/.config/containers/aap-quay-auth.json
 
     ###########################################################################
     # IdM LDAP directory structure
@@ -53,11 +78,9 @@
 
     idm_base_dn: "dc={{ idm_domain_name.split('.') | join(',dc=') }}"
 
-    # Relative container DNs beneath idm_base_dn.
     idm_user_container_relative_dn: "cn=users,cn=accounts"
     idm_group_container_relative_dn: "cn=groups,cn=accounts"
 
-    # Full container DNs used for direct LDAP operations.
     idm_user_container_dn: >-
       {{ idm_user_container_relative_dn }},{{ idm_base_dn }}
 
@@ -73,7 +96,6 @@
     quay_ldap_ca_remote_path: /etc/ipa/ca.crt
     quay_ldap_ca_host_path: "{{ quay_root }}/config/extra_ca_certs/idm-ca.crt"
 
-    # Quay appends this base DN when resolving relative LDAP paths.
     quay_ldap_base_dn: "{{ idm_base_dn }}"
 
     quay_ldap_user_rdn:
@@ -82,83 +104,48 @@
 
     quay_ldap_uid_attr: uid
     quay_ldap_email_attr: mail
-
-    # Full bind DN required for LDAP authentication.
     quay_ldap_bind_dn: "uid=admin,{{ idm_user_container_dn }}"
-
     quay_ldap_user_filter: "(&(objectClass=person)(uid=*))"
-
-    # How frequently Quay considers synchronized LDAP team membership stale.
     quay_ldap_team_sync_stale_time: 60m
 
     ###########################################################################
-    # Quay users
+    # Quay users and IdM groups
     ###########################################################################
 
     quay_admin_users: "{{ idm_users | default([]) | unique }}"
     quay_org_member_users: "{{ quay_admin_users }}"
 
-    ###########################################################################
-    # IdM groups used by Quay
-    ###########################################################################
-
     quay_idm_owner_group: "quay-{{ quay_default_org }}-owners"
     quay_idm_writer_group: "quay-{{ quay_default_org }}-writers"
 
-    # Relative group DNs.
-    #
-    # These values are passed to the Quay team synchronization API because
-    # Quay resolves them relative to LDAP_BASE_DN.
     quay_idm_owner_group_relative_dn: >-
       cn={{ quay_idm_owner_group }},{{ idm_group_container_relative_dn }}
 
     quay_idm_writer_group_relative_dn: >-
       cn={{ quay_idm_writer_group }},{{ idm_group_container_relative_dn }}
 
-    # Full group DNs.
-    #
-    # These values are used for IdM operations, ldapsearch validation, and
-    # filters that compare against the user's full memberOf attribute.
     quay_idm_owner_group_dn: >-
       {{ quay_idm_owner_group_relative_dn }},{{ idm_base_dn }}
 
     quay_idm_writer_group_dn: >-
       {{ quay_idm_writer_group_relative_dn }},{{ idm_base_dn }}
 
-    # The memberOf attribute contains a complete LDAP DN, so this filter must
-    # use the full owner-group DN rather than the relative API value.
     quay_ldap_superuser_filter: >-
       (memberOf={{ quay_idm_owner_group_dn }})
-
-    ###########################################################################
-    # Quay team-to-IdM synchronization mappings
-    ###########################################################################
 
     quay_team_syncs:
       - team: "{{ quay_owner_team }}"
         role: "{{ quay_owner_team_role }}"
         idm_group: "{{ quay_idm_owner_group }}"
-
-        # Passed to:
-        # POST /api/v1/organization/<org>/team/<team>/syncing
         group_dn: "{{ quay_idm_owner_group_relative_dn }}"
-
-        # Used only for direct LDAP validation and diagnostics.
         full_group_dn: "{{ quay_idm_owner_group_dn }}"
-
         users: "{{ quay_admin_users }}"
 
       - team: "{{ quay_default_team }}"
         role: "{{ quay_default_team_role }}"
         idm_group: "{{ quay_idm_writer_group }}"
-
-        # Passed to:
-        # POST /api/v1/organization/<org>/team/<team>/syncing
         group_dn: "{{ quay_idm_writer_group_relative_dn }}"
-
-        # Used only for direct LDAP validation and diagnostics.
         full_group_dn: "{{ quay_idm_writer_group_dn }}"
-
         users: "{{ quay_org_member_users }}"
 
     ###########################################################################
@@ -174,6 +161,16 @@
       quay_database_secret_key: quay/database_secret_key
       quay_superuser_password: quay/superuser_password
       idm_admin_password: idm/admin_password
+
+    aws_cli_environment: >-
+      {{
+        {'AWS_PROFILE': aws_profile}
+        if (
+          aws_profile is defined
+          and aws_profile | string | length > 0
+        )
+        else {}
+      }}
 
   pre_tasks:
     - name: Validate Terraform inventory inputs
@@ -213,15 +210,7 @@
       become: false
       changed_when: false
       no_log: true
-      environment: >-
-        {{
-          {'AWS_PROFILE': aws_profile}
-          if (
-            aws_profile is defined
-            and aws_profile | string | length > 0
-          )
-          else {}
-        }}
+      environment: "{{ aws_cli_environment }}"
 
     - name: Build required secret map
       ansible.builtin.set_fact:
@@ -273,15 +262,7 @@
       changed_when: false
       failed_when: false
       no_log: true
-      environment: >-
-        {{
-          {'AWS_PROFILE': aws_profile}
-          if (
-            aws_profile is defined
-            and aws_profile | string | length > 0
-          )
-          else {}
-        }}
+      environment: "{{ aws_cli_environment }}"
 
     - name: Normalize optional Quay API token
       ansible.builtin.set_fact:
@@ -298,15 +279,43 @@
           }}
       no_log: true
 
+    - name: Read optional existing AAP robot secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ quay_aap_robot_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: existing_quay_aap_robot_secret_result
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      environment: "{{ aws_cli_environment }}"
+
+    - name: Parse existing AAP robot secret
+      ansible.builtin.set_fact:
+        existing_quay_aap_robot_secret: >-
+          {{ existing_quay_aap_robot_secret_result.stdout | from_json }}
+      when:
+        - existing_quay_aap_robot_secret_result.rc == 0
+        - existing_quay_aap_robot_secret_result.stdout | trim | length > 0
+      no_log: true
+
   tasks:
     - name: Validate required Quay variables
       ansible.builtin.assert:
         that:
-          - quay_hostname is defined
           - quay_hostname | length > 0
           - quay_root | length > 0
-          - quay_http_port is defined
-          - quay_https_port is defined
           - quay_image | length > 0
           - postgres_image | length > 0
           - redis_image | length > 0
@@ -318,15 +327,20 @@
           - quay_superuser | length > 0
           - quay_superuser_password | length > 0
           - quay_superuser_email | length > 0
-          - redhat_registry_host | length > 0
           - redhat_registry_username | length > 0
           - redhat_registry_password | length > 0
           - quay_default_org | length > 0
+          - quay_default_repository | length > 0
           - quay_default_team | length > 0
           - idm_admin_password | length > 0
           - quay_admin_users | length > 0
+          - quay_aap_robot_short_name | length > 0
+          - quay_aap_robot_username | length > 0
+          - quay_aap_team | length > 0
+          - quay_aap_repository_permission in ['read', 'write', 'admin']
+          - quay_aap_robot_secret_name | length > 0
         fail_msg: >-
-          Missing required Quay, IdM, inventory, or AWS secret values.
+          Missing required Quay, robot, IdM, inventory, or AWS secret values.
 
     - name: Install required packages
       ansible.builtin.dnf:
@@ -416,56 +430,42 @@
         state: absent
       when: quay_force_clean_rebuild | bool
 
-    - name: Create Quay root directory
+    - name: Create Quay directories
       ansible.builtin.file:
-        path: "{{ quay_root }}"
+        path: "{{ item.path }}"
         state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Create container-readable Quay configuration directory
-      ansible.builtin.file:
-        path: "{{ quay_root }}/config"
-        state: directory
-        owner: "{{ quay_container_uid }}"
-        group: "{{ quay_container_gid }}"
-        mode: "0750"
-
-    - name: Create container-readable Quay CA directory
-      ansible.builtin.file:
-        path: "{{ quay_root }}/config/extra_ca_certs"
-        state: directory
-        owner: "{{ quay_container_uid }}"
-        group: "{{ quay_container_gid }}"
-        mode: "0750"
-
-    - name: Create Quay storage directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0777"
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
       loop:
-        - "{{ quay_root }}/storage"
-        - "{{ quay_root }}/storage/registry"
-
-    - name: Create PostgreSQL data directory
-      ansible.builtin.file:
-        path: "{{ quay_root }}/postgres"
-        state: directory
-        owner: "26"
-        group: "26"
-        mode: "0700"
-
-    - name: Create Redis data directory
-      ansible.builtin.file:
-        path: "{{ quay_root }}/redis"
-        state: directory
-        owner: root
-        group: root
-        mode: "0777"
+        - path: "{{ quay_root }}"
+          owner: root
+          group: root
+          mode: "0755"
+        - path: "{{ quay_root }}/config"
+          owner: "{{ quay_container_uid }}"
+          group: "{{ quay_container_gid }}"
+          mode: "0750"
+        - path: "{{ quay_root }}/config/extra_ca_certs"
+          owner: "{{ quay_container_uid }}"
+          group: "{{ quay_container_gid }}"
+          mode: "0750"
+        - path: "{{ quay_root }}/storage"
+          owner: root
+          group: root
+          mode: "0777"
+        - path: "{{ quay_root }}/storage/registry"
+          owner: root
+          group: root
+          mode: "0777"
+        - path: "{{ quay_root }}/postgres"
+          owner: "26"
+          group: "26"
+          mode: "0700"
+        - path: "{{ quay_root }}/redis"
+          owner: root
+          group: root
+          mode: "0777"
 
     - name: Define persistent SELinux labels
       ansible.builtin.command:
@@ -485,10 +485,9 @@
       changed_when: quay_semanage_result.rc == 0
       failed_when: >
         quay_semanage_result.rc != 0
-        and 'already defined' not in
-            quay_semanage_result.stderr | default('')
+        and 'already defined' not in quay_semanage_result.stderr | default('')
 
-    - name: Restore SELinux labels on Quay directories
+    - name: Restore SELinux labels
       ansible.builtin.command:
         argv:
           - restorecon
@@ -497,12 +496,12 @@
       register: quay_restorecon
       changed_when: quay_restorecon.stdout | length > 0
 
-    - name: Check Quay TLS certificate
+    - name: Inspect Quay TLS certificate
       ansible.builtin.stat:
         path: "{{ quay_root }}/config/ssl.cert"
       register: quay_tls_cert_stat
 
-    - name: Check Quay TLS private key
+    - name: Inspect Quay TLS private key
       ansible.builtin.stat:
         path: "{{ quay_root }}/config/ssl.key"
       register: quay_tls_key_stat
@@ -546,37 +545,18 @@
         or not quay_tls_key_stat.stat.exists
       no_log: true
 
-    - name: Set Quay TLS private key ownership and permissions
+    - name: Set Quay TLS file ownership and permissions
       ansible.builtin.file:
-        path: "{{ quay_root }}/config/ssl.key"
+        path: "{{ item.path }}"
         state: file
         owner: "{{ quay_container_uid }}"
         group: "{{ quay_container_gid }}"
-        mode: "0640"
-
-    - name: Set Quay TLS certificate ownership and permissions
-      ansible.builtin.file:
-        path: "{{ quay_root }}/config/ssl.cert"
-        state: file
-        owner: "{{ quay_container_uid }}"
-        group: "{{ quay_container_gid }}"
-        mode: "0644"
-
-    - name: Verify Quay TLS files exist
-      ansible.builtin.stat:
-        path: "{{ item }}"
+        mode: "{{ item.mode }}"
       loop:
-        - "{{ quay_root }}/config/ssl.cert"
-        - "{{ quay_root }}/config/ssl.key"
-      register: quay_tls_file_stats
-
-    - name: Assert Quay TLS files were created
-      ansible.builtin.assert:
-        that:
-          - item.stat.exists
-          - item.stat.isreg
-        fail_msg: "Required Quay TLS file {{ item.item }} is missing."
-      loop: "{{ quay_tls_file_stats.results }}"
+        - path: "{{ quay_root }}/config/ssl.key"
+          mode: "0640"
+        - path: "{{ quay_root }}/config/ssl.cert"
+          mode: "0644"
 
     - name: Create and start Quay pod
       containers.podman.podman_pod:
@@ -622,7 +602,7 @@
         volume:
           - "{{ quay_root }}/redis:/data:Z"
 
-    - name: Wait for PostgreSQL container to become ready
+    - name: Wait for PostgreSQL
       ansible.builtin.command:
         argv:
           - podman
@@ -643,7 +623,7 @@
       until: postgres_ready.rc == 0
       changed_when: false
 
-    - name: Enable required PostgreSQL pg_trgm extension for Quay
+    - name: Enable PostgreSQL pg_trgm
       ansible.builtin.command:
         argv:
           - podman
@@ -661,26 +641,7 @@
       register: pg_trgm_result
       changed_when: "'CREATE EXTENSION' in pg_trgm_result.stdout"
 
-    - name: Verify PostgreSQL pg_trgm extension exists
-      ansible.builtin.command:
-        argv:
-          - podman
-          - exec
-          - quay-postgres
-          - psql
-          - -U
-          - "{{ quay_db_user }}"
-          - -d
-          - "{{ quay_db_name }}"
-          - -tAc
-          - >-
-            SELECT extname FROM pg_extension
-            WHERE extname = 'pg_trgm';
-      register: pg_trgm_verify
-      changed_when: false
-      failed_when: pg_trgm_verify.stdout | trim != "pg_trgm"
-
-    - name: Read the IdM CA certificate from the IdM server
+    - name: Read IdM CA certificate
       ansible.builtin.slurp:
         src: "{{ quay_ldap_ca_remote_path }}"
       delegate_to: "{{ groups['idm'][0] }}"
@@ -688,31 +649,29 @@
       register: quay_idm_ca
       changed_when: false
 
-    - name: Install the IdM CA certificate for Quay
+    - name: Install IdM CA for Quay and the host
       ansible.builtin.copy:
-        dest: "{{ quay_ldap_ca_host_path }}"
-        owner: "{{ quay_container_uid }}"
-        group: "{{ quay_container_gid }}"
+        dest: "{{ item.path }}"
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
         mode: "0644"
         content: "{{ quay_idm_ca.content | b64decode }}"
-      register: quay_idm_ca_copy
+      loop:
+        - path: "{{ quay_ldap_ca_host_path }}"
+          owner: "{{ quay_container_uid }}"
+          group: "{{ quay_container_gid }}"
+        - path: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+          owner: root
+          group: root
+      register: quay_ca_copy
 
-    - name: Install the IdM CA into the RHEL trust store
-      ansible.builtin.copy:
-        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
-        owner: root
-        group: root
-        mode: "0644"
-        content: "{{ quay_idm_ca.content | b64decode }}"
-      register: quay_system_ca_copy
-
-    - name: Refresh the RHEL CA trust store
+    - name: Refresh host CA trust
       ansible.builtin.command:
         argv:
           - update-ca-trust
-      changed_when: quay_system_ca_copy.changed
+      changed_when: quay_ca_copy.changed
 
-    - name: Verify IdM LDAP bind and dynamic user search over LDAPS
+    - name: Verify IdM LDAP bind over LDAPS
       ansible.builtin.command:
         argv:
           - ldapsearch
@@ -761,8 +720,7 @@
       changed_when: idm_group_add.rc == 0
       failed_when: >
         idm_group_add.rc != 0
-        and 'already exists' not in
-            idm_group_add.stderr | default('')
+        and 'already exists' not in idm_group_add.stderr | default('')
       environment:
         KRB5CCNAME: /tmp/krb5cc_quay_admin
 
@@ -781,34 +739,13 @@
         'Number of members added 1' in idm_group_member_add.stdout
       failed_when: >
         idm_group_member_add.rc != 0
-        and 'Number of members added 0' not in
-            idm_group_member_add.stdout | default('')
+        and 'Number of members added 0'
+            not in idm_group_member_add.stdout | default('')
       environment:
         KRB5CCNAME: /tmp/krb5cc_quay_admin
 
-    - name: Verify IdM synchronization groups through LDAP
-      ansible.builtin.command:
-        argv:
-          - ldapsearch
-          - -x
-          - -H
-          - "{{ quay_ldap_uri }}"
-          - -D
-          - "{{ quay_ldap_bind_dn }}"
-          - -w
-          - "{{ idm_admin_password }}"
-          - -b
-          - "{{ item.full_group_dn }}"
-          - "(objectClass=*)"
-          - dn
-          - cn
-          - member
-      loop: "{{ quay_team_syncs }}"
-      changed_when: false
-      no_log: true
-
     ###########################################################################
-    # Quay bootstrap configuration
+    # Bootstrap Quay with database authentication
     ###########################################################################
 
     - name: Write bootstrap Quay configuration
@@ -827,6 +764,9 @@
           FEATURE_USER_CREATION: true
           FEATURE_USER_INITIALIZE: true
           FEATURE_REQUIRE_EMAIL_VERIFICATION: false
+
+          ROBOTS_DISALLOW: false
+          BROWSER_API_CALLS_XHR_ONLY: false
 
           DATABASE_SECRET_KEY: "{{ quay_database_secret_key }}"
           SECRET_KEY: "{{ quay_secret_key }}"
@@ -856,59 +796,13 @@
             - "{{ quay_superuser }}"
       no_log: true
 
-    - name: Restore SELinux labels after writing bootstrap configuration
+    - name: Restore configuration SELinux labels
       ansible.builtin.command:
         argv:
           - restorecon
           - -RFv
           - "{{ quay_root }}/config"
-      register: quay_bootstrap_restorecon
-      changed_when: quay_bootstrap_restorecon.stdout | length > 0
-
-    - name: Inspect bootstrap Quay configuration
-      ansible.builtin.stat:
-        path: "{{ quay_root }}/config/config.yaml"
-      register: quay_bootstrap_config_stat
-
-    - name: Assert bootstrap configuration has container-readable permissions
-      ansible.builtin.assert:
-        that:
-          - quay_bootstrap_config_stat.stat.exists
-          - quay_bootstrap_config_stat.stat.isreg
-          - quay_bootstrap_config_stat.stat.uid | int ==
-            quay_container_uid | int
-          - quay_bootstrap_config_stat.stat.gid | int ==
-            quay_container_gid | int
-          - quay_bootstrap_config_stat.stat.mode == "0640"
-        fail_msg: >-
-          {{ quay_root }}/config/config.yaml must be owned by
-          UID {{ quay_container_uid }}, GID {{ quay_container_gid }},
-          and have mode 0640.
-
-    - name: Verify Quay image can read the mounted configuration and TLS files
-      ansible.builtin.command:
-        argv:
-          - podman
-          - run
-          - --rm
-          - --entrypoint
-          - /bin/sh
-          - --volume
-          - "{{ quay_root }}/config:/conf/stack:z"
-          - "{{ quay_image }}"
-          - -c
-          - >-
-            id;
-            test -r /conf/stack/config.yaml;
-            test -r /conf/stack/ssl.cert;
-            test -r /conf/stack/ssl.key;
-            test -r /conf/stack/extra_ca_certs/idm-ca.crt;
-            echo configuration-readable
-      register: quay_config_read_test
       changed_when: false
-      failed_when:
-        - quay_config_read_test.rc != 0
-        - "'configuration-readable' not in quay_config_read_test.stdout"
 
     - name: Run Quay registry in bootstrap mode
       containers.podman.podman_container:
@@ -940,81 +834,11 @@
       changed_when: false
       failed_when: false
 
-    - name: Read Quay bootstrap logs after startup failure
-      ansible.builtin.command:
-        argv:
-          - podman
-          - logs
-          - --tail
-          - "300"
-          - quay-registry
-      register: quay_bootstrap_logs
-      changed_when: false
-      failed_when: false
-      when: quay_bootstrap_https_check.rc != 0
-
-    - name: Display Quay bootstrap stdout
-      ansible.builtin.debug:
-        var: quay_bootstrap_logs.stdout_lines
-      when:
-        - quay_bootstrap_https_check.rc != 0
-        - quay_bootstrap_logs.stdout_lines | default([]) | length > 0
-
-    - name: Display Quay bootstrap stderr
-      ansible.builtin.debug:
-        var: quay_bootstrap_logs.stderr_lines
-      when:
-        - quay_bootstrap_https_check.rc != 0
-        - quay_bootstrap_logs.stderr_lines | default([]) | length > 0
-
-    - name: Inspect Quay bootstrap container state
-      ansible.builtin.command:
-        argv:
-          - podman
-          - inspect
-          - quay-registry
-          - --format
-          - >-
-            Status={{ '{{' }}.State.Status{{ '}}' }}
-            Running={{ '{{' }}.State.Running{{ '}}' }}
-            ExitCode={{ '{{' }}.State.ExitCode{{ '}}' }}
-            Error={{ '{{' }}.State.Error{{ '}}' }}
-            RestartCount={{ '{{' }}.RestartCount{{ '}}' }}
-      register: quay_bootstrap_inspect
-      changed_when: false
-      failed_when: false
-      when: quay_bootstrap_https_check.rc != 0
-
-    - name: Display Quay bootstrap container state
-      ansible.builtin.debug:
-        var: quay_bootstrap_inspect.stdout_lines
-      when: quay_bootstrap_https_check.rc != 0
-
-    - name: Inspect Quay configuration mount after startup failure
-      ansible.builtin.command:
-        argv:
-          - podman
-          - inspect
-          - quay-registry
-          - --format
-          - "{{ '{{' }}json .Mounts{{ '}}' }}"
-      register: quay_bootstrap_mounts
-      changed_when: false
-      failed_when: false
-      when: quay_bootstrap_https_check.rc != 0
-
-    - name: Display Quay bootstrap mounts
-      ansible.builtin.debug:
-        var: quay_bootstrap_mounts.stdout
-      when: quay_bootstrap_https_check.rc != 0
-
     - name: Fail when Quay bootstrap startup fails
       ansible.builtin.fail:
         msg: >-
-          Quay did not respond in Database-authentication bootstrap mode.
-          The configuration readability test passed, but the Quay process
-          did not become healthy. Review the displayed Quay logs,
-          container state, and mounts.
+          Quay did not respond in database-authentication bootstrap mode.
+          Inspect with: podman logs quay-registry
       when: quay_bootstrap_https_check.rc != 0
 
     - name: Initialize the Quay bootstrap administrator
@@ -1037,7 +861,7 @@
       no_log: true
       failed_when: false
 
-    - name: Select newly generated or previously stored Quay API token
+    - name: Select generated or stored Quay API token
       ansible.builtin.set_fact:
         quay_api_token: >-
           {{
@@ -1058,22 +882,19 @@
       ansible.builtin.set_fact:
         quay_api_token: >-
           {{ local_bootstrap_token.content | b64decode | trim }}
-      no_log: true
       when:
         - quay_api_token | default('') | length == 0
-        - local_bootstrap_token is defined
         - local_bootstrap_token.content is defined
+      no_log: true
 
     - name: Fail when no Quay API token is available
       ansible.builtin.fail:
         msg: >-
-          No Quay API token is available. For a new database,
-          /api/v1/user/initialize must return one. For an existing
-          database, store a valid token at
-          {{ secret_prefix }}/quay/admin_access_token.
+          No Quay API token is available. Store a valid token at
+          {{ secret_prefix }}/quay/admin_access_token for existing databases.
       when: quay_api_token | default('') | length == 0
 
-    - name: Cache Quay API token on the Quay server
+    - name: Cache Quay API token locally
       ansible.builtin.copy:
         dest: "{{ quay_root }}/config/bootstrap-token"
         owner: root
@@ -1082,7 +903,44 @@
         content: "{{ quay_api_token }}"
       no_log: true
 
-    - name: Store Quay API token in AWS Secrets Manager
+    - name: Check whether the Quay API token secret exists
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - describe-secret
+          - --secret-id
+          - "{{ secret_prefix }}/quay/admin_access_token"
+          - --region
+          - "{{ aws_region }}"
+      register: quay_api_token_secret_lookup
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      environment: "{{ aws_cli_environment }}"
+
+    - name: Create the Quay API token secret when absent
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - create-secret
+          - --name
+          - "{{ secret_prefix }}/quay/admin_access_token"
+          - --region
+          - "{{ aws_region }}"
+          - --secret-string
+          - "{{ quay_api_token }}"
+      when: quay_api_token_secret_lookup.rc != 0
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      no_log: true
+      environment: "{{ aws_cli_environment }}"
+
+    - name: Update the Quay API token secret when present
       ansible.builtin.command:
         argv:
           - aws
@@ -1094,21 +952,14 @@
           - "{{ aws_region }}"
           - --secret-string
           - "{{ quay_api_token }}"
+      when: quay_api_token_secret_lookup.rc == 0
       delegate_to: localhost
       become: false
       changed_when: true
       no_log: true
-      environment: >-
-        {{
-          {'AWS_PROFILE': aws_profile}
-          if (
-            aws_profile is defined
-            and aws_profile | string | length > 0
-          )
-          else {}
-        }}
+      environment: "{{ aws_cli_environment }}"
 
-    - name: Verify that the bootstrap administrator exists and mark email as verified
+    - name: Mark the bootstrap administrator as verified
       ansible.builtin.command:
         argv:
           - podman
@@ -1147,11 +998,15 @@
       changed_when: "'UPDATE 1' in quay_verify_bootstrap_admin.stdout"
       failed_when: >
         quay_verify_bootstrap_admin.rc != 0
-        or
-        'BOOTSTRAP_ADMIN_VERIFIED' not in quay_verify_bootstrap_admin.stdout
+        or 'BOOTSTRAP_ADMIN_VERIFIED'
+           not in quay_verify_bootstrap_admin.stdout
       no_log: true
 
-    - name: Ensure the Quay organization exists
+    ###########################################################################
+    # Existing/default organization, teams, repository, and AAP robot
+    ###########################################################################
+
+    - name: Ensure the default Quay organization exists
       ansible.builtin.uri:
         url: >-
           https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/
@@ -1194,16 +1049,15 @@
           - 201
           - 400
       loop: "{{ quay_team_syncs }}"
-      register: quay_create_teams
       no_log: true
 
-    - name: Add bootstrap administrator to the owners team
+    - name: Add bootstrap administrator to owners
       ansible.builtin.uri:
         url: >-
           https://127.0.0.1:{{ quay_https_port
           }}/api/v1/organization/{{ quay_default_org
           }}/team/{{ quay_owner_team
-          }}/members/{{ quay_superuser }}
+          }}/members/{{ quay_superuser | urlencode }}
         method: PUT
         validate_certs: false
         headers:
@@ -1213,15 +1067,354 @@
           - 201
           - 204
           - 400
-      register: quay_add_bootstrap_owner
-      no_log: true
       failed_when: false
+      no_log: true
+
+    - name: Check whether the existing default repository exists
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/repository/{{ quay_default_org
+          }}/{{ quay_default_repository }}
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code:
+          - 200
+          - 404
+        return_content: true
+      register: quay_default_repository_lookup
+      changed_when: false
+      no_log: true
+
+    - name: Create the default repository beneath the existing organization
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port }}/api/v1/repository
+        method: POST
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        body_format: json
+        body:
+          repository: "{{ quay_default_repository }}"
+          namespace: "{{ quay_default_org }}"
+          description: >-
+            Image Mode container images built and published by AAP
+          visibility: private
+        status_code:
+          - 200
+          - 201
+          - 400
+        return_content: true
+      when: quay_default_repository_lookup.status == 404
+      register: quay_default_repository_create
+      changed_when: quay_default_repository_create.status in [200, 201]
+      failed_when: >
+        quay_default_repository_create.status == 400
+        and (
+          quay_default_repository_create.json.error_message
+          | default(
+              quay_default_repository_create.json.message | default('')
+            )
+          is not search('already|exists')
+        )
+      no_log: true
+
+    - name: Check whether the AAP robot exists in the default organization
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/organization/{{ quay_default_org
+          }}/robots/{{ quay_aap_robot_short_name }}
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code:
+          - 200
+          - 404
+        return_content: true
+      register: quay_aap_robot_lookup
+      changed_when: false
+      no_log: true
+
+    - name: Create the AAP robot in the existing default organization
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/organization/{{ quay_default_org
+          }}/robots/{{ quay_aap_robot_short_name }}
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        body_format: json
+        body:
+          description: "{{ quay_aap_robot_description }}"
+        status_code:
+          - 200
+          - 201
+          - 400
+        return_content: true
+      when: quay_aap_robot_lookup.status == 404
+      register: quay_aap_robot_create
+      changed_when: quay_aap_robot_create.status in [200, 201]
+      failed_when: >
+        quay_aap_robot_create.status == 400
+        and (
+          quay_aap_robot_create.json.error_message
+          | default(quay_aap_robot_create.json.message | default(''))
+          is not search('already|exists')
+        )
+      no_log: true
+
+    - name: Read the reconciled AAP robot
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/organization/{{ quay_default_org
+          }}/robots/{{ quay_aap_robot_short_name }}
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code: 200
+        return_content: true
+      register: quay_aap_robot_details
+      changed_when: false
+      no_log: true
+
+    - name: Select robot token returned by Quay
+      ansible.builtin.set_fact:
+        quay_aap_robot_token: >-
+          {{
+            (
+              quay_aap_robot_create.json.token
+              if (
+                quay_aap_robot_create is defined
+                and quay_aap_robot_create.json is defined
+                and quay_aap_robot_create.json.token is defined
+              )
+              else quay_aap_robot_details.json.token | default('')
+            )
+          }}
+      no_log: true
+
+    - name: Reuse the robot token stored in AWS when necessary
+      ansible.builtin.set_fact:
+        quay_aap_robot_token: >-
+          {{
+            existing_quay_aap_robot_secret.password
+            | default(existing_quay_aap_robot_secret.token | default(''))
+          }}
+      when:
+        - quay_aap_robot_token | default('') | length == 0
+        - existing_quay_aap_robot_secret is defined
+        - existing_quay_aap_robot_secret.username | default('')
+          == quay_aap_robot_username
+      no_log: true
+
+    - name: Regenerate the AAP robot token when no usable token exists
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/organization/{{ quay_default_org
+          }}/robots/{{ quay_aap_robot_short_name }}/regenerate
+        method: POST
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code:
+          - 200
+          - 201
+        return_content: true
+      when: quay_aap_robot_token | default('') | length == 0
+      register: quay_aap_robot_regenerate
+      changed_when: true
+      no_log: true
+
+    - name: Select regenerated AAP robot token
+      ansible.builtin.set_fact:
+        quay_aap_robot_token: "{{ quay_aap_robot_regenerate.json.token }}"
+      when:
+        - quay_aap_robot_token | default('') | length == 0
+        - quay_aap_robot_regenerate.json.token is defined
+      no_log: true
+
+    - name: Validate AAP robot identity and token
+      ansible.builtin.assert:
+        that:
+          - quay_aap_robot_username ==
+            quay_default_org ~ '+' ~ quay_aap_robot_short_name
+          - quay_aap_robot_token | default('') | length > 0
+        fail_msg: >-
+          The AAP robot exists in {{ quay_default_org }}, but no usable
+          robot token could be obtained.
+      no_log: true
+
+    - name: Add AAP robot to the existing writers team
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/organization/{{ quay_default_org
+          }}/team/{{ quay_aap_team
+          }}/members/{{ quay_aap_robot_username | urlencode }}
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code:
+          - 200
+          - 201
+          - 204
+          - 400
+        return_content: true
+      register: quay_aap_robot_team_membership
+      changed_when: quay_aap_robot_team_membership.status in [200, 201, 204]
+      failed_when: >
+        quay_aap_robot_team_membership.status == 400
+        and (
+          quay_aap_robot_team_membership.json.error_message
+          | default(
+              quay_aap_robot_team_membership.json.message | default('')
+            )
+          is not search('already|exists|member')
+        )
+      no_log: true
+
+    - name: Grant AAP robot write access to the existing repository
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/repository/{{ quay_default_org
+          }}/{{ quay_default_repository
+          }}/permissions/user/{{ quay_aap_robot_username | urlencode }}
+        method: PUT
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        body_format: json
+        body:
+          role: "{{ quay_aap_repository_permission }}"
+        status_code:
+          - 200
+          - 201
+        return_content: true
+      register: quay_aap_robot_permission_update
+      changed_when: true
+      no_log: true
+
+    - name: Verify AAP robot repository permission
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/repository/{{ quay_default_org
+          }}/{{ quay_default_repository
+          }}/permissions/user/{{ quay_aap_robot_username | urlencode }}
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code: 200
+        return_content: true
+      register: quay_aap_robot_permission_verify
+      changed_when: false
+      failed_when: >
+        quay_aap_robot_permission_verify.json.role | default('')
+        != quay_aap_repository_permission
+      no_log: true
+
+    - name: Build AAP robot AWS secret document
+      ansible.builtin.set_fact:
+        quay_aap_robot_secret_document:
+          registry: "{{ quay_hostname }}"
+          registry_url: "https://{{ quay_hostname }}"
+          organization: "{{ quay_default_org }}"
+          repository: "{{ quay_default_repository }}"
+          image_repository: >-
+            {{ quay_hostname }}/{{ quay_default_org
+            }}/{{ quay_default_repository }}
+          username: "{{ quay_aap_robot_username }}"
+          password: "{{ quay_aap_robot_token }}"
+          token: "{{ quay_aap_robot_token }}"
+          team: "{{ quay_aap_team }}"
+          permission: "{{ quay_aap_repository_permission }}"
+      no_log: true
+
+    - name: Check whether the AAP robot secret exists
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - describe-secret
+          - --secret-id
+          - "{{ quay_aap_robot_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+      register: quay_aap_robot_secret_lookup
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      environment: "{{ aws_cli_environment }}"
+
+    - name: Create AAP robot secret when absent
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - create-secret
+          - --name
+          - "{{ quay_aap_robot_secret_name }}"
+          - --description
+          - Quay robot credential used by AAP for Image Mode builds
+          - --region
+          - "{{ aws_region }}"
+          - --secret-string
+          - "{{ quay_aap_robot_secret_document | to_json }}"
+      when: quay_aap_robot_secret_lookup.rc != 0
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      no_log: true
+      environment: "{{ aws_cli_environment }}"
+
+    - name: Update existing AAP robot secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - put-secret-value
+          - --secret-id
+          - "{{ quay_aap_robot_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --secret-string
+          - "{{ quay_aap_robot_secret_document | to_json }}"
+      when: quay_aap_robot_secret_lookup.rc == 0
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      no_log: true
+      environment: "{{ aws_cli_environment }}"
 
     ###########################################################################
     # Final LDAP configuration
     ###########################################################################
 
-    - name: Stop Quay before enabling LDAP authentication
+    - name: Stop Quay before enabling LDAP
       containers.podman.podman_container:
         name: quay-registry
         state: stopped
@@ -1242,6 +1435,9 @@
           FEATURE_USER_CREATION: true
           FEATURE_USER_INITIALIZE: false
           FEATURE_REQUIRE_EMAIL_VERIFICATION: false
+
+          ROBOTS_DISALLOW: false
+          BROWSER_API_CALLS_XHR_ONLY: false
 
           FEATURE_TEAM_SYNCING: true
           TEAM_RESYNC_STALE_TIME: "{{ quay_ldap_team_sync_stale_time }}"
@@ -1295,42 +1491,15 @@
             - "{{ quay_superuser }}"
       no_log: true
 
-    - name: Restore SELinux labels after writing LDAP configuration
+    - name: Restore SELinux labels after LDAP configuration
       ansible.builtin.command:
         argv:
           - restorecon
           - -RFv
           - "{{ quay_root }}/config"
-      register: quay_ldap_restorecon
-      changed_when: quay_ldap_restorecon.stdout | length > 0
-
-    - name: Verify Quay image can read the final LDAP configuration
-      ansible.builtin.command:
-        argv:
-          - podman
-          - run
-          - --rm
-          - --entrypoint
-          - /bin/sh
-          - --volume
-          - "{{ quay_root }}/config:/conf/stack:z"
-          - "{{ quay_image }}"
-          - -c
-          - >-
-            test -r /conf/stack/config.yaml;
-            test -r /conf/stack/ssl.cert;
-            test -r /conf/stack/ssl.key;
-            test -r /conf/stack/extra_ca_certs/idm-ca.crt;
-            echo ldap-configuration-readable
-      register: quay_ldap_config_read_test
       changed_when: false
-      failed_when:
-        - quay_ldap_config_read_test.rc != 0
-        - >-
-          'ldap-configuration-readable'
-          not in quay_ldap_config_read_test.stdout
 
-    - name: Start Quay registry with LDAP authentication
+    - name: Start Quay with LDAP authentication
       containers.podman.podman_container:
         name: quay-registry
         pod: quay-pod
@@ -1343,7 +1512,7 @@
           - "{{ quay_root }}/config:/conf/stack:z"
           - "{{ quay_root }}/storage:/datastorage:z"
 
-    - name: Wait for Quay HTTPS after LDAP switch
+    - name: Wait for Quay after LDAP switch
       ansible.builtin.command:
         argv:
           - curl
@@ -1360,62 +1529,79 @@
       changed_when: false
       failed_when: false
 
-    - name: Read Quay logs when LDAP startup fails
-      ansible.builtin.command:
-        argv:
-          - podman
-          - logs
-          - --tail
-          - "300"
-          - quay-registry
-      register: quay_ldap_logs
-      changed_when: false
-      failed_when: false
-      when: quay_ldap_https_check.rc != 0
-
-    - name: Display Quay LDAP stdout
-      ansible.builtin.debug:
-        var: quay_ldap_logs.stdout_lines
-      when:
-        - quay_ldap_https_check.rc != 0
-        - quay_ldap_logs.stdout_lines | default([]) | length > 0
-
-    - name: Display Quay LDAP stderr
-      ansible.builtin.debug:
-        var: quay_ldap_logs.stderr_lines
-      when:
-        - quay_ldap_https_check.rc != 0
-        - quay_ldap_logs.stderr_lines | default([]) | length > 0
-
-    - name: Inspect Quay container after LDAP startup failure
-      ansible.builtin.command:
-        argv:
-          - podman
-          - inspect
-          - quay-registry
-          - --format
-          - >-
-            Status={{ '{{' }}.State.Status{{ '}}' }}
-            Running={{ '{{' }}.State.Running{{ '}}' }}
-            ExitCode={{ '{{' }}.State.ExitCode{{ '}}' }}
-            Error={{ '{{' }}.State.Error{{ '}}' }}
-            RestartCount={{ '{{' }}.RestartCount{{ '}}' }}
-      register: quay_ldap_inspect
-      changed_when: false
-      failed_when: false
-      when: quay_ldap_https_check.rc != 0
-
-    - name: Display Quay LDAP container state
-      ansible.builtin.debug:
-        var: quay_ldap_inspect.stdout_lines
-      when: quay_ldap_https_check.rc != 0
-
     - name: Fail when Quay does not start with LDAP
       ansible.builtin.fail:
         msg: >-
           Quay did not respond after switching to IdM LDAP authentication.
-          Review the displayed Quay logs and container state.
+          Inspect with: podman logs quay-registry
       when: quay_ldap_https_check.rc != 0
+
+    ###########################################################################
+    # Validate Quay-native robot authentication after LDAP is enabled
+    ###########################################################################
+
+    - name: Remove previous temporary AAP robot authentication file
+      ansible.builtin.file:
+        path: "{{ quay_aap_robot_authfile }}"
+        state: absent
+
+    - name: Log in to LDAP-enabled Quay with the AAP robot
+      containers.podman.podman_login:
+        registry: "{{ quay_hostname }}"
+        username: "{{ quay_aap_robot_username }}"
+        password: "{{ quay_aap_robot_token }}"
+        authfile: "{{ quay_aap_robot_authfile }}"
+        tlsverify: false
+        reauthorize: true
+      register: quay_aap_robot_login
+      no_log: true
+
+    - name: Request robot pull and push authorization
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/v2/auth?service={{ quay_hostname | urlencode
+          }}&scope=repository:{{ quay_default_org
+          }}/{{ quay_default_repository }}:pull,push
+        method: GET
+        validate_certs: false
+        force_basic_auth: true
+        url_username: "{{ quay_aap_robot_username }}"
+        url_password: "{{ quay_aap_robot_token }}"
+        status_code: 200
+        return_content: true
+      register: quay_aap_robot_registry_authorization
+      changed_when: false
+      no_log: true
+
+    - name: Validate AAP robot after LDAP switch
+      ansible.builtin.assert:
+        that:
+          - quay_aap_robot_login is succeeded
+          - quay_aap_robot_registry_authorization.status == 200
+          - >-
+            (
+              quay_aap_robot_registry_authorization.json.token
+              | default(
+                  quay_aap_robot_registry_authorization.json.access_token
+                  | default('')
+                )
+            ) | length > 0
+        fail_msg: >-
+          {{ quay_aap_robot_username }} could not obtain pull and push
+          authorization for
+          {{ quay_default_org }}/{{ quay_default_repository }}
+          after Quay switched to LDAP.
+      no_log: true
+
+    - name: Remove temporary AAP robot authentication file
+      ansible.builtin.file:
+        path: "{{ quay_aap_robot_authfile }}"
+        state: absent
+
+    ###########################################################################
+    # Enable and validate LDAP team synchronization
+    ###########################################################################
 
     - name: Enable LDAP synchronization for Quay teams
       ansible.builtin.uri:
@@ -1484,25 +1670,26 @@
         msg:
           - "Quay URL: https://{{ quay_hostname }}"
           - "Authentication: IdM LDAP"
-          - "IdM base DN: {{ idm_base_dn }}"
-          - "IdM user container: {{ idm_user_container_dn }}"
+          - "Organization: {{ quay_default_org }}"
+          - >-
+            Existing/default repository:
+            {{ quay_default_org }}/{{ quay_default_repository }}
+          - "AAP robot: {{ quay_aap_robot_username }}"
+          - "AAP robot team: {{ quay_aap_team }}"
+          - >-
+            AAP robot repository permission:
+            {{ quay_aap_repository_permission }}
+          - >-
+            AAP image path:
+            {{ quay_hostname }}/{{ quay_default_org
+            }}/{{ quay_default_repository }}
+          - >-
+            AAP robot AWS secret:
+            {{ quay_aap_robot_secret_name }}
+          - >-
+            Robot authentication was validated after the LDAP switch.
           - "IdM owner group: {{ quay_idm_owner_group_dn }}"
           - "IdM writer group: {{ quay_idm_writer_group_dn }}"
-          - "Organization: {{ quay_default_org }}"
-          - "Owner team: {{ quay_owner_team }}"
-          - "Writer team: {{ quay_default_team }}"
-          - >-
-            PostgreSQL data is retained at
-            {{ quay_root }}/postgres with UID/GID 26.
-          - >-
-            Quay configuration is owned by container UID
-            {{ quay_container_uid }} with mode 0640.
-          - >-
-            LDAP users are created in Quay on their first successful
-            LDAP login.
-          - >-
-            IdM group synchronization controls Quay team membership,
-            and members of the IdM owner group become Quay superusers.
 
     - name: Show running containers
       ansible.builtin.command:
@@ -1514,4 +1701,6 @@
 
     - name: Display running containers
       ansible.builtin.debug:
-        msg: "{{ podman_ps.stdout_lines | default(['podman ps was not executed']) }}"
+        msg: >-
+          {{ podman_ps.stdout_lines
+          | default(['podman ps was not executed']) }}
