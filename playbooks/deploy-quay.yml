@@ -1049,7 +1049,7 @@
           - 201
           - 400
       loop: "{{ quay_team_syncs }}"
-      no_log: true
+      no_log: false
 
     - name: Add bootstrap administrator to owners
       ansible.builtin.uri:
@@ -1087,7 +1087,7 @@
         return_content: true
       register: quay_default_repository_lookup
       changed_when: false
-      no_log: false
+      no_log: true
 
     - name: Create the default repository beneath the existing organization
       ansible.builtin.uri:
