@@ -670,100 +670,171 @@ resource "aws_security_group" "lab" {
   }
 }
 
+
+############################################################
+# Image Builder Security Group
+############################################################
+
+resource "aws_security_group" "image_builder" {
+
+  name        = "${var.environment_name}-image-builder-sg"
+  description = "Additional access for Image Builder hosts"
+  vpc_id      = aws_vpc.lab.id
+
+  ingress {
+
+    description = "Cockpit Web Console"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+
+  }
+
+  ingress {
+    description      = "Cockpit Web Console IPv6"
+    from_port        = 9090
+    to_port          = 9090
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]
+
+  }
+
+  tags = {
+
+    Name        = "${var.environment_name}-image-builder-sg"
+    Environment = var.environment_name
+  }
+}
+
 ############################################################
 # EC2 Instances
 ############################################################
 
 resource "aws_instance" "server" {
   for_each = local.flattened_servers
+  ami           = local.selected_ami
+  instance_type = each.value.instance_type
+  subnet_id     = aws_subnet.public.id
+  vpc_security_group_ids = concat(
 
-  ami                         = local.selected_ami
-  instance_type               = each.value.instance_type
-  subnet_id                   = aws_subnet.public.id
-  vpc_security_group_ids      = [aws_security_group.lab.id]
+    [
+
+      aws_security_group.lab.id
+
+    ],
+
+    each.value.role == "image-builder" ? [
+
+      aws_security_group.image_builder.id
+
+    ] : []
+
+  )
+
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
-
   iam_instance_profile = each.value.role == "aap" ? aws_iam_instance_profile.aap.name : null
 
   root_block_device {
+
     volume_size = each.value.root_volume
     volume_type = "gp3"
     encrypted   = true
+
   }
 
   user_data = <<-EOF
     #!/bin/bash
     hostnamectl set-hostname ${each.value.hostname}
     echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+
   EOF
 
   tags = {
+
     Name        = each.value.hostname
     Role        = each.value.role
     Environment = var.environment_name
+
   }
 
   depends_on = [
+
     terraform_data.validate_dns_discovery,
     terraform_data.validate_idm_server,
     aws_key_pair.lab,
     local_sensitive_file.lab_ssh_private_key,
     aws_iam_instance_profile.aap,
+    aws_security_group.image_builder,
     aws_secretsmanager_secret_version.ssh_private_key,
     aws_secretsmanager_secret_version.generated,
     aws_secretsmanager_secret_version.static,
     aws_secretsmanager_secret_version.redhat
+
   ]
 }
 
 locals {
-  primary_idm_private_ip = try(aws_instance.server[local.primary_idm_key].private_ip, null)
+
+  primary_idm_private_ip = try(
+    aws_instance.server[local.primary_idm_key].private_ip,
+    null
+
+  )
 }
 
 resource "aws_ebs_volume" "extra" {
+
   for_each = {
+
     for name, server in local.flattened_servers :
     name => server
     if server.extra_volume > 0
+
   }
 
   availability_zone = aws_subnet.public.availability_zone
   size              = each.value.extra_volume
   type              = "gp3"
   encrypted         = true
-
   tags = {
+
     Name        = "${each.value.hostname}-data"
     Role        = each.value.role
     Environment = var.environment_name
   }
+
 }
 
 resource "aws_volume_attachment" "extra" {
-  for_each = aws_ebs_volume.extra
 
+  for_each = aws_ebs_volume.extra
   device_name = "/dev/sdf"
   volume_id   = each.value.id
   instance_id = aws_instance.server[each.key].id
+
 }
 
 resource "aws_eip" "server" {
+
   for_each = aws_instance.server
-
   domain = "vpc"
-
   tags = {
+
     Name        = "${each.value.tags.Name}-eip"
     Environment = var.environment_name
+
   }
+
 }
 
 resource "aws_eip_association" "server" {
-  for_each = aws_instance.server
 
+  for_each = aws_instance.server
   instance_id   = each.value.id
   allocation_id = aws_eip.server[each.key].id
+
 }
 
 ############################################################
