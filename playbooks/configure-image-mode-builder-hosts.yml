@@ -686,6 +686,7 @@
         tlsverify: "{{ quay_registry_tls_verify | bool }}"
       when: image_mode_configure_quay_login | bool
       no_log: false
+      ignore_errors: true
 
     - name: Check for container authentication file
       ansible.builtin.stat:
