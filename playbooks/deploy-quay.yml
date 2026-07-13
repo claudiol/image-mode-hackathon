@@ -1087,7 +1087,7 @@
         return_content: true
       register: quay_default_repository_lookup
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Create the default repository beneath the existing organization
       ansible.builtin.uri:
