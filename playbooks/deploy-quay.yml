@@ -1031,6 +1031,20 @@
           is not search('already|exists')
         )
 
+    - name: Verify current API user
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/"
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+      register: quay_current_user
+      no_log: false
+
+    - debug:
+        var: quay_current_user.json
+
+
     - name: Ensure owner and writer teams exist
       ansible.builtin.uri:
         url: >-
