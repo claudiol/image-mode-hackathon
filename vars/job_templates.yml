@@ -1,18 +1,16 @@
 ---
 controller_templates:
 
-  - name: Deploy Quay
+  - name: Configure Image Mode Builder Hosts
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Mode Lab Infrastructure"
-    limit: "quay"
-    playbook: "playbooks/deploy-quay.yml"
+    inventory: "Image Builders"
+    playbook: "playbooks/configure-image-mode-builder-hosts.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "Image Mode Machine Credential"
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
-      - "Image Mode Ansible Vault"
 
 
   # - name: Build Image
@@ -23,7 +21,7 @@ controller_templates:
   #   playbook: "playbooks/image_mode/build-image.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
   #     - "Image Mode Red Hat Registry Credential"
   #     - "Image Mode Quay Registry Credential"
 
@@ -36,7 +34,7 @@ controller_templates:
   #   playbook: "playbooks/image_mode/publish-image.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
   #     - "Image Mode Quay Registry Credential"
 
 
@@ -48,7 +46,7 @@ controller_templates:
   #   playbook: "playbooks/image_mode/deploy-dev.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
   #     - "Image Mode Quay Registry Credential"
 
 
@@ -60,7 +58,7 @@ controller_templates:
   #   playbook: "playbooks/image_mode/deploy-prod.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
   #     - "Image Mode Quay Registry Credential"
 
 
@@ -72,7 +70,7 @@ controller_templates:
   #   playbook: "playbooks/image_mode/bootc-update.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
   #     - "Image Mode Quay Registry Credential"
 
 
@@ -84,7 +82,7 @@ controller_templates:
   #   playbook: "playbooks/image_mode/validate-image.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
 
 
   # - name: Rollback
@@ -95,5 +93,5 @@ controller_templates:
   #   playbook: "playbooks/image_mode/rollback.yml"
   #   execution_environment: "Image Mode EE"
   #   credentials:
-  #     - "AWS Machine Credential"
+  #     - "Image Mode Machine Credential"
   #     - "Image Mode Quay Registry Credential"

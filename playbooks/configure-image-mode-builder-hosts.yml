@@ -1,0 +1,1370 @@
+---
+###############################################################################
+# Configure all Image Mode builder hosts
+#
+# Expected inventory group:
+#
+# [image-builder]
+# image-builder-0.lab.sandbox3491.opentlc.com
+# image-builder-1.lab.sandbox3491.opentlc.com
+#
+# Recommended AAP job template limit:
+#
+# image-builder
+#
+# Required collections:
+#
+# ansible-galaxy collection install \
+#   ansible.posix \
+#   containers.podman
+#
+# Sensitive values must be provided through:
+#
+# - AAP credentials
+# - Ansible Vault
+# - AWS Secrets Manager lookups
+# - Job template extra variables
+#
+# Do not store passwords directly in this playbook.
+###############################################################################
+
+- name: Configure all hosts for Image Mode development
+  hosts: all
+  become: true
+  gather_facts: true
+
+  collections:
+    - ansible.posix
+    - containers.podman
+
+  vars:
+    ###########################################################################
+    # Image Mode workspace
+    ###########################################################################
+
+    image_mode_root: /var/lib/image-mode
+
+    image_mode_source_directory: "{{ image_mode_root }}/sources"
+    image_mode_containerfiles_directory: "{{ image_mode_root }}/containerfiles"
+    image_mode_blueprints_directory: "{{ image_mode_root }}/blueprints"
+    image_mode_build_directory: "{{ image_mode_root }}/builds"
+    image_mode_output_directory: "{{ image_mode_root }}/output"
+    image_mode_artifacts_directory: "{{ image_mode_root }}/artifacts"
+    image_mode_cache_directory: "{{ image_mode_root }}/cache"
+    image_mode_registry_auth_directory: "{{ image_mode_root }}/registry-auth"
+    image_mode_logs_directory: "{{ image_mode_root }}/logs"
+    image_mode_tmp_directory: "{{ image_mode_root }}/tmp"
+
+    image_mode_group: image-builders
+
+    # Users granted access to the shared build workspace.
+    #
+    # Additional users can be supplied through AAP extra variables:
+    #
+    # image_mode_users:
+    #   - ec2-user
+    #   - developer1
+    #
+    image_mode_users:
+      - ec2-user
+
+    ###########################################################################
+    # Bootc Image Builder
+    ###########################################################################
+
+    bootc_image_builder_rhel9_image: >-
+      registry.redhat.io/rhel9/bootc-image-builder:latest
+
+    bootc_image_builder_rhel10_image: >-
+      registry.redhat.io/rhel10/bootc-image-builder:latest
+
+    image_mode_pull_bootc_image_builder: true
+
+    ###########################################################################
+    # Red Hat registry authentication
+    ###########################################################################
+
+    redhat_registry_host: registry.redhat.io
+
+    redhat_registry_username: >-
+      {{
+        lookup(
+          'ansible.builtin.env',
+          'REDHAT_REGISTRY_USERNAME'
+        )
+        | default('', true)
+      }}
+
+    redhat_registry_password: >-
+      {{
+        lookup(
+          'ansible.builtin.env',
+          'REDHAT_REGISTRY_PASSWORD'
+        )
+        | default('', true)
+      }}
+
+    # When true, registry credentials must be supplied.
+    #
+    # When false, credentials are used when available. Otherwise, the
+    # playbook attempts to use existing Podman authentication on the host.
+    image_mode_require_redhat_registry_login: false
+
+    ###########################################################################
+    # Optional Quay registry authentication
+    ###########################################################################
+
+    quay_registry_host: >-
+      {{
+        quay_hostname
+        | default('', true)
+      }}
+
+    quay_registry_username: >-
+      {{
+        lookup(
+          'ansible.builtin.env',
+          'QUAY_REGISTRY_USERNAME'
+        )
+        | default('', true)
+      }}
+
+    quay_registry_password: >-
+      {{
+        lookup(
+          'ansible.builtin.env',
+          'QUAY_REGISTRY_PASSWORD'
+        )
+        | default('', true)
+      }}
+
+    image_mode_configure_quay_login: >-
+      {{
+        (quay_registry_host | length > 0)
+        and (quay_registry_username | length > 0)
+        and (quay_registry_password | length > 0)
+      }}
+
+    # Set this to true after installing a certificate trusted by the builder.
+    quay_registry_tls_verify: false
+
+    ###########################################################################
+    # Red Hat Insights
+    ###########################################################################
+
+    image_mode_register_with_insights: true
+
+    redhat_insights_activation_key: >-
+      {{
+        lookup(
+          'ansible.builtin.env',
+          'REDHAT_INSIGHTS_ACTIVATION_KEY'
+        )
+        | default('', true)
+      }}
+
+    redhat_insights_organization_id: >-
+      {{
+        lookup(
+          'ansible.builtin.env',
+          'REDHAT_INSIGHTS_ORGANIZATION_ID'
+        )
+        | default('', true)
+      }}
+
+    image_mode_have_insights_activation_credentials: >-
+      {{
+        (redhat_insights_activation_key | length > 0)
+        and (redhat_insights_organization_id | length > 0)
+      }}
+
+    ###########################################################################
+    # Cockpit and firewall
+    ###########################################################################
+
+    cockpit_port: 9090
+    cockpit_firewall_zone: public
+
+    image_mode_firewall_ports:
+      - 80/tcp
+      - 443/tcp
+      - "{{ cockpit_port }}/tcp"
+
+    ###########################################################################
+    # Python yq installation
+    #
+    # The Python yq package provides the yq command and uses jq internally.
+    # jq is installed through DNF, while yq is installed through pip.
+    ###########################################################################
+
+    image_mode_install_yq: true
+    image_mode_yq_pip_package: yq
+    image_mode_yq_command: /usr/local/bin/yq
+
+    ###########################################################################
+    # Podman authentication
+    ###########################################################################
+
+    root_container_auth_directory: /root/.config/containers
+    root_container_auth_file: /root/.config/containers/auth.json
+
+    ###########################################################################
+    # Package sets
+    ###########################################################################
+
+    image_mode_core_packages:
+      # Container and Image Mode tools
+      - podman
+      - buildah
+      - skopeo
+      - bootc
+
+      # RHEL Image Builder CLI and services
+      - osbuild-composer
+      - composer-cli
+
+      # Cockpit and Image Builder web interfaces
+      - cockpit
+      - cockpit-system
+      - cockpit-composer
+      - cockpit-podman
+      - cockpit-storaged
+      - cockpit-packagekit
+
+      # Red Hat registration and Insights
+      - insights-client
+      - rhc
+      - subscription-manager
+
+      # Python and pip
+      - python3
+      - python3-pip
+
+      # Development and source control
+      - git
+      - git-lfs
+      - make
+      - jq
+      - rsync
+      - tar
+      - gzip
+      - unzip
+      - wget
+      - curl
+      - vim-enhanced
+      - bash-completion
+      - tree
+      - tmux
+
+      # Image and filesystem utilities
+      - acl
+      - qemu-img
+      - xz
+      - squashfs-tools
+      - policycoreutils-python-utils
+
+      # Networking and diagnostics
+      - firewalld
+      - bind-utils
+      - iproute
+      - net-tools
+      - lsof
+
+    ###########################################################################
+    # Workspace directory definitions
+    ###########################################################################
+
+    image_mode_workspace_directories:
+      - path: "{{ image_mode_source_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_containerfiles_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_blueprints_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_build_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_output_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_artifacts_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_cache_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_registry_auth_directory }}"
+        mode: "2770"
+
+      - path: "{{ image_mode_logs_directory }}"
+        mode: "2775"
+
+      - path: "{{ image_mode_tmp_directory }}"
+        mode: "2775"
+
+  pre_tasks:
+    ###########################################################################
+    # Validation
+    ###########################################################################
+
+    - name: Validate Image Mode builder operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'RedHat'
+          - ansible_distribution_major_version | int >= 9
+        fail_msg: >-
+          Image Mode builders must run Red Hat Enterprise Linux 9 or newer.
+          Detected {{ ansible_distribution }}
+          {{ ansible_distribution_version }} on {{ inventory_hostname }}.
+
+    - name: Select Bootc Image Builder image for installed RHEL version
+      ansible.builtin.set_fact:
+        bootc_image_builder_image: >-
+          {{
+            bootc_image_builder_rhel10_image
+            if ansible_distribution_major_version | int >= 10
+            else bootc_image_builder_rhel9_image
+          }}
+
+    - name: Validate Red Hat registry credentials when required
+      ansible.builtin.assert:
+        that:
+          - redhat_registry_username | length > 0
+          - redhat_registry_password | length > 0
+        fail_msg: >-
+          Red Hat registry authentication is required, but credentials were
+          not supplied. Inject REDHAT_REGISTRY_USERNAME and
+          REDHAT_REGISTRY_PASSWORD through an AAP credential.
+      when: image_mode_require_redhat_registry_login | bool
+      no_log: true
+
+    - name: Display Image Mode builder configuration
+      ansible.builtin.debug:
+        msg:
+          - "Builder host: {{ inventory_hostname }}"
+          - >-
+            Operating system:
+            {{ ansible_distribution }}
+            {{ ansible_distribution_version }}
+          - "Bootc Image Builder: {{ bootc_image_builder_image }}"
+          - "Cockpit URL: https://{{ inventory_hostname }}:{{ cockpit_port }}"
+          - "Workspace: {{ image_mode_root }}"
+          - >-
+            Firewall ports:
+            {{ image_mode_firewall_ports | join(', ') }}
+
+  tasks:
+    ###########################################################################
+    # Repositories and packages
+    ###########################################################################
+
+    - name: Refresh DNF metadata
+      ansible.builtin.dnf:
+        update_cache: true
+
+    - name: Install Image Mode development packages
+      ansible.builtin.dnf:
+        name: "{{ image_mode_core_packages }}"
+        state: present
+
+    ###########################################################################
+    # Python yq
+    ###########################################################################
+
+    - name: Install yq from Python Package Index
+      ansible.builtin.pip:
+        name: "{{ image_mode_yq_pip_package }}"
+        state: present
+        executable: pip3
+      when: image_mode_install_yq | bool
+
+    - name: Create yq symbolic link
+      ansible.builtin.file:
+        src: "/usr/local/bin/yq"
+        dest: /usr/bin/yq
+        state: link
+        force: true
+
+
+    - name: Locate installed yq command
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -lc
+          - command -v yq
+      register: image_mode_yq_command_lookup
+      changed_when: false
+      when: image_mode_install_yq | bool
+
+    - name: Set installed yq command path
+      ansible.builtin.set_fact:
+        image_mode_yq_command: >-
+          {{
+            image_mode_yq_command_lookup.stdout
+            | trim
+          }}
+      when:
+        - image_mode_install_yq | bool
+        - image_mode_yq_command_lookup.stdout | trim | length > 0
+
+    - name: Verify yq installation
+      ansible.builtin.command:
+        argv:
+          - "{{ image_mode_yq_command }}"
+          - --version
+      register: image_mode_yq_version
+      changed_when: false
+      when: image_mode_install_yq | bool
+
+    - name: Enable Git LFS system-wide
+      ansible.builtin.command:
+        argv:
+          - git
+          - lfs
+          - install
+          - --system
+      register: git_lfs_install
+      changed_when: >-
+        ('Git LFS initialized' in git_lfs_install.stdout)
+        or
+        ('Git LFS initialized' in git_lfs_install.stderr)
+
+    ###########################################################################
+    # Shared development group and users
+    ###########################################################################
+
+    - name: Create Image Mode builder group
+      ansible.builtin.group:
+        name: "{{ image_mode_group }}"
+        state: present
+        system: true
+
+    - name: Check configured Image Mode users
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - "{{ item }}"
+      loop: "{{ image_mode_users }}"
+      register: image_mode_user_lookups
+      changed_when: false
+      failed_when: false
+
+    - name: Build list of existing Image Mode users
+      ansible.builtin.set_fact:
+        existing_image_mode_users: >-
+          {{
+            image_mode_user_lookups.results
+            | selectattr('rc', 'equalto', 0)
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Add existing users to Image Mode builder group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups:
+          - "{{ image_mode_group }}"
+        append: true
+      loop: "{{ existing_image_mode_users }}"
+
+    - name: Report nonexistent requested users
+      ansible.builtin.debug:
+        msg: >-
+          User {{ item }} does not exist on {{ inventory_hostname }} and was
+          not added to the {{ image_mode_group }} group.
+      loop: >-
+        {{
+          image_mode_users
+          | difference(existing_image_mode_users)
+        }}
+
+    ###########################################################################
+    # Workspace directories
+    ###########################################################################
+
+    - name: Create Image Mode workspace root
+      ansible.builtin.file:
+        path: "{{ image_mode_root }}"
+        state: directory
+        owner: root
+        group: "{{ image_mode_group }}"
+        mode: "2775"
+
+    - name: Create organized Image Mode development directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: "{{ image_mode_group }}"
+        mode: "{{ item.mode }}"
+      loop: "{{ image_mode_workspace_directories }}"
+
+    - name: Configure active ACL on Image Mode workspace
+      ansible.posix.acl:
+        path: "{{ image_mode_root }}"
+        entity: "{{ image_mode_group }}"
+        etype: group
+        permissions: rwx
+        recursive: true
+        state: present
+
+    - name: Configure default ACL on Image Mode workspace root
+      ansible.posix.acl:
+        path: "{{ image_mode_root }}"
+        entity: "{{ image_mode_group }}"
+        etype: group
+        permissions: rwx
+        default: true
+        state: present
+
+    - name: Configure default ACL on Image Mode directories
+      ansible.posix.acl:
+        path: "{{ item.path }}"
+        entity: "{{ image_mode_group }}"
+        etype: group
+        permissions: rwx
+        default: true
+        state: present
+      loop: "{{ image_mode_workspace_directories }}"
+
+    - name: Create workspace README
+      ansible.builtin.copy:
+        dest: "{{ image_mode_root }}/README.md"
+        owner: root
+        group: "{{ image_mode_group }}"
+        mode: "0664"
+        content: |
+          # Image Mode Builder Workspace
+
+          This host is configured for building RHEL Image Mode container
+          images and bootable operating system artifacts.
+
+          ## Builder host
+
+          `{{ inventory_hostname }}`
+
+          ## Directories
+
+          | Directory | Purpose |
+          |---|---|
+          | `{{ image_mode_source_directory }}` | Cloned Git repositories and source trees |
+          | `{{ image_mode_containerfiles_directory }}` | Shared Containerfiles |
+          | `{{ image_mode_blueprints_directory }}` | RHEL Image Builder TOML blueprints |
+          | `{{ image_mode_build_directory }}` | Active build workspaces |
+          | `{{ image_mode_output_directory }}` | Bootc Image Builder output |
+          | `{{ image_mode_artifacts_directory }}` | Completed images and deliverables |
+          | `{{ image_mode_cache_directory }}` | Build and download cache |
+          | `{{ image_mode_registry_auth_directory }}` | Protected registry authentication data |
+          | `{{ image_mode_logs_directory }}` | Build logs |
+          | `{{ image_mode_tmp_directory }}` | Temporary build data |
+
+          ## Container image tools
+
+          ```bash
+          podman --version
+          buildah --version
+          skopeo --version
+          bootc --version
+          ```
+
+          ## YAML processing
+
+          The Python yq implementation uses jq syntax:
+
+          ```bash
+          yq --version
+          yq '.name' example.yaml
+          ```
+
+          ## Build a bootable disk image
+
+          ```bash
+          sudo image-mode-build \
+            --image quay.example.com/example/rhel-bootc:latest \
+            --type qcow2
+          ```
+
+          ## Build a bootable ISO
+
+          ```bash
+          sudo image-mode-build \
+            --image quay.example.com/example/rhel-bootc:latest \
+            --type anaconda-iso
+          ```
+
+          ## Copy a container image between registries
+
+          ```bash
+          sudo image-mode-registry-copy \
+            docker://registry.redhat.io/rhel9/rhel-bootc:latest \
+            docker://quay.example.com/image-mode/rhel-bootc:latest
+          ```
+
+          ## RHEL Image Builder CLI
+
+          ```bash
+          composer-cli status show
+          composer-cli blueprints list
+          composer-cli compose status
+          ```
+
+          ## Web interface
+
+          Cockpit and RHEL Image Builder are available at:
+
+          ```text
+          https://{{ inventory_hostname }}:{{ cockpit_port }}
+          ```
+
+          Local system users authenticate through Cockpit.
+
+          ## Open firewall ports
+
+          ```text
+          80/tcp
+          443/tcp
+          {{ cockpit_port }}/tcp
+          ```
+
+    ###########################################################################
+    # Container configuration
+    ###########################################################################
+
+    - name: Ensure system container configuration directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /etc/containers
+        - /etc/containers/registries.conf.d
+
+    - name: Configure container short-name search registries
+      ansible.builtin.copy:
+        dest: /etc/containers/registries.conf.d/10-image-mode.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          unqualified-search-registries = [
+            "registry.access.redhat.com",
+            "registry.redhat.io",
+            "docker.io"
+          ]
+
+    - name: Ensure root container authentication directory exists
+      ansible.builtin.file:
+        path: "{{ root_container_auth_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Authenticate to Red Hat registry
+      containers.podman.podman_login:
+        registry: "{{ redhat_registry_host }}"
+        username: "{{ redhat_registry_username }}"
+        password: "{{ redhat_registry_password }}"
+        authfile: "{{ root_container_auth_file }}"
+      when:
+        - redhat_registry_username | length > 0
+        - redhat_registry_password | length > 0
+      no_log: true
+
+    - name: Authenticate to Quay registry
+      containers.podman.podman_login:
+        registry: "{{ quay_registry_host }}"
+        username: "{{ quay_registry_username }}"
+        password: "{{ quay_registry_password }}"
+        authfile: "{{ root_container_auth_file }}"
+        tlsverify: "{{ quay_registry_tls_verify | bool }}"
+      when: image_mode_configure_quay_login | bool
+      no_log: false
+
+    - name: Check for container authentication file
+      ansible.builtin.stat:
+        path: "{{ root_container_auth_file }}"
+      register: root_container_auth_file_status
+
+    - name: Pull Bootc Image Builder container
+      containers.podman.podman_image:
+        name: "{{ bootc_image_builder_image }}"
+        state: present
+        pull: true
+        authfile: >-
+          {{
+            root_container_auth_file
+            if root_container_auth_file_status.stat.exists
+            else omit
+          }}
+      when: image_mode_pull_bootc_image_builder | bool
+
+    ###########################################################################
+    # Image Mode build helper
+    ###########################################################################
+
+    - name: Install image-mode-build helper command
+      ansible.builtin.copy:
+        dest: /usr/local/bin/image-mode-build
+        owner: root
+        group: "{{ image_mode_group }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+
+          set -Eeuo pipefail
+
+          BOOTC_BUILDER_IMAGE="{{ bootc_image_builder_image }}"
+          OUTPUT_ROOT="{{ image_mode_output_directory }}"
+          BUILD_ROOT="{{ image_mode_build_directory }}"
+          AUTH_FILE="{{ root_container_auth_file }}"
+
+          SOURCE_IMAGE=""
+          IMAGE_TYPE="qcow2"
+          OUTPUT_DIRECTORY=""
+          ROOTFS=""
+          LOCAL_BUILDER_STORAGE="false"
+
+          usage() {
+              cat <<'EOF'
+          Usage:
+            image-mode-build --image IMAGE [OPTIONS]
+
+          Required:
+            --image IMAGE
+                Bootc container image to convert.
+
+          Options:
+            --type TYPE
+                Output type. Default: qcow2
+
+                Common values:
+                  qcow2
+                  raw
+                  ami
+                  vmdk
+                  anaconda-iso
+
+            --output DIRECTORY
+                Output directory. A timestamped directory is used by default.
+
+            --rootfs FILESYSTEM
+                Optional root filesystem, such as xfs or ext4.
+
+            --local-storage
+                Reuse the host Podman container storage.
+
+            --builder-image IMAGE
+                Override the bootc-image-builder container.
+
+            --help
+                Display this help.
+
+          Examples:
+
+            image-mode-build \
+              --image quay.example.com/image-mode/rhel-bootc:latest \
+              --type qcow2
+
+            image-mode-build \
+              --image quay.example.com/image-mode/rhel-bootc:latest \
+              --type anaconda-iso
+
+            image-mode-build \
+              --image localhost/my-bootc-image:latest \
+              --type qcow2 \
+              --local-storage
+          EOF
+          }
+
+          while [[ $# -gt 0 ]]; do
+              case "$1" in
+                  --image)
+                      SOURCE_IMAGE="${2:?A value is required for --image}"
+                      shift 2
+                      ;;
+
+                  --type)
+                      IMAGE_TYPE="${2:?A value is required for --type}"
+                      shift 2
+                      ;;
+
+                  --output)
+                      OUTPUT_DIRECTORY="${2:?A value is required for --output}"
+                      shift 2
+                      ;;
+
+                  --rootfs)
+                      ROOTFS="${2:?A value is required for --rootfs}"
+                      shift 2
+                      ;;
+
+                  --local-storage)
+                      LOCAL_BUILDER_STORAGE="true"
+                      shift
+                      ;;
+
+                  --builder-image)
+                      BOOTC_BUILDER_IMAGE="${2:?A value is required for --builder-image}"
+                      shift 2
+                      ;;
+
+                  --help|-h)
+                      usage
+                      exit 0
+                      ;;
+
+                  *)
+                      echo "Unknown argument: $1" >&2
+                      usage >&2
+                      exit 2
+                      ;;
+              esac
+          done
+
+          if [[ -z "${SOURCE_IMAGE}" ]]; then
+              echo "ERROR: --image is required." >&2
+              usage >&2
+              exit 2
+          fi
+
+          if [[ "${EUID}" -ne 0 ]]; then
+              echo "ERROR: image-mode-build must be run with sudo." >&2
+              echo \
+                  "Example: sudo image-mode-build --image IMAGE --type qcow2" \
+                  >&2
+              exit 1
+          fi
+
+          TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+          if [[ -z "${OUTPUT_DIRECTORY}" ]]; then
+              SAFE_IMAGE_NAME="$(
+                  printf '%s' "${SOURCE_IMAGE}" |
+                  tr '/:@' '----' |
+                  tr -cd '[:alnum:]._-'
+              )"
+
+              OUTPUT_DIRECTORY="${
+                  OUTPUT_ROOT
+              }/${
+                  SAFE_IMAGE_NAME
+              }/${
+                  IMAGE_TYPE
+              }/${
+                  TIMESTAMP
+              }"
+          fi
+
+          # Normalize the generated default path. The individual variable
+          # expansion above is retained for readability in generated files.
+          if [[ -z "${OUTPUT_DIRECTORY}" ]]; then
+              OUTPUT_DIRECTORY="${OUTPUT_ROOT}/${SAFE_IMAGE_NAME}/${IMAGE_TYPE}/${TIMESTAMP}"
+          fi
+
+          WORK_DIRECTORY="${BUILD_ROOT}/${TIMESTAMP}"
+
+          install \
+              -d \
+              -m 2775 \
+              -o root \
+              -g "{{ image_mode_group }}" \
+              "${OUTPUT_DIRECTORY}" \
+              "${WORK_DIRECTORY}"
+
+          PODMAN_ARGUMENTS=(
+              run
+              --rm
+              --privileged
+              --pull=newer
+              --security-opt
+              label=type:unconfined_t
+              --volume
+              "${OUTPUT_DIRECTORY}:/output:Z"
+              --volume
+              "${WORK_DIRECTORY}:/work:Z"
+          )
+
+          if [[ -f "${AUTH_FILE}" ]]; then
+              PODMAN_ARGUMENTS+=(
+                  --env
+                  "REGISTRY_AUTH_FILE=/run/containers/auth.json"
+                  --volume
+                  "${AUTH_FILE}:/run/containers/auth.json:ro,Z"
+              )
+          fi
+
+          if [[ "${LOCAL_BUILDER_STORAGE}" == "true" ]]; then
+              PODMAN_ARGUMENTS+=(
+                  --volume
+                  "/var/lib/containers/storage:/var/lib/containers/storage:Z"
+              )
+          fi
+
+          BUILDER_ARGUMENTS=(
+              --type
+              "${IMAGE_TYPE}"
+          )
+
+          if [[ -n "${ROOTFS}" ]]; then
+              BUILDER_ARGUMENTS+=(
+                  --rootfs
+                  "${ROOTFS}"
+              )
+          fi
+
+          BUILDER_ARGUMENTS+=(
+              "${SOURCE_IMAGE}"
+          )
+
+          {
+              echo "Image Mode build started"
+              echo "Source image: ${SOURCE_IMAGE}"
+              echo "Output type: ${IMAGE_TYPE}"
+              echo "Builder image: ${BOOTC_BUILDER_IMAGE}"
+              echo "Output directory: ${OUTPUT_DIRECTORY}"
+              echo
+          } | tee "${OUTPUT_DIRECTORY}/build-information.txt"
+
+          podman \
+              "${PODMAN_ARGUMENTS[@]}" \
+              "${BOOTC_BUILDER_IMAGE}" \
+              "${BUILDER_ARGUMENTS[@]}" \
+              2>&1 |
+              tee "${OUTPUT_DIRECTORY}/build.log"
+
+          find \
+              "${OUTPUT_DIRECTORY}" \
+              -mindepth 1 \
+              -maxdepth 3 \
+              -exec chgrp "{{ image_mode_group }}" {} +
+
+          find \
+              "${OUTPUT_DIRECTORY}" \
+              -type d \
+              -exec chmod 2775 {} +
+
+          find \
+              "${OUTPUT_DIRECTORY}" \
+              -type f \
+              -exec chmod 0664 {} +
+
+          echo
+          echo "Build completed."
+          echo "Artifacts: ${OUTPUT_DIRECTORY}"
+
+    - name: Correct generated image-mode-build output path expression
+      ansible.builtin.replace:
+        path: /usr/local/bin/image-mode-build
+        regexp: |-
+          OUTPUT_DIRECTORY="\$\{
+          \s+OUTPUT_ROOT
+          \s+\}/\$\{
+          \s+SAFE_IMAGE_NAME
+          \s+\}/\$\{
+          \s+IMAGE_TYPE
+          \s+\}/\$\{
+          \s+TIMESTAMP
+          \s+\}"
+        replace: >-
+          OUTPUT_DIRECTORY="${OUTPUT_ROOT}/${SAFE_IMAGE_NAME}/${IMAGE_TYPE}/${TIMESTAMP}"
+
+    - name: Install image-mode-registry-copy helper command
+      ansible.builtin.copy:
+        dest: /usr/local/bin/image-mode-registry-copy
+        owner: root
+        group: "{{ image_mode_group }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+
+          set -Eeuo pipefail
+
+          AUTH_FILE="{{ root_container_auth_file }}"
+
+          if [[ $# -ne 2 ]]; then
+              echo \
+                  "Usage: image-mode-registry-copy SOURCE DESTINATION" \
+                  >&2
+              echo >&2
+              echo "Example:" >&2
+              echo \
+                  "  sudo image-mode-registry-copy \\" \
+                  >&2
+              echo \
+                  "    docker://registry.redhat.io/rhel9/rhel-bootc:latest \\" \
+                  >&2
+              echo \
+                  "    docker://quay.example.com/image-mode/rhel-bootc:latest" \
+                  >&2
+              exit 2
+          fi
+
+          SOURCE="$1"
+          DESTINATION="$2"
+
+          SKOPEO_ARGUMENTS=(
+              copy
+              --all
+          )
+
+          if [[ -f "${AUTH_FILE}" ]]; then
+              SKOPEO_ARGUMENTS+=(
+                  --authfile
+                  "${AUTH_FILE}"
+              )
+          fi
+
+          skopeo \
+              "${SKOPEO_ARGUMENTS[@]}" \
+              "${SOURCE}" \
+              "${DESTINATION}"
+
+    ###########################################################################
+    # RHEL Image Builder
+    ###########################################################################
+
+    - name: Enable and start osbuild-composer socket
+      ansible.builtin.systemd_service:
+        name: osbuild-composer.socket
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for osbuild-composer API socket
+      ansible.builtin.wait_for:
+        path: /run/weldr/api.socket
+        state: present
+        timeout: 60
+
+    - name: Verify RHEL Image Builder CLI
+      ansible.builtin.command:
+        argv:
+          - composer-cli
+          - status
+          - show
+      register: composer_status
+      changed_when: false
+
+    ###########################################################################
+    # Firewall and Cockpit
+    ###########################################################################
+
+    - name: Enable and start firewalld
+      ansible.builtin.systemd_service:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Open required Image Mode ports permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ image_mode_firewall_ports }}"
+
+    - name: Enable HTTP firewall service permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        service: http
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Enable HTTPS firewall service permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        service: https
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Enable Cockpit firewall service permanently and immediately
+      ansible.posix.firewalld:
+        zone: "{{ cockpit_firewall_zone }}"
+        service: cockpit
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Enable and start Cockpit socket
+      ansible.builtin.systemd_service:
+        name: cockpit.socket
+        enabled: true
+        state: started
+
+    - name: Wait for Cockpit port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ cockpit_port }}"
+        state: started
+        timeout: 60
+
+    - name: Verify permanent firewall ports
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --permanent
+          - "--zone={{ cockpit_firewall_zone }}"
+          - "--query-port={{ item }}"
+      loop: "{{ image_mode_firewall_ports }}"
+      register: image_mode_permanent_firewall_checks
+      changed_when: false
+      failed_when: image_mode_permanent_firewall_checks.rc != 0
+
+    - name: Verify runtime firewall ports
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - "--zone={{ cockpit_firewall_zone }}"
+          - "--query-port={{ item }}"
+      loop: "{{ image_mode_firewall_ports }}"
+      register: image_mode_runtime_firewall_checks
+      changed_when: false
+      failed_when: image_mode_runtime_firewall_checks.rc != 0
+
+    - name: Display active firewall configuration
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - "--zone={{ cockpit_firewall_zone }}"
+          - --list-all
+      register: image_mode_firewall_configuration
+      changed_when: false
+
+    ###########################################################################
+    # Red Hat Insights
+    ###########################################################################
+
+    - name: Check Subscription Manager registration
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - identity
+      register: subscription_identity
+      changed_when: false
+      failed_when: false
+      when: image_mode_register_with_insights | bool
+
+    - name: Check Red Hat connection status
+      ansible.builtin.command:
+        argv:
+          - rhc
+          - status
+      register: rhc_status_before
+      changed_when: false
+      failed_when: false
+      when: image_mode_register_with_insights | bool
+
+    - name: Register host using Red Hat activation key
+      ansible.builtin.command:
+        argv:
+          - rhc
+          - connect
+          - --activation-key
+          - "{{ redhat_insights_activation_key }}"
+          - --organization
+          - "{{ redhat_insights_organization_id }}"
+      register: rhc_connect
+      changed_when: rhc_connect.rc == 0
+      when:
+        - image_mode_register_with_insights | bool
+        - subscription_identity.rc | default(1) != 0
+        - image_mode_have_insights_activation_credentials | bool
+      no_log: true
+
+    - name: Recheck Subscription Manager registration
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - identity
+      register: subscription_identity_after
+      changed_when: false
+      failed_when: false
+      when: image_mode_register_with_insights | bool
+
+    - name: Check current Insights registration
+      ansible.builtin.command:
+        argv:
+          - insights-client
+          - --status
+      register: insights_status_before
+      changed_when: false
+      failed_when: false
+      when: image_mode_register_with_insights | bool
+
+    - name: Register host with Red Hat Insights
+      ansible.builtin.command:
+        argv:
+          - insights-client
+          - --register
+      register: insights_registration
+      changed_when: insights_registration.rc == 0
+      when:
+        - image_mode_register_with_insights | bool
+        - subscription_identity_after.rc | default(1) == 0
+        - >-
+          'registered: true' not in
+          (insights_status_before.stdout | default('') | lower)
+      no_log: true
+
+    - name: Upload current system data to Red Hat Insights
+      ansible.builtin.command:
+        argv:
+          - insights-client
+      register: insights_upload
+      changed_when: false
+      when:
+        - image_mode_register_with_insights | bool
+        - subscription_identity_after.rc | default(1) == 0
+      no_log: true
+
+    - name: Warn when Insights registration credentials are unavailable
+      ansible.builtin.debug:
+        msg: >-
+          Red Hat Insights packages were installed, but
+          {{ inventory_hostname }} is not registered with Subscription
+          Manager and no activation key and organization ID were supplied.
+          Inject REDHAT_INSIGHTS_ACTIVATION_KEY and
+          REDHAT_INSIGHTS_ORGANIZATION_ID through an AAP credential to
+          register this system automatically.
+      when:
+        - image_mode_register_with_insights | bool
+        - subscription_identity_after.rc | default(1) != 0
+        - not (image_mode_have_insights_activation_credentials | bool)
+
+    ###########################################################################
+    # Shell experience
+    ###########################################################################
+
+    - name: Install Image Mode shell profile
+      ansible.builtin.copy:
+        dest: /etc/profile.d/image-mode.sh
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Image Mode development environment
+
+          export IMAGE_MODE_ROOT="{{ image_mode_root }}"
+          export IMAGE_MODE_SOURCES="{{ image_mode_source_directory }}"
+          export IMAGE_MODE_CONTAINERFILES="{{ image_mode_containerfiles_directory }}"
+          export IMAGE_MODE_BLUEPRINTS="{{ image_mode_blueprints_directory }}"
+          export IMAGE_MODE_BUILDS="{{ image_mode_build_directory }}"
+          export IMAGE_MODE_OUTPUT="{{ image_mode_output_directory }}"
+          export IMAGE_MODE_ARTIFACTS="{{ image_mode_artifacts_directory }}"
+          export IMAGE_MODE_CACHE="{{ image_mode_cache_directory }}"
+
+    - name: Install Image Mode command aliases
+      ansible.builtin.copy:
+        dest: /etc/profile.d/image-mode-aliases.sh
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          alias im-sources='cd "{{ image_mode_source_directory }}"'
+          alias im-containerfiles='cd "{{ image_mode_containerfiles_directory }}"'
+          alias im-blueprints='cd "{{ image_mode_blueprints_directory }}"'
+          alias im-builds='cd "{{ image_mode_build_directory }}"'
+          alias im-output='cd "{{ image_mode_output_directory }}"'
+          alias im-artifacts='cd "{{ image_mode_artifacts_directory }}"'
+          alias im-images='podman images'
+          alias im-containers='podman ps --all'
+          alias im-composes='composer-cli compose status'
+
+    ###########################################################################
+    # Verification
+    ###########################################################################
+
+    - name: Gather installed tool versions
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+
+          printf 'podman: '
+          podman --version
+
+          printf 'buildah: '
+          buildah --version
+
+          printf 'skopeo: '
+          skopeo --version
+
+          printf 'bootc: '
+          bootc --version
+
+          printf 'git: '
+          git --version
+
+          printf 'jq: '
+          jq --version
+
+          printf 'yq: '
+          yq --version
+
+          printf 'composer-cli: '
+          composer-cli --version 2>/dev/null || rpm -q composer-cli
+
+          printf 'insights-client: '
+          insights-client --version 2>/dev/null || rpm -q insights-client
+        executable: /bin/bash
+      register: image_mode_tool_versions
+      changed_when: false
+
+    - name: Verify required services
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ item }}"
+      loop:
+        - cockpit.socket
+        - osbuild-composer.socket
+        - firewalld
+      register: image_mode_service_status
+      changed_when: false
+
+    - name: Check Bootc Image Builder container
+      ansible.builtin.command:
+        argv:
+          - podman
+          - image
+          - exists
+          - "{{ bootc_image_builder_image }}"
+      register: bootc_builder_image_check
+      changed_when: false
+      when: image_mode_pull_bootc_image_builder | bool
+
+    - name: Display completed Image Mode builder configuration
+      ansible.builtin.debug:
+        msg:
+          - "Image Mode builder configuration completed successfully."
+          - "Builder host: {{ inventory_hostname }}"
+          - "HTTP port: 80/tcp"
+          - "HTTPS port: 443/tcp"
+          - "Cockpit port: {{ cockpit_port }}/tcp"
+          - "Cockpit URL: https://{{ inventory_hostname }}:{{ cockpit_port }}"
+          - "Firewall zone: {{ cockpit_firewall_zone }}"
+          - "Workspace root: {{ image_mode_root }}"
+          - "Source repositories: {{ image_mode_source_directory }}"
+          - "Containerfiles: {{ image_mode_containerfiles_directory }}"
+          - "Build output: {{ image_mode_output_directory }}"
+          - "Completed artifacts: {{ image_mode_artifacts_directory }}"
+          - "Build helper: sudo image-mode-build --help"
+          - >-
+            Registry helper:
+            sudo image-mode-registry-copy SOURCE DESTINATION
+          - |-
+            Installed tools:
+            {{ image_mode_tool_versions.stdout }}
+          - |-
+            Firewall configuration:
+            {{ image_mode_firewall_configuration.stdout }}

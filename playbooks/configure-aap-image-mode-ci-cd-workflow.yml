@@ -9,73 +9,731 @@
     - ansible.controller
 
   vars_files:
-    - ../vars/secrets.yml
     - ../vars/organizations.yml
     - ../vars/credential_types.yml
     - ../vars/credentials.yml
+    - ../vars/inventories.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
 
+  vars:
+    ###########################################################################
+    # AAP object names
+    ###########################################################################
+
+    aap_organization_name: "Image Mode Lab"
+
+    infrastructure_inventory_name: "Image Mode Lab Infrastructure"
+    image_builder_inventory_name: "Image Builders"
+    development_inventory_name: "Image Mode Development"
+    production_inventory_name: "Image Mode Production"
+
+    ###########################################################################
+    # Terraform inventory groups
+    ###########################################################################
+
+    terraform_infrastructure_groups:
+      - idm
+      - satellite
+      - aap
+      - quay
+      - image_builder
+
+    ###########################################################################
+    # Obsolete static hosts
+    ###########################################################################
+
+    legacy_static_controller_hosts:
+      - name: image-builder-01
+        inventory: "Image Builders"
+
+      - name: image-dev-01
+        inventory: "Image Mode Development"
+
+    ###########################################################################
+    # AWS Secrets Manager names
+    ###########################################################################
+
+    aap_gateway_username_secret_name: >-
+      {{ secret_prefix }}/aap/gateway_admin_username
+
+    aap_gateway_password_secret_name: >-
+      {{ secret_prefix }}/aap/gateway_admin_password
+
+    redhat_registry_username_secret_name: >-
+      {{ secret_prefix }}/redhat/registry_username
+
+    redhat_registry_password_secret_name: >-
+      {{ secret_prefix }}/redhat/registry_password
+
+    quay_superuser_secret_name: >-
+      {{ secret_prefix }}/quay/superuser
+
+    quay_superuser_password_secret_name: >-
+      {{ secret_prefix }}/quay/superuser_password
+
+    resolved_lab_ssh_private_key_secret_name: >-
+      {{
+        lab_ssh_private_key_secret_name
+        | default(secret_prefix ~ '/aws/ssh_private_key', true)
+      }}
+
+    ###########################################################################
+    # Registry configuration
+    ###########################################################################
+
+    redhat_registry_host: "registry.redhat.io"
+    quay_default_org: "image-mode"
+
+    ###########################################################################
+    # Git configuration
+    ###########################################################################
+
+    git_username: >-
+      {{
+        lookup('ansible.builtin.env', 'IMAGE_MODE_GIT_USERNAME')
+        | default('', true)
+      }}
+
+    git_token: >-
+      {{
+        lookup('ansible.builtin.env', 'IMAGE_MODE_GIT_TOKEN')
+        | default('', true)
+      }}
+
+    image_mode_repo_url: >-
+      {{
+        lookup('ansible.builtin.env', 'IMAGE_MODE_REPO_URL')
+        | default(
+            'https://github.com/claudiol/image-mode-hackathon.git',
+            true
+          )
+      }}
+
+    image_mode_repo_branch: >-
+      {{
+        lookup('ansible.builtin.env', 'IMAGE_MODE_REPO_BRANCH')
+        | default('dev', true)
+      }}
+
+    ###########################################################################
+    # Image Mode configuration
+    ###########################################################################
+
+    rhel_version: >-
+      {{
+        lookup('ansible.builtin.env', 'RHEL_IMAGE_MODE_VERSION')
+        | default('10', true)
+        | string
+      }}
+
+    image_mode_base_image_map:
+      "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
+      "10": "registry.redhat.io/rhel10/rhel-bootc:latest"
+
+    quay_registry_repository_map:
+      "9": "rhel9-image-mode"
+      "10": "rhel10-image-mode"
+
+    image_mode_image_tag: >-
+      {{
+        lookup('ansible.builtin.env', 'IMAGE_MODE_IMAGE_TAG')
+        | default('dev', true)
+      }}
+
+    image_mode_ee_repository: "image-mode-ee"
+    image_mode_ee_tag: "latest"
+
+    ###########################################################################
+    # Image Builder job template launch configuration
+    ###########################################################################
+
+    configure_image_builder_job_template_name: >-
+      Configure Image Mode Builder Hosts
+
+    launch_image_builder_configuration: true
+
+    image_builder_job_timeout: 3600
+    image_builder_job_poll_interval: 10
+
   pre_tasks:
-    - name: Set AAP controller IP from inventory group or vars file
+    ###########################################################################
+    # Validate Terraform inventory
+    ###########################################################################
+
+    - name: Validate required Terraform inventory variables
+      ansible.builtin.assert:
+        that:
+          - secret_prefix is defined
+          - secret_prefix | string | trim | length > 0
+          - aws_region is defined
+          - aws_region | string | trim | length > 0
+          - aws_profile is defined
+          - aws_profile | string | trim | length > 0
+          - groups['aap'] is defined
+          - groups['aap'] | length > 0
+          - groups['quay'] is defined
+          - groups['quay'] | length > 0
+          - groups['image_builder'] is defined
+          - groups['image_builder'] | length > 0
+        fail_msg: >-
+          The Terraform-generated inventory must define secret_prefix,
+          aws_region, aws_profile, and nonempty [aap], [quay], and
+          [image_builder] groups.
+
+    - name: Normalize AWS configuration
       ansible.builtin.set_fact:
+        resolved_aws_region: "{{ aws_region | string | trim }}"
+        resolved_aws_profile: "{{ aws_profile | string | trim }}"
+
+    ###########################################################################
+    # Validate AWS CLI access
+    ###########################################################################
+
+    - name: Check that AWS CLI is installed
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --version
+      register: aws_cli_version_result
+      changed_when: false
+
+    - name: Validate AWS CLI profile and caller identity
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --output
+          - json
+      register: aws_caller_identity_result
+      changed_when: false
+      no_log: true
+
+    ###########################################################################
+    # Resolve AAP endpoint information
+    #
+    # This is the endpoint used by this localhost CaaC playbook to contact
+    # AAP. It may use the public address because the playbook can run outside
+    # the AWS VPC. This is separate from the private IP addresses assigned to
+    # managed hosts inside Automation Controller.
+    ###########################################################################
+
+    - name: Set primary AAP inventory hostname
+      ansible.builtin.set_fact:
+        resolved_aap_inventory_hostname: "{{ groups['aap'][0] }}"
+
+    - name: Resolve AAP FQDN and public API IP
+      ansible.builtin.set_fact:
+        resolved_aap_fqdn: >-
+          {{
+            hostvars[resolved_aap_inventory_hostname].fqdn
+            | default(resolved_aap_inventory_hostname, true)
+          }}
+
         resolved_aap_controller_ip: >-
           {{
-            (
-              hostvars[groups['aap'][0]].ansible_host
-              if groups['aap'] is defined and groups['aap'] | length > 0
-              else aap_controller_ip | default('')
-            )
+            hostvars[resolved_aap_inventory_hostname].public_ip
+            | default(
+                hostvars[resolved_aap_inventory_hostname].ansible_host
+                | default('', true),
+                true
+              )
+            | string
+            | trim
             | regex_replace('^_', '')
           }}
 
-    - name: Fail if AAP controller IP could not be resolved
-      ansible.builtin.fail:
-        msg: "AAP controller IP could not be resolved. Add [aap] to inventory or define aap_controller_ip in vars/secrets.yml."
-      when: resolved_aap_controller_ip | length == 0
+    - name: Validate resolved AAP endpoint information
+      ansible.builtin.assert:
+        that:
+          - resolved_aap_fqdn | length > 0
+          - resolved_aap_controller_ip | length > 0
+        fail_msg: >-
+          The AAP FQDN or public API IP could not be resolved from the
+          Terraform-generated [aap] inventory group.
 
-    - name: Set Quay hostname from Terraform inventory group
+    ###########################################################################
+    # Resolve Quay endpoint information
+    ###########################################################################
+
+    - name: Set primary Quay inventory hostname
       ansible.builtin.set_fact:
-        resolved_quay_hostname: "{{ groups['quay'][0] }}"
-      when:
-        - groups['quay'] is defined
-        - groups['quay'] | length > 0
+        resolved_quay_inventory_hostname: "{{ groups['quay'][0] }}"
 
-    - name: Fail if Quay hostname could not be resolved
-      ansible.builtin.fail:
-        msg: "Quay hostname could not be resolved. Terraform inventory must contain a [quay] group."
-      when: resolved_quay_hostname is not defined
+    - name: Resolve Quay registry hostname
+      ansible.builtin.set_fact:
+        resolved_quay_hostname: >-
+          {{
+            hostvars[resolved_quay_inventory_hostname].quay_hostname
+            | default(
+                hostvars[resolved_quay_inventory_hostname].fqdn
+                | default(resolved_quay_inventory_hostname, true),
+                true
+              )
+          }}
+
+    - name: Validate resolved Quay registry hostname
+      ansible.builtin.assert:
+        that:
+          - resolved_quay_hostname | string | trim | length > 0
+        fail_msg: >-
+          The Quay hostname could not be resolved from the Terraform-generated
+          [quay] inventory group.
+
+    ###########################################################################
+    # Build Terraform host lists
+    ###########################################################################
+
+    - name: Build list of available Terraform infrastructure groups
+      ansible.builtin.set_fact:
+        resolved_terraform_infrastructure_groups: >-
+          {{
+            terraform_infrastructure_groups
+            | select('in', groups.keys() | list)
+            | list
+          }}
+
+    - name: Build list of Terraform infrastructure hosts
+      ansible.builtin.set_fact:
+        terraform_infrastructure_hosts: >-
+          {{
+            query(
+              'ansible.builtin.inventory_hostnames',
+              resolved_terraform_infrastructure_groups | join(':')
+            )
+            | unique
+            | list
+          }}
+
+    - name: Build list of Terraform image builder hosts
+      ansible.builtin.set_fact:
+        terraform_image_builder_hosts: >-
+          {{
+            query(
+              'ansible.builtin.inventory_hostnames',
+              'image_builder'
+            )
+            | unique
+            | list
+          }}
+
+    - name: Validate Terraform host lists
+      ansible.builtin.assert:
+        that:
+          - resolved_terraform_infrastructure_groups | length > 0
+          - terraform_infrastructure_hosts | length > 0
+          - terraform_image_builder_hosts | length > 0
+        fail_msg: >-
+          Terraform infrastructure hosts could not be resolved. Expected
+          groups: {{ terraform_infrastructure_groups | join(', ') }}.
+
+    - name: Build combined list of Terraform-managed hosts
+      ansible.builtin.set_fact:
+        terraform_managed_hosts: >-
+          {{
+            (
+              terraform_infrastructure_hosts
+              +
+              terraform_image_builder_hosts
+            )
+            | unique
+            | list
+          }}
+
+    ###########################################################################
+    # Validate private connectivity information
+    #
+    # Terraform currently stores each EC2 public address in ansible_host and
+    # the VPC address in private_ip. AAP must use private_ip when connecting
+    # to managed hosts.
+    ###########################################################################
+
+    - name: Validate private IP for every Terraform-managed host
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].private_ip is defined
+          - hostvars[item].private_ip | string | trim | length > 0
+          - >-
+            (
+              hostvars[item].private_ip
+              | string
+              | trim
+            )
+            is match(
+              '^(?:'
+              ~ '(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\\.'
+              ~ '){3}'
+              ~ '(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})$'
+            )
+        fail_msg: >-
+          Terraform host '{{ item }}' does not define a valid private_ip.
+          Automation Controller managed hosts must use their AWS VPC private
+          addresses rather than their public EC2 addresses.
+      loop: "{{ terraform_managed_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Build Terraform private IP map
+      ansible.builtin.set_fact:
+        terraform_private_ip_map: >-
+          {{
+            terraform_private_ip_map
+            | default({})
+            | combine(
+                {
+                  item: (
+                    hostvars[item].private_ip
+                    | string
+                    | trim
+                  )
+                }
+              )
+          }}
+      loop: "{{ terraform_managed_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+
+    ###########################################################################
+    # Read AAP administrator credentials
+    ###########################################################################
+
+    - name: Read AAP gateway administrator username
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ aap_gateway_username_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: aap_gateway_username_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Read AAP gateway administrator password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ aap_gateway_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: aap_gateway_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set AAP administrator credentials
+      ansible.builtin.set_fact:
+        gateway_admin_username: >-
+          {{ aap_gateway_username_secret_result.stdout | trim }}
+
+        gateway_admin_password: >-
+          {{ aap_gateway_password_secret_result.stdout | trim }}
+
+        controller_username: >-
+          {{ aap_gateway_username_secret_result.stdout | trim }}
+
+        controller_password: >-
+          {{ aap_gateway_password_secret_result.stdout | trim }}
+
+        controller_validate_certs: false
+      no_log: true
+
+    - name: Validate AAP administrator credentials
+      ansible.builtin.assert:
+        that:
+          - controller_username is defined
+          - controller_password is defined
+          - controller_username | string | trim | length > 0
+          - controller_password | string | trim | length > 0
+          - controller_username != "None"
+          - controller_password != "None"
+        fail_msg: >-
+          The AAP administrator username or password could not be retrieved.
+          Verify these AWS Secrets Manager secrets:
+          {{ aap_gateway_username_secret_name }} and
+          {{ aap_gateway_password_secret_name }}.
+      no_log: true
+
+    ###########################################################################
+    # Read Quay credentials
+    ###########################################################################
+
+    - name: Read Quay administrator username
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ quay_superuser_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: quay_superuser_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Read Quay administrator password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ quay_superuser_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: quay_superuser_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Quay registry credentials
+      ansible.builtin.set_fact:
+        quay_superuser: >-
+          {{ quay_superuser_secret_result.stdout | trim }}
+
+        quay_superuser_password: >-
+          {{ quay_superuser_password_secret_result.stdout | trim }}
+
+        quay_hostname: "{{ resolved_quay_hostname }}"
+        quay_registry_host: "{{ resolved_quay_hostname }}"
+
+        quay_registry_username: >-
+          {{ quay_superuser_secret_result.stdout | trim }}
+
+        quay_registry_password: >-
+          {{ quay_superuser_password_secret_result.stdout | trim }}
+      no_log: true
+
+    - name: Validate Quay registry credentials
+      ansible.builtin.assert:
+        that:
+          - quay_registry_username | string | trim | length > 0
+          - quay_registry_password | string | trim | length > 0
+          - quay_registry_username != "None"
+          - quay_registry_password != "None"
+        fail_msg: >-
+          Quay registry credentials could not be retrieved from AWS Secrets
+          Manager.
+      no_log: true
+
+    ###########################################################################
+    # Read Terraform-generated SSH private key
+    ###########################################################################
+
+    - name: Read Terraform-generated SSH private key
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ resolved_lab_ssh_private_key_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: lab_ssh_private_key_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Image Mode machine credential private key
+      ansible.builtin.set_fact:
+        image_mode_ssh_private_key: >-
+          {{ lab_ssh_private_key_secret_result.stdout }}
+      no_log: true
+
+    - name: Validate Terraform-generated SSH private key
+      ansible.builtin.assert:
+        that:
+          - image_mode_ssh_private_key | length > 0
+          - "'BEGIN' in image_mode_ssh_private_key"
+          - "'PRIVATE KEY' in image_mode_ssh_private_key"
+          - "'END' in image_mode_ssh_private_key"
+        fail_msg: >-
+          The Terraform-generated SSH private key could not be retrieved or is
+          not a valid PEM private key.
+      no_log: true
+
+    ###########################################################################
+    # Read Red Hat registry credentials
+    ###########################################################################
+
+    - name: Read Red Hat registry username
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ redhat_registry_username_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: redhat_registry_username_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Read Red Hat registry password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ redhat_registry_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: redhat_registry_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Red Hat registry credentials
+      ansible.builtin.set_fact:
+        redhat_registry_username: >-
+          {{ redhat_registry_username_secret_result.stdout | trim }}
+
+        redhat_registry_password: >-
+          {{ redhat_registry_password_secret_result.stdout | trim }}
+      no_log: true
+
+    - name: Validate Red Hat registry credentials
+      ansible.builtin.assert:
+        that:
+          - redhat_registry_username | string | trim | length > 0
+          - redhat_registry_password | string | trim | length > 0
+          - redhat_registry_username != "None"
+          - redhat_registry_password != "None"
+        fail_msg: >-
+          Red Hat registry credentials could not be retrieved from AWS Secrets
+          Manager.
+      no_log: true
+
+    ###########################################################################
+    # Resolve Image Mode images
+    ###########################################################################
+
+    - name: Validate selected RHEL Image Mode version
+      ansible.builtin.assert:
+        that:
+          - rhel_version in image_mode_base_image_map
+          - rhel_version in quay_registry_repository_map
+        fail_msg: >-
+          Unsupported RHEL Image Mode version '{{ rhel_version }}'.
+          Supported versions:
+          {{ image_mode_base_image_map.keys() | list | join(', ') }}.
+
+    - name: Resolve Image Mode image variables
+      ansible.builtin.set_fact:
+        image_mode_base_image: >-
+          {{ image_mode_base_image_map[rhel_version] }}
+
+        image_mode_registry_image: >-
+          {{
+            resolved_quay_hostname
+            ~ '/'
+            ~ quay_default_org
+            ~ '/'
+            ~ quay_registry_repository_map[rhel_version]
+          }}
+
+        image_mode_ee_image: >-
+          {{
+            resolved_quay_hostname
+            ~ '/'
+            ~ quay_default_org
+            ~ '/'
+            ~ image_mode_ee_repository
+            ~ ':'
+            ~ image_mode_ee_tag
+          }}
+
+    ###########################################################################
+    # Authenticate against reachable AAP endpoint
+    ###########################################################################
 
     - name: Build preferred AAP controller endpoint list
       ansible.builtin.set_fact:
         aap_controller_endpoint_candidates:
-          - "https://{{ aap_fqdn }}"
+          - "https://{{ resolved_aap_fqdn }}"
           - "https://{{ resolved_aap_controller_ip }}"
 
-    - name: Check available AAP controller endpoints
+    - name: Check authenticated AAP controller endpoints
       ansible.builtin.uri:
-        url: "{{ item }}/api/gateway/v1/status/"
+        url: "{{ item }}/api/gateway/v1/me/"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
         validate_certs: false
-        status_code:
-          - 200
-          - 401
-          - 403
-        timeout: 10
+        status_code: 200
+        timeout: 30
+        return_content: false
       loop: "{{ aap_controller_endpoint_candidates }}"
+      loop_control:
+        label: "{{ item }}"
       register: aap_endpoint_checks
       failed_when: false
       changed_when: false
+      no_log: true
 
-    - name: Select first reachable AAP controller endpoint
+    - name: Select first authenticated AAP controller endpoint
       ansible.builtin.set_fact:
         controller_host: >-
           {{
             (
               aap_endpoint_checks.results
               | selectattr('status', 'defined')
-              | selectattr('status', 'in', [200, 401, 403])
+              | selectattr('status', 'equalto', 200)
               | map(attribute='item')
               | list
               | first
@@ -83,117 +741,887 @@
             | default('')
           }}
 
-    - name: Fail if no AAP controller endpoint is reachable
+    - name: Fail if no authenticated AAP controller endpoint is available
       ansible.builtin.fail:
         msg:
-          - "AAP controller is not reachable using DNS or IP."
-          - "Tried DNS: https://{{ aap_fqdn }}"
-          - "Tried IP: https://{{ resolved_aap_controller_ip }}"
+          - >-
+            AAP administrator authentication failed against every controller
+            endpoint.
+          - "Tried FQDN: https://{{ resolved_aap_fqdn }}"
+          - "Tried public IP: https://{{ resolved_aap_controller_ip }}"
+          - >-
+            Verify AWS Secrets Manager secret:
+            {{ aap_gateway_username_secret_name }}
+          - >-
+            Verify AWS Secrets Manager secret:
+            {{ aap_gateway_password_secret_name }}
       when: controller_host | length == 0
+
+    ###########################################################################
+    # Set variables consumed by infra.aap_configuration
+    ###########################################################################
 
     - name: Set controller connection variables
       ansible.builtin.set_fact:
         controller_hostname: "{{ controller_host }}"
+        controller_host: "{{ controller_host }}"
+
+        controller_username: "{{ gateway_admin_username }}"
+        controller_password: "{{ gateway_admin_password }}"
         controller_validate_certs: false
+
         aap_hostname: "{{ controller_host }}"
-        aap_username: "{{ controller_username }}"
-        aap_password: "{{ controller_password }}"
+        aap_username: "{{ gateway_admin_username }}"
+        aap_password: "{{ gateway_admin_password }}"
         aap_validate_certs: false
       no_log: true
 
-    - name: Show selected AAP controller endpoint
-      ansible.builtin.debug:
-        msg: "Using AAP controller endpoint: {{ controller_host }}"
+    - name: Verify selected AAP endpoint and administrator account
+      ansible.builtin.uri:
+        url: "{{ controller_host }}/api/gateway/v1/me/"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: aap_authenticated_user_result
+      changed_when: false
+      no_log: true
 
-    - name: Show resolved Quay registry hostname
+    ###########################################################################
+    # Build dynamic controller_hosts
+    ###########################################################################
+
+    - name: Initialize dynamically generated AAP hosts
+      ansible.builtin.set_fact:
+        controller_hosts: []
+
+    ###########################################################################
+    # Infrastructure inventory hosts
+    #
+    # The AAP connection address is explicitly set to private_ip.
+    # The Terraform ansible_host value is retained as public_ip metadata.
+    ###########################################################################
+
+    - name: Add Terraform hosts to infrastructure inventory
+      ansible.builtin.set_fact:
+        controller_hosts: >-
+          {{
+            controller_hosts
+            +
+            [
+              {
+                'name': (
+                  hostvars[item].fqdn
+                  | default(item, true)
+                ),
+                'description': (
+                  'Terraform-generated '
+                  ~ (
+                    hostvars[item].role
+                    | default(
+                        (
+                          hostvars[item].group_names
+                          | default([])
+                          | intersect(
+                              resolved_terraform_infrastructure_groups
+                            )
+                          | first
+                        )
+                        | default('infrastructure', true),
+                        true
+                      )
+                  )
+                  ~ ' host using VPC private connectivity'
+                ),
+                'inventory': infrastructure_inventory_name,
+                'enabled': true,
+                'state': 'present',
+                'variables': {
+                  'ansible_host': (
+                    hostvars[item].private_ip
+                    | string
+                    | trim
+                  ),
+                  'ansible_user': (
+                    hostvars[item].ansible_user
+                    | default('ec2-user', true)
+                  ),
+                  'fqdn': (
+                    hostvars[item].fqdn
+                    | default(item, true)
+                  ),
+                  'private_ip': (
+                    hostvars[item].private_ip
+                    | string
+                    | trim
+                  ),
+                  'public_ip': (
+                    hostvars[item].public_ip
+                    | default(
+                        hostvars[item].ansible_host
+                        | default('', true),
+                        true
+                      )
+                  ),
+                  'terraform_role': (
+                    hostvars[item].role
+                    | default(
+                        (
+                          hostvars[item].group_names
+                          | default([])
+                          | intersect(
+                              resolved_terraform_infrastructure_groups
+                            )
+                          | first
+                        )
+                        | default('', true),
+                        true
+                      )
+                  ),
+                  'aws_region': resolved_aws_region,
+                  'aws_profile': resolved_aws_profile,
+                  'secret_prefix': secret_prefix
+                }
+              }
+            ]
+          }}
+      loop: "{{ terraform_infrastructure_hosts }}"
+      loop_control:
+        label: >-
+          {{
+            hostvars[item].fqdn
+            | default(item, true)
+          }}
+      no_log: true
+
+    ###########################################################################
+    # Image Builder inventory hosts
+    #
+    # The same Image Builder can also exist in the infrastructure inventory.
+    # Each inventory has an independent host record, and both records use the
+    # builder's VPC private IP for ansible_host.
+    ###########################################################################
+
+    - name: Add Terraform image builders to Image Builders inventory
+      ansible.builtin.set_fact:
+        controller_hosts: >-
+          {{
+            controller_hosts
+            +
+            [
+              {
+                'name': (
+                  hostvars[item].fqdn
+                  | default(item, true)
+                ),
+                'description': (
+                  'Terraform-generated Image Mode builder using VPC private '
+                  ~ 'connectivity'
+                ),
+                'inventory': image_builder_inventory_name,
+                'enabled': true,
+                'state': 'present',
+                'variables': {
+                  'ansible_host': (
+                    hostvars[item].private_ip
+                    | string
+                    | trim
+                  ),
+                  'ansible_user': (
+                    hostvars[item].ansible_user
+                    | default('ec2-user', true)
+                  ),
+                  'fqdn': (
+                    hostvars[item].fqdn
+                    | default(item, true)
+                  ),
+                  'private_ip': (
+                    hostvars[item].private_ip
+                    | string
+                    | trim
+                  ),
+                  'public_ip': (
+                    hostvars[item].public_ip
+                    | default(
+                        hostvars[item].ansible_host
+                        | default('', true),
+                        true
+                      )
+                  ),
+                  'terraform_role': (
+                    hostvars[item].role
+                    | default('image-builder', true)
+                  ),
+                  'aws_region': resolved_aws_region,
+                  'aws_profile': resolved_aws_profile,
+                  'secret_prefix': secret_prefix,
+                  'image_mode_base_image': image_mode_base_image,
+                  'image_mode_registry_image': image_mode_registry_image,
+                  'image_mode_image_tag': image_mode_image_tag
+                }
+              }
+            ]
+          }}
+      loop: "{{ terraform_image_builder_hosts }}"
+      loop_control:
+        label: >-
+          {{
+            hostvars[item].fqdn
+            | default(item, true)
+          }}
+      no_log: true
+
+    - name: Validate generated AAP host definitions
+      ansible.builtin.assert:
+        that:
+          - controller_hosts | length > 0
+
+          - >-
+            (
+              controller_hosts
+              | selectattr(
+                  'inventory',
+                  'equalto',
+                  infrastructure_inventory_name
+                )
+              | list
+              | length
+            )
+            ==
+            (
+              terraform_infrastructure_hosts
+              | length
+            )
+
+          - >-
+            (
+              controller_hosts
+              | selectattr(
+                  'inventory',
+                  'equalto',
+                  image_builder_inventory_name
+                )
+              | list
+              | length
+            )
+            ==
+            (
+              terraform_image_builder_hosts
+              | length
+            )
+
+          - >-
+            (
+              controller_hosts
+              | selectattr('variables.ansible_host', 'defined')
+              | list
+              | length
+            )
+            ==
+            (
+              controller_hosts
+              | length
+            )
+
+        fail_msg: >-
+          Dynamic AAP host definitions were not generated correctly.
+
+    - name: Validate generated hosts use private IP addresses
+      ansible.builtin.assert:
+        that:
+          - item.variables.ansible_host == item.variables.private_ip
+          - item.variables.ansible_host | string | trim | length > 0
+        fail_msg: >-
+          Generated AAP host '{{ item.name }}' in inventory
+          '{{ item.inventory }}' is not configured to use its private IP.
+      loop: "{{ controller_hosts }}"
+      loop_control:
+        label: "{{ item.inventory }} / {{ item.name }}"
+
+    - name: Show selected deployment configuration
       ansible.builtin.debug:
-        msg: "Using Quay registry hostname: {{ resolved_quay_hostname }}"
+        msg:
+          - "AAP controller API endpoint: {{ controller_host }}"
+          - "AAP administrator username: {{ controller_username }}"
+          - "Quay registry hostname: {{ resolved_quay_hostname }}"
+          - "AWS region: {{ resolved_aws_region }}"
+          - "AWS profile: {{ resolved_aws_profile }}"
+          - "RHEL Image Mode version: {{ rhel_version }}"
+          - "Base image: {{ image_mode_base_image }}"
+          - >-
+            Destination image:
+            {{ image_mode_registry_image }}:{{ image_mode_image_tag }}
+          - "Execution environment: {{ image_mode_ee_image }}"
+          - >-
+            Infrastructure hosts:
+            {{ terraform_infrastructure_hosts | join(', ') }}
+          - >-
+            Image builder hosts:
+            {{ terraform_image_builder_hosts | join(', ') }}
+          - >-
+            Managed-host connection mode:
+            AWS VPC private IP addresses
+          - >-
+            Managed-host private IP map:
+            {{ terraform_private_ip_map }}
 
   tasks:
+    ###########################################################################
+    # Bootstrap required AAP organization
+    #
+    # Credentials, inventories, projects, and templates all reference this
+    # organization. Create it explicitly before invoking the CaaC roles.
+    ###########################################################################
+
     - name: Ensure Image Mode Lab organization exists
       ansible.controller.organization:
-        name: "Image Mode Lab"
+        name: "{{ aap_organization_name }}"
         description: "AAP Image Mode CI/CD lab organization"
         state: present
         controller_host: "{{ controller_host }}"
         controller_username: "{{ controller_username }}"
         controller_password: "{{ controller_password }}"
         validate_certs: false
+      register: image_mode_organization_result
+      no_log: true
+      tags:
+        - organizations
+        - always
+
+    - name: Verify Image Mode Lab organization exists
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/organizations/?name='
+            ~ (aap_organization_name | urlencode)
+          }}
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        return_content: true
+        timeout: 30
+      register: image_mode_organization_check
+      changed_when: false
+      no_log: true
+      tags:
+        - organizations
+        - always
+
+    - name: Validate Image Mode Lab organization lookup
+      ansible.builtin.assert:
+        that:
+          - image_mode_organization_check.json is defined
+          - image_mode_organization_check.json.count | int == 1
+          - image_mode_organization_check.json.results | length == 1
+          - >-
+            image_mode_organization_check.json.results[0].name
+            == aap_organization_name
+        fail_msg: >-
+          The Image Mode Lab organization was not found in Automation
+          Controller after it was created.
+      tags:
+        - organizations
+        - always
+
+    ###########################################################################
+    # Configure AAP objects
+    ###########################################################################
 
     - name: Configure AAP Image Mode CI/CD objects
       block:
+        #######################################################################
+        # 1. Organizations
+        #######################################################################
+
+        - name: Configure AAP organizations
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_organizations
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - organizations
+
+        #######################################################################
+        # 2. Credential types
+        #######################################################################
+
         - name: Configure AAP credential types
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credential_types
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - credential_types
+
+        #######################################################################
+        # 3. Credentials
+        #######################################################################
 
         - name: Configure AAP credentials
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - credentials
+          no_log: true
 
-        - name: Ensure Image Mode Lab Infrastructure inventory exists
-          ansible.controller.inventory:
-            name: "Image Mode Lab Infrastructure"
-            description: "Terraform-generated Image Mode Lab infrastructure inventory"
-            organization: "Image Mode Lab"
-            state: present
-            variables: {}
+        #######################################################################
+        # 4. Inventories
+        #######################################################################
+
+        - name: Configure AAP inventories
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_inventories
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - inventories
+
+        #######################################################################
+        # Remove previous static hosts
+        #######################################################################
+
+        - name: Remove obsolete static AAP hosts
+          ansible.controller.host:
+            name: "{{ item.name }}"
+            inventory: "{{ item.inventory }}"
+            state: absent
             controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
             validate_certs: false
+          loop: "{{ legacy_static_controller_hosts }}"
+          loop_control:
+            label: "{{ item.inventory }} / {{ item.name }}"
+          tags:
+            - hosts
+            - cleanup
+          no_log: true
+
+        #######################################################################
+        # 5. Terraform-generated hosts
+        #######################################################################
+
+        - name: Configure Terraform-generated AAP hosts
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_hosts
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - hosts
+          no_log: true
+
+        #######################################################################
+        # 6. Execution environments
+        #######################################################################
 
         - name: Configure AAP execution environments
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_execution_environments
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - execution_environments
+
+        #######################################################################
+        # 7. Projects
+        #######################################################################
 
         - name: Configure AAP projects
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_projects
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - projects
 
-        - name: Configure Terraform inventory source
-          ansible.controller.inventory_source:
-            name: "Terraform Inventory Source"
-            description: "Imports Terraform-generated Ansible inventory from SCM"
-            organization: "Image Mode Lab"
-            inventory: "Image Mode Lab Infrastructure"
-            source: scm
-            source_project: "Image Mode CI/CD"
-            source_path: "playbooks/inventory/hosts"
-            overwrite: true
-            overwrite_vars: true
-            update_on_launch: true
-            update_cache_timeout: 0
-            state: present
-            controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
-            validate_certs: false
-
-        - name: Sync Terraform inventory source
-          ansible.controller.inventory_source_update:
-            name: "Terraform Inventory Source"
-            organization: "Image Mode Lab"
-            inventory: "Image Mode Lab Infrastructure"
-            wait: true
-            controller_host: "{{ controller_host }}"
-            controller_username: "{{ controller_username }}"
-            controller_password: "{{ controller_password }}"
-            validate_certs: false
+        #######################################################################
+        # 8. Job templates
+        #######################################################################
 
         - name: Configure AAP job templates
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_job_templates
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - job_templates
+
+        #######################################################################
+        # 9. Workflow job templates
+        #######################################################################
 
         # - name: Configure AAP workflow job templates
         #   ansible.builtin.include_role:
         #     name: infra.aap_configuration.controller_workflow_job_templates
+        #   vars:
+        #     controller_hostname: "{{ controller_host }}"
+        #     controller_username: "{{ gateway_admin_username }}"
+        #     controller_password: "{{ gateway_admin_password }}"
+        #     controller_validate_certs: false
+        #   when:
+        #     - controller_workflows is defined
+        #     - controller_workflows | length > 0
+        #   tags:
+        #     - workflow_job_templates
 
-      environment:
-        CONTROLLER_HOST: "{{ controller_host }}"
-        CONTROLLER_USERNAME: "{{ controller_username }}"
-        CONTROLLER_PASSWORD: "{{ controller_password }}"
-        CONTROLLER_VERIFY_SSL: "false"
-        TOWER_HOST: "{{ controller_host }}"
-        TOWER_USERNAME: "{{ controller_username }}"
-        TOWER_PASSWORD: "{{ controller_password }}"
-        TOWER_VERIFY_SSL: "false"
+      # Uncomment this environment block if the included roles or lookups need
+      # AWS CLI environment variables.
+      #
+      # environment:
+      #   AWS_REGION: "{{ resolved_aws_region }}"
+      #   AWS_DEFAULT_REGION: "{{ resolved_aws_region }}"
+      #   AWS_PROFILE: "{{ resolved_aws_profile }}"
+
+  post_tasks:
+    ###########################################################################
+    # Automatically launch the Image Mode Builder configuration
+    ###########################################################################
+
+    - name: Look up Configure Image Mode Builder Hosts job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/job_templates/?name='
+            ~ (
+                configure_image_builder_job_template_name
+                | urlencode
+              )
+          }}
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: configure_image_builder_template_lookup
+      changed_when: false
+      no_log: true
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Validate Configure Image Mode Builder Hosts job template lookup
+      ansible.builtin.assert:
+        that:
+          - configure_image_builder_template_lookup.json is defined
+          - configure_image_builder_template_lookup.json.count | int == 1
+          - >-
+            configure_image_builder_template_lookup.json.results
+            | length
+            == 1
+          - >-
+            configure_image_builder_template_lookup.json.results[0].id
+            is defined
+          - >-
+            configure_image_builder_template_lookup.json.results[0].name
+            == configure_image_builder_job_template_name
+        fail_msg: >-
+          The '{{ configure_image_builder_job_template_name }}' job template
+          was not found uniquely in Automation Controller after the CaaC
+          configuration completed.
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Set Configure Image Mode Builder Hosts template facts
+      ansible.builtin.set_fact:
+        configure_image_builder_template_id: >-
+          {{
+            configure_image_builder_template_lookup.json.results[0].id
+            | int
+          }}
+
+        configure_image_builder_template_url: >-
+          {{
+            configure_image_builder_template_lookup.json.results[0].url
+          }}
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Launch Configure Image Mode Builder Hosts job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/job_templates/'
+            ~ (configure_image_builder_template_id | string)
+            ~ '/launch/'
+          }}
+        method: POST
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code:
+          - 201
+          - 202
+        timeout: 30
+        return_content: true
+        body_format: json
+        body: {}
+      register: configure_image_builder_launch_result
+      changed_when: true
+      no_log: true
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Validate Configure Image Mode Builder Hosts launch response
+      ansible.builtin.assert:
+        that:
+          - configure_image_builder_launch_result.json is defined
+          - configure_image_builder_launch_result.json.id is defined
+          - configure_image_builder_launch_result.json.id | int > 0
+        fail_msg: >-
+          Automation Controller accepted the launch request but did not return
+          a valid job identifier for
+          '{{ configure_image_builder_job_template_name }}'.
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Set launched Image Mode Builder job facts
+      ansible.builtin.set_fact:
+        configure_image_builder_job_id: >-
+          {{
+            configure_image_builder_launch_result.json.id
+            | int
+          }}
+
+        configure_image_builder_job_api_url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/jobs/'
+            ~ (
+                configure_image_builder_launch_result.json.id
+                | string
+              )
+            ~ '/'
+          }}
+
+        configure_image_builder_job_ui_url: >-
+          {{
+            controller_host
+            ~ '/execution/jobs/playbook/'
+            ~ (
+                configure_image_builder_launch_result.json.id
+                | string
+              )
+            ~ '/output'
+          }}
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Display launched Image Mode Builder configuration job
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Launched job template:
+            {{ configure_image_builder_job_template_name }}
+          - "Job ID: {{ configure_image_builder_job_id }}"
+          - "Job URL: {{ configure_image_builder_job_ui_url }}"
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Wait for Image Mode Builder configuration job to finish
+      ansible.builtin.uri:
+        url: "{{ configure_image_builder_job_api_url }}"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: configure_image_builder_job_status
+      changed_when: false
+      failed_when: false
+      until:
+        - configure_image_builder_job_status.json is defined
+        - configure_image_builder_job_status.json.status is defined
+        - >-
+          configure_image_builder_job_status.json.status
+          in
+          [
+            'successful',
+            'failed',
+            'error',
+            'canceled'
+          ]
+      retries: >-
+        {{
+          (
+            image_builder_job_timeout
+            | int
+          )
+          //
+          (
+            image_builder_job_poll_interval
+            | int
+          )
+        }}
+      delay: "{{ image_builder_job_poll_interval | int }}"
+      no_log: true
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    - name: Validate Image Mode Builder configuration job result
+      ansible.builtin.assert:
+        that:
+          - configure_image_builder_job_status.json is defined
+          - configure_image_builder_job_status.json.status is defined
+          - >-
+            configure_image_builder_job_status.json.status
+            == 'successful'
+        fail_msg:
+          - >-
+            The '{{ configure_image_builder_job_template_name }}' job did not
+            complete successfully.
+          - >-
+            Job ID:
+            {{
+              configure_image_builder_job_id
+              | default('unknown')
+            }}
+          - >-
+            Final status:
+            {{
+              configure_image_builder_job_status.json.status
+              | default('unknown')
+            }}
+          - >-
+            Explanation:
+            {{
+              configure_image_builder_job_status.json.job_explanation
+              | default('No job explanation was returned.')
+            }}
+          - >-
+            Review the job output:
+            {{
+              configure_image_builder_job_ui_url
+              | default(controller_host)
+            }}
+        success_msg: >-
+          The '{{ configure_image_builder_job_template_name }}' job completed
+          successfully on the Image Builder inventory using private VPC
+          connectivity.
+      when:
+        - launch_image_builder_configuration | bool
+        - not ansible_check_mode
+      tags:
+        - launch_image_builders
+
+    ###########################################################################
+    # Display completed configuration
+    ###########################################################################
+
+    - name: Display completed AAP configuration
+      ansible.builtin.debug:
+        msg:
+          - "AAP Image Mode CI/CD configuration completed."
+          - "Organization: {{ aap_organization_name }}"
+          - "AAP API endpoint: {{ controller_host }}"
+          - "AAP administrator username: {{ controller_username }}"
+          - >-
+            Infrastructure inventory:
+            {{ infrastructure_inventory_name }}
+          - "Image builder inventory: {{ image_builder_inventory_name }}"
+          - "Quay registry: {{ resolved_quay_hostname }}"
+          - >-
+            Infrastructure hosts configured:
+            {{ terraform_infrastructure_hosts | length }}
+          - >-
+            Image builder hosts configured:
+            {{ terraform_image_builder_hosts | length }}
+          - >-
+            Managed-host connection addresses:
+            private_ip from the Terraform-generated inventory
+          - "Machine credential key source: AWS Secrets Manager"
+          - "Quay credential source: AWS Secrets Manager"
+          - >-
+            Builder configuration automatically launched:
+            {{
+              (
+                launch_image_builder_configuration
+                | bool
+                and not ansible_check_mode
+              )
+              | ternary('yes', 'no')
+            }}
+          - >-
+            Builder configuration job ID:
+            {{
+              configure_image_builder_job_id
+              | default('not launched')
+            }}
+          - >-
+            Builder configuration job status:
+            {{
+              (
+                configure_image_builder_job_status.json.status
+                if (
+                  configure_image_builder_job_status is defined
+                  and configure_image_builder_job_status.json is defined
+                  and configure_image_builder_job_status.json.status is defined
+                )
+                else 'not launched'
+              )
+            }}
