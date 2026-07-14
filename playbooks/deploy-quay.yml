@@ -455,7 +455,7 @@
         'ResourceExistsException' not in
         quay_registry_ldap_secret_create.stderr | default('')
       when: quay_registry_ldap_secret_needs_creation | bool
-      no_log: true
+      no_log: false
       environment: >-
         {{
           {'AWS_PROFILE': aws_profile}
