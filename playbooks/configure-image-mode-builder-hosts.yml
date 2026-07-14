@@ -497,7 +497,7 @@
         stdin_add_newline: true
       changed_when: false
       when: image_mode_manage_idm_access_group | bool
-      no_log: true
+      no_log: false
 
     - name: Check whether the POSIX IdM Image Builder group exists
       ansible.builtin.command:
