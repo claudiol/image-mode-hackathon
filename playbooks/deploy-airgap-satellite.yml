@@ -14,7 +14,7 @@
     # via its EC2 instance role (same pattern as deploy-aap.yml). This avoids
     # streaming the multi-GB ISO through the Ansible controller over SSH.
     satellite_iso_s3_bucket: "satellite-installer"
-    satellite_iso_s3_key: "6.19/Satellite-6.19.1-rhel-9-x86_64.iso"
+    satellite_iso_s3_key: "6.19/Satellite-6.19.1-rhel-9-x86_64.dvd.iso"
     satellite_iso_dest: "/var/tmp/Satellite-6.19.1-rhel-9-x86_64.iso"
     satellite_mount_path: "/var/mnt/satellite_iso"
 
@@ -157,6 +157,11 @@
     - name: 8. Synchronize local package storage metadata
       ansible.builtin.dnf:
         update_cache: true
+
+    - name: 8.5 Install satellite-installer
+      ansible.builtin.dnf:
+        name: satellite-installer
+        state: present
 
     - name: 9. Execute the Unattended Disconnected Satellite Installer Core
       ansible.builtin.command: >

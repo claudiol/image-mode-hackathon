@@ -1,21 +1,26 @@
 ---
-- name: Install Disconnected Red Hat Satellite 6.19.1 via Local ISO Staging
+- name: Configure Satellite LDAP authentication against IdM
   hosts: satellite
-  become: true
+  become: false
+  gather_facts: false
 
   vars:
-    # Satellite Architecture Settings
-    satellite_fqdn: "satellite.redhat.local"
-    organization_name: "Hackathon_Org"
-    location_name: "AWS_West_Region"
+    idm_admin_user: "admin"
 
-    # ISO source: private S3 bucket, pulled directly onto the Satellite host
-    # via its EC2 instance role (same pattern as deploy-aap.yml). This avoids
-    # streaming the multi-GB ISO through the Ansible controller over SSH.
-    satellite_iso_s3_bucket: "satellite-installer"
-    satellite_iso_s3_key: "6.19/Satellite-6.19.1-rhel-9-x86_64.iso"
-    satellite_iso_dest: "/var/tmp/Satellite-6.19.1-rhel-9-x86_64.iso"
-    satellite_mount_path: "/var/mnt/satellite_iso"
+    # IdM directory layout (mirrors the base-DN idiom in configure-aap-idm-sso.yml).
+    idm_base_dn: "{{ idm_domain_name.split('.') | map('regex_replace', '^(.*)$', 'dc=\\1') | join(',') }}"
+    ldap_accounts_base: "cn=accounts,{{ idm_base_dn }}"
+    ldap_groups_base: "cn=groups,cn=accounts,{{ idm_base_dn }}"
+
+    # Dedicated LDAP bind service account (ephemeral password, reset each run).
+    satellite_bind_user: "svc-satellite-bind"
+    satellite_bind_dn: "uid={{ satellite_bind_user }},cn=users,cn=accounts,{{ idm_base_dn }}"
+
+    # IdM access groups that gate Satellite login and role mapping.
+    satellite_users_group: "satellite-users"
+    satellite_admins_group: "satellite-admins"
+
+    satellite_url: "https://{{ inventory_hostname }}"
 
   pre_tasks:
     - name: Validate required inventory variables
@@ -27,7 +32,35 @@
           - aws_profile | length > 0
           - secret_prefix is defined
           - secret_prefix | length > 0
-        fail_msg: "Missing required inventory variables (aws_region, aws_profile, secret_prefix)."
+          - idm_server_fqdn is defined
+          - idm_server_fqdn | length > 0
+          - idm_domain_name is defined
+          - idm_domain_name | length > 0
+          - groups['idm'] is defined
+          - groups['idm'] | length > 0
+        fail_msg: "Missing required inventory variables (aws_region, aws_profile, secret_prefix, idm_server_fqdn, idm_domain_name, and an [idm] group)."
+
+    - name: Read IdM admin password from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/idm/admin_password"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: idm_admin_password_result
+      changed_when: false
+      no_log: true
 
     - name: Read Satellite admin username from AWS Secrets Manager
       ansible.builtin.command:
@@ -73,105 +106,153 @@
       changed_when: false
       no_log: true
 
-    - name: Set Satellite admin credential facts
+    - name: Set secret facts
       ansible.builtin.set_fact:
-        initial_admin_username: "{{ satellite_admin_username_result.stdout }}"
-        initial_admin_password: "{{ satellite_admin_password_result.stdout }}"
+        idm_admin_password: "{{ idm_admin_password_result.stdout }}"
+        satellite_admin_username: "{{ satellite_admin_username_result.stdout }}"
+        satellite_admin_password: "{{ satellite_admin_password_result.stdout }}"
+      no_log: true
+
+    - name: Generate Satellite LDAP bind password for this run
+      ansible.builtin.set_fact:
+        satellite_bind_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
       no_log: true
 
   tasks:
-    - name: 1. Ensure hostname matches the FQDN required by Satellite
-      ansible.builtin.hostname:
-        name: "{{ satellite_fqdn }}"
+    - name: Ensure IdM groups and Satellite bind account exist
+      ansible.builtin.shell: |
+        set -euo pipefail
 
-    - name: 2. Configure /etc/hosts with absolute IP-to-FQDN mapping
-      ansible.builtin.blockinfile:
-        path: /etc/hosts
-        block: |
-          10.20.1.154 satellite.redhat.local satellite
-          127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
-        marker: "# {mark} ANSIBLE MANAGED HOSTS CONFIG"
+        echo "{{ idm_admin_password }}" | kinit "{{ idm_admin_user }}"
 
-    - name: 2. Add explicit local hostname resolution helper to /etc/hosts
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        line: "10.20.1.154 {{ satellite_fqdn }} satellite"
-        state: present
+        # Access / role-mapping groups (idempotent).
+        ipa group-show "{{ satellite_users_group }}" >/dev/null 2>&1 \
+          || ipa group-add "{{ satellite_users_group }}" --desc="Members may log in to Satellite (viewer)"
+        ipa group-show "{{ satellite_admins_group }}" >/dev/null 2>&1 \
+          || ipa group-add "{{ satellite_admins_group }}" --desc="Members receive Satellite administrator rights"
 
-    - name: 3. Download the Satellite ISO from private S3 using the instance role
-      ansible.builtin.command: >
-        aws s3 cp
-        s3://{{ satellite_iso_s3_bucket }}/{{ satellite_iso_s3_key }}
-        {{ satellite_iso_dest }}
-        --region {{ aws_region }}
+        # Nest admins inside users so admins also satisfy the login filter.
+        ipa group-add-member "{{ satellite_users_group }}" --groups="{{ satellite_admins_group }}" >/dev/null 2>&1 || true
+
+        # Dedicated LDAP bind account with an ephemeral password (regenerated each run).
+        if ipa user-show "{{ satellite_bind_user }}" >/dev/null 2>&1; then
+          printf '%s\n%s\n' "{{ satellite_bind_password }}" "{{ satellite_bind_password }}" | ipa passwd "{{ satellite_bind_user }}"
+        else
+          printf '%s\n%s\n' "{{ satellite_bind_password }}" "{{ satellite_bind_password }}" | ipa user-add "{{ satellite_bind_user }}" \
+            --first="Satellite" \
+            --last="Bind" \
+            --shell="/sbin/nologin" \
+            --password
+        fi
+
+        ipa user-mod "{{ satellite_bind_user }}" --setattr=nsaccountlock=FALSE || true
+
+        kdestroy
       args:
-        creates: "{{ satellite_iso_dest }}"
-      changed_when: true
+        executable: /bin/bash
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      no_log: true
 
-    - name: 3.5. Ensure downloaded ISO permissions
-      ansible.builtin.file:
-        path: "{{ satellite_iso_dest }}"
+    - name: Read the IdM CA certificate from the IdM server
+      ansible.builtin.slurp:
+        src: /etc/ipa/ca.crt
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: idm_ca_cert
+      changed_when: false
+
+    - name: Install the IdM CA into the Satellite trust store
+      ansible.builtin.copy:
+        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
         owner: root
         group: root
-        mode: '0644'
+        mode: "0644"
+        content: "{{ idm_ca_cert.content | b64decode }}"
+      become: true
+      register: idm_ca_copy
 
-    - name: 3.9. Safety - Ensure any stale ISO mount is cleared before directory check
-      ansible.posix.mount:
-        path: "{{ satellite_mount_path }}"
-        state: unmounted
+    - name: Refresh the Satellite CA trust store
+      ansible.builtin.command:
+        argv:
+          - update-ca-trust
+      become: true
+      changed_when: idm_ca_copy.changed
 
-    - name: 4. Create a mount point directory within the writable storage tier
-      ansible.builtin.file:
-        path: "{{ satellite_mount_path }}"
-        state: directory
-        mode: '0755' # This will now succeed because it's under /var
+    - name: Create IdM LDAP authentication source in Satellite
+      redhat.satellite.auth_source_ldap:
+        server_url: "{{ satellite_url }}"
+        username: "{{ satellite_admin_username }}"
+        password: "{{ satellite_admin_password }}"
+        validate_certs: false
+        name: "IdM"
+        host: "{{ idm_server_fqdn }}"
+        port: 636
+        tls: true
+        server_type: free_ipa
+        account: "{{ satellite_bind_dn }}"
+        account_password: "{{ satellite_bind_password }}"
+        base_dn: "{{ ldap_accounts_base }}"
+        groups_base: "{{ ldap_groups_base }}"
+        attr_login: uid
+        attr_firstname: givenName
+        attr_lastname: sn
+        attr_mail: mail
+        ldap_filter: >-
+          (memberOf=cn={{ satellite_users_group }},{{ ldap_groups_base }})
+        onthefly_register: true
+        usergroup_sync: true
+        state: present
+      no_log: true
 
-    - name: 5. Mount the Satellite 6.19.1 ISO via loopback
-      ansible.posix.mount:
-        path: "{{ satellite_mount_path }}"
-        src: "{{ satellite_iso_dest }}"
-        fstype: iso9660
-        opts: loop,ro
-        state: mounted
+    - name: Create Satellite usergroup for IdM viewers
+      redhat.satellite.usergroup:
+        server_url: "{{ satellite_url }}"
+        username: "{{ satellite_admin_username }}"
+        password: "{{ satellite_admin_password }}"
+        validate_certs: false
+        name: "idm-satellite-users"
+        roles:
+          - Viewer
+        state: present
 
-    - name: 6. Inject static local offline repository definition targeting the ISO mount subdirectory
-      ansible.builtin.yum_repository:
-        name: "local-satellite-iso-media"
-        description: "Satellite 6.19.1 Installer ISO Media"
-        baseurl: "file://{{ satellite_mount_path }}/Satellite"
-        enabled: true
-        gpgcheck: false
+    - name: Create Satellite usergroup for IdM administrators
+      redhat.satellite.usergroup:
+        server_url: "{{ satellite_url }}"
+        username: "{{ satellite_admin_username }}"
+        password: "{{ satellite_admin_password }}"
+        validate_certs: false
+        name: "idm-satellite-admins"
+        admin: true
+        state: present
 
-    - name: 7. Inject static local offline repository definition targeting the ISO mount subdirectory
-      ansible.builtin.yum_repository:
-        name: "local-satellite-iso-media"
-        description: "Satellite 6.19.1 Installer ISO Media"
-        # Adjust "/Satellite" below based on your 'ls' output of the mounted disk
-        baseurl: "file://{{ satellite_mount_path }}/Satellite"
-        enabled: true
-        gpgcheck: false
+    - name: Link IdM group satellite-users to Satellite usergroup
+      redhat.satellite.external_usergroup:
+        server_url: "{{ satellite_url }}"
+        username: "{{ satellite_admin_username }}"
+        password: "{{ satellite_admin_password }}"
+        validate_certs: false
+        usergroup: "idm-satellite-users"
+        auth_source: "IdM"
+        name: "{{ satellite_users_group }}"
+        state: present
 
-    - name: 8. Synchronize local package storage metadata
-      ansible.builtin.dnf:
-        update_cache: true
+    - name: Link IdM group satellite-admins to Satellite usergroup
+      redhat.satellite.external_usergroup:
+        server_url: "{{ satellite_url }}"
+        username: "{{ satellite_admin_username }}"
+        password: "{{ satellite_admin_password }}"
+        validate_certs: false
+        usergroup: "idm-satellite-admins"
+        auth_source: "IdM"
+        name: "{{ satellite_admins_group }}"
+        state: present
 
-    - name: 9. Execute the Unattended Disconnected Satellite Installer Core
-      ansible.builtin.command: >
-        satellite-installer --scenario satellite
-        --foreman-initial-admin-username={{ initial_admin_username }}
-        --foreman-initial-admin-password={{ initial_admin_password }}
-        --certs-node-fqdn={{ satellite_fqdn }}
-        --foreman-initial-organization={{ organization_name | quote }}
-        --foreman-initial-location={{ location_name | quote }}
-      async: 1800
-      poll: 30
-      register: satellite_installer_output
-      no_log: true  # command line embeds the admin password
-
-    - name: 10. Print the deployment finalization parameters
+    - name: Show integration summary
       ansible.builtin.debug:
         msg:
-          - "🚀 Local Staged ISO Satellite 6.19.1 Installation Complete!"
-          - "URL: https://{{ satellite_fqdn }}"
-          - "Username: {{ initial_admin_username }}"
-          - "Password: (stored in AWS Secrets Manager at {{ secret_prefix }}/satellite/admin_password)"
+          - "Satellite LDAP auth source 'IdM' configured against {{ idm_server_fqdn }}:636 (LDAPS)."
+          - "Login gated by IdM group: {{ satellite_users_group }} (filter enforced)."
+          - "Role mapping: {{ satellite_users_group }} -> Viewer, {{ satellite_admins_group }} -> Administrator."
+          - "Bind account: {{ satellite_bind_dn }} (password regenerated each run)."
+          - "Test: ipa group-add-member {{ satellite_users_group }} --users=<user>, then log in to the Satellite UI."
