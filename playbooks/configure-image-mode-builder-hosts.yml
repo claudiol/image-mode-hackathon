@@ -550,19 +550,28 @@
           playbook so a POSIX group can own the Composer Unix sockets.
       when: image_mode_manage_idm_access_group | bool
 
-    - name: Nest the IdM all-users group in Image Builder access group
+    - name: Ensure ipausers is a member group of Image Builder access group
       ansible.builtin.command:
         argv:
           - ipa
           - group-add-member
-          - "{{ image_builder_access_group }}"
-          - "--groups={{ idm_all_users_group }}"
-      register: image_builder_nested_group
+          - "{{ resolved_image_builder_access_group }}"
+          - "--groups=ipausers"
+      register: image_builder_group_membership
       changed_when: >-
-        'Number of members added 1' in
-        (image_builder_nested_group.stdout | default(''))
-      failed_when: image_builder_nested_group.rc != 0
-      when: image_mode_manage_idm_access_group | bool
+        image_builder_group_membership.rc == 0
+        and
+        (
+          'Number of members added 1'
+          in image_builder_group_membership.stdout
+        )
+      failed_when: >-
+        image_builder_group_membership.rc != 0
+        and
+        (
+          'This entry is already a member'
+          not in image_builder_group_membership.stdout
+        )
 
     - name: Destroy IdM administrator Kerberos ticket
       ansible.builtin.command:
