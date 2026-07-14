@@ -131,6 +131,25 @@
       (memberOf={{ quay_idm_owner_group_dn }})
 
     ###########################################################################
+    # Dedicated IdM LDAP account for Quay registry access
+    ###########################################################################
+
+    quay_registry_ldap_username: image-mode-builder
+    quay_registry_ldap_first_name: Image
+    quay_registry_ldap_last_name: Mode Builder
+    quay_registry_ldap_email: image-mode-builder@example.com
+
+    # Stores a JSON object containing both username and password.
+    quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
+  
+
+    # Include the dedicated registry account in the existing IdM group that
+    # synchronizes to the Quay writers team.
+
+    quay_writer_users: "{{ (quay_org_member_users + [quay_registry_ldap_username]) | unique | list }}"
+
+
+    ###########################################################################
     # Quay team-to-IdM synchronization mappings
     ###########################################################################
 
@@ -159,7 +178,7 @@
         # Used only for direct LDAP validation and diagnostics.
         full_group_dn: "{{ quay_idm_writer_group_dn }}"
 
-        users: "{{ quay_org_member_users }}"
+        users: "{{ quay_writer_users }}"
 
     ###########################################################################
     # AWS Secrets Manager paths
@@ -298,6 +317,193 @@
           }}
       no_log: true
 
+    ###########################################################################
+    # Dedicated Quay LDAP user credential
+    ###########################################################################
+
+    - name: Read dedicated Quay LDAP user secret from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ quay_registry_ldap_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: quay_registry_ldap_secret_result
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+      environment: >-
+        {{
+          {'AWS_PROFILE': aws_profile}
+          if (
+            aws_profile is defined
+            and aws_profile | string | length > 0
+          )
+          else {}
+        }}
+
+    - name: Parse existing dedicated Quay LDAP user secret
+      ansible.builtin.set_fact:
+        quay_registry_ldap_stored_credentials: >-
+          {{
+            (
+              quay_registry_ldap_secret_result.stdout | from_json
+            )
+            if (
+              quay_registry_ldap_secret_result.rc == 0
+              and
+              quay_registry_ldap_secret_result.stdout
+              | default('')
+              | trim
+              | length > 0
+            )
+            else {}
+          }}
+      no_log: true
+
+    - name: Validate existing dedicated Quay LDAP user secret
+      ansible.builtin.assert:
+        that:
+          - >-
+            quay_registry_ldap_stored_credentials.username
+            | default(quay_registry_ldap_username)
+            == quay_registry_ldap_username
+        fail_msg: >-
+          The existing secret {{ quay_registry_ldap_secret_name }} contains
+          credentials for a different username.
+      when:
+        - quay_registry_ldap_secret_result.rc == 0
+        - quay_registry_ldap_stored_credentials | length > 0
+      no_log: true
+
+    - name: Use existing dedicated Quay LDAP user password
+      ansible.builtin.set_fact:
+        quay_registry_ldap_password: >-
+          {{ quay_registry_ldap_stored_credentials.password }}
+        quay_registry_ldap_secret_needs_creation: false
+      when:
+        - quay_registry_ldap_stored_credentials.password is defined
+        - >-
+          quay_registry_ldap_stored_credentials.password
+          | string
+          | length > 0
+      no_log: true
+
+    - name: Generate random password for dedicated Quay LDAP user
+      ansible.builtin.set_fact:
+        quay_registry_ldap_password: >-
+          {{
+            lookup(
+              'ansible.builtin.password',
+              '/dev/null',
+              length=40,
+              chars=['ascii_letters', 'digits']
+            )
+          }}
+        quay_registry_ldap_secret_needs_creation: true
+      when: quay_registry_ldap_password is not defined
+      no_log: true
+
+    - name: Build dedicated Quay LDAP credential object
+      ansible.builtin.set_fact:
+        quay_registry_ldap_credentials:
+          username: "{{ quay_registry_ldap_username }}"
+          password: "{{ quay_registry_ldap_password }}"
+      no_log: true
+
+    - name: Create dedicated Quay LDAP user secret in AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - create-secret
+          - --name
+          - "{{ quay_registry_ldap_secret_name | trim }}"
+          - --description
+          - "IdM LDAP credentials for the Image Mode Quay registry user"
+          - --secret-string
+          - "{{ quay_registry_ldap_credentials | to_json }}"
+          - --region
+          - "{{ aws_region | trim }}"
+      delegate_to: localhost
+      become: false
+      register: quay_registry_ldap_secret_create
+      changed_when: quay_registry_ldap_secret_create.rc == 0
+      failed_when: >-
+
+        (
+          quay_registry_ldap_secret_create.rc != 0
+        )
+        and
+        (
+          'ResourceExistsException'
+          not in
+          (
+            quay_registry_ldap_secret_create.stderr
+            | default('')
+          )
+        )
+      when: quay_registry_ldap_secret_needs_creation | bool
+      no_log: true
+      environment: >-
+        {{
+          {'AWS_PROFILE': aws_profile | trim}
+          if (
+            aws_profile is defined
+            and aws_profile | string | trim | length > 0
+          )
+          else {}
+        }}
+
+
+    - name: Store generated credentials when AWS secret appeared concurrently
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - put-secret-value
+          - --secret-id
+          - "{{ quay_registry_ldap_secret_name }}"
+          - --secret-string
+          - "{{ quay_registry_ldap_credentials | to_json }}"
+          - --region
+          - "{{ aws_region }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      when:
+        - quay_registry_ldap_secret_needs_creation | bool
+        - quay_registry_ldap_secret_create.rc != 0
+      no_log: true
+      environment: >-
+        {{
+          {'AWS_PROFILE': aws_profile}
+          if (
+            aws_profile is defined
+            and aws_profile | string | length > 0
+          )
+          else {}
+        }}
+
+    - name: Validate dedicated Quay LDAP credentials
+      ansible.builtin.assert:
+        that:
+          - quay_registry_ldap_username | length > 0
+          - quay_registry_ldap_password | length >= 32
+          - quay_registry_ldap_secret_name | length > 0
+        fail_msg: >-
+          No valid credentials are available for the dedicated Quay LDAP user.
+      no_log: true
+
   tasks:
     - name: Validate required Quay variables
       ansible.builtin.assert:
@@ -325,6 +531,13 @@
           - quay_default_team | length > 0
           - idm_admin_password | length > 0
           - quay_admin_users | length > 0
+          - quay_registry_ldap_username | length > 0
+          - quay_registry_ldap_first_name | length > 0
+          - quay_registry_ldap_last_name | length > 0
+          - quay_registry_ldap_email | length > 0
+          - quay_registry_ldap_password | length >= 32
+          - quay_registry_ldap_secret_name | length > 0
+          - quay_writer_users | length > 0
         fail_msg: >-
           Missing required Quay, IdM, inventory, or AWS secret values.
 
@@ -745,6 +958,85 @@
       environment:
         KRB5CCNAME: /tmp/krb5cc_quay_admin
 
+    ###########################################################################
+    # Dedicated IdM LDAP account for Quay registry access
+    ###########################################################################
+
+    - name: Check whether dedicated Quay LDAP user exists in IdM
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-show
+          - "{{ quay_registry_ldap_username }}"
+          - --all
+          - --raw
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: quay_registry_idm_user_check
+      changed_when: false
+      failed_when: false
+      environment:
+        KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+    - name: Create dedicated Quay LDAP user in IdM
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-add
+          - "{{ quay_registry_ldap_username }}"
+          - "--first={{ quay_registry_ldap_first_name }}"
+          - "--last={{ quay_registry_ldap_last_name }}"
+          - "--email={{ quay_registry_ldap_email }}"
+          - --password
+        stdin: |
+          {{ quay_registry_ldap_password }}
+          {{ quay_registry_ldap_password }}
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: quay_registry_idm_user_create
+      changed_when: quay_registry_idm_user_create.rc == 0
+      failed_when: quay_registry_idm_user_create.rc != 0
+      when: quay_registry_idm_user_check.rc != 0
+      no_log: true
+      environment:
+        KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+    - name: Ensure dedicated Quay LDAP user is enabled
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-enable
+          - "{{ quay_registry_ldap_username }}"
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: quay_registry_idm_user_enable
+      changed_when: >-
+        'Enabled user account' in
+        quay_registry_idm_user_enable.stdout | default('')
+      failed_when: >
+        quay_registry_idm_user_enable.rc != 0
+        and
+        'already enabled' not in
+        quay_registry_idm_user_enable.stderr | default('')
+      environment:
+        KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+    - name: Verify dedicated Quay LDAP user exists
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-show
+          - "{{ quay_registry_ldap_username }}"
+          - --all
+          - --raw
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: quay_registry_idm_user_verify
+      changed_when: false
+      failed_when: quay_registry_idm_user_verify.rc != 0
+      environment:
+        KRB5CCNAME: /tmp/krb5cc_quay_admin
+
     - name: Ensure IdM groups exist for Quay synchronization
       ansible.builtin.command:
         argv:
@@ -785,6 +1077,27 @@
             idm_group_member_add.stdout | default('')
       environment:
         KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+    - name: Verify dedicated Quay LDAP user belongs to IdM writers group
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-show
+          - "{{ quay_idm_writer_group }}"
+          - --all
+          - --raw
+      delegate_to: "{{ groups['idm'][0] }}"
+      become: true
+      register: quay_registry_writer_group_verify
+      changed_when: false
+      failed_when: >
+        quay_registry_writer_group_verify.rc != 0
+        or
+        quay_registry_ldap_username not in
+        quay_registry_writer_group_verify.stdout
+      environment:
+        KRB5CCNAME: /tmp/krb5cc_quay_admin
+
 
     - name: Verify IdM synchronization groups through LDAP
       ansible.builtin.command:
@@ -1503,6 +1816,16 @@
           - >-
             IdM group synchronization controls Quay team membership,
             and members of the IdM owner group become Quay superusers.
+          - >-
+            Dedicated Quay LDAP user:
+            {{ quay_registry_ldap_username }}
+          - >-
+            Dedicated Quay LDAP credential secret:
+            {{ quay_registry_ldap_secret_name }}
+          - >-
+            The dedicated Quay LDAP user belongs to the
+            {{ quay_idm_writer_group }} IdM group, which synchronizes to the
+            {{ quay_default_team }} Quay team.
 
     - name: Show running containers
       ansible.builtin.command:
