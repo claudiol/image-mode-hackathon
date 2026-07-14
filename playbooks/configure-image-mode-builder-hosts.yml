@@ -460,7 +460,7 @@
           image_mode_manage_idm_access_group is enabled.
       run_once: true
       when: image_mode_manage_idm_access_group | bool
-      no_log: true
+      no_log: false
 
     - name: Select IdM server used to configure Image Builder access
       ansible.builtin.set_fact:
