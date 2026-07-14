@@ -77,9 +77,9 @@
     quay_registry_ldap_username: image-mode-builder
     quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
 
-    idm_admin_username: admin
+    idm_admin_username_secret_name: admin
 
-    idm_admin_username_secret_name: >-
+    idm_admin_password_secret_name: >-
       {{ secret_prefix }}/idm/directory_manager_password
 
 
