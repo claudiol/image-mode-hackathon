@@ -12,7 +12,7 @@
 #   ansible.builtin.import_playbook: configure-aap-idm-sso.yml
 
 - name: Deploy Satellite
-  ansible.builtin.import_playbook: deploy-satellite.yml
+  ansible.builtin.import_playbook: deploy-airgap-satellite.yml
 
 - name: Configure Satellite For IdM
   ansible.builtin.import_playbook: configure-satellite-idm-ldap-integration.yml
