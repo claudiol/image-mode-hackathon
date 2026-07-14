@@ -1037,12 +1037,13 @@
           is not search('already|exists')
         )
 
+
     - name: Check whether owner and writer teams already exist
       ansible.builtin.uri:
         url: >-
           https://127.0.0.1:{{ quay_https_port
           }}/api/v1/organization/{{ quay_default_org
-          }}/team/{{ item.team }}
+          }}/team/{{ item.team }}/permissions
         method: GET
         validate_certs: false
         headers:
@@ -1057,7 +1058,7 @@
         label: "{{ item.team }}"
       register: quay_team_lookups
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Create only missing Quay teams
       ansible.builtin.uri:
@@ -1070,6 +1071,8 @@
         headers:
           Authorization: "Bearer {{ quay_api_token }}"
           Accept: application/json
+          Content-Type: application/json
+          X-Requested-With: XMLHttpRequest
         body_format: json
         body:
           role: "{{ item.item.role }}"
@@ -1094,6 +1097,18 @@
       loop_control:
         label: "{{ item.item.team }}"
       when: item.status == 200
+
+
+    - name: Report existing Quay teams
+      ansible.builtin.debug:
+        msg: >-
+          Team {{ item.item.team }} already exists and was not modified.
+          Existing or LDAP-synchronized teams are left unchanged.
+      loop: "{{ quay_team_lookups.results }}"
+      loop_control:
+        label: "{{ item.item.team }}"
+      when: item.status == 200
+
 
     - name: Add bootstrap administrator to owners
       ansible.builtin.uri:
