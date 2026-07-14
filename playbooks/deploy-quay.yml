@@ -147,17 +147,8 @@
     # Include the dedicated registry account in the existing IdM group that
     # synchronizes to the Quay writers team.
 
-    quay_writer_users: >-
+    quay_writer_users: "{{ (quay_org_member_users + [quay_registry_ldap_username]) | unique | list }}"
 
-      {{
-        (
-          quay_org_member_users
-          + [quay_registry_ldap_username]
-
-        )
-        | unique
-        | list
-      }}
 
     ###########################################################################
     # Quay team-to-IdM synchronization mappings
