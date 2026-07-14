@@ -1083,7 +1083,7 @@
       when: item.status == 404
       register: quay_missing_team_creates
       changed_when: true
-      no_log: true
+      no_log: false
 
     - name: Confirm existing synchronized teams were left unchanged
       ansible.builtin.debug:
