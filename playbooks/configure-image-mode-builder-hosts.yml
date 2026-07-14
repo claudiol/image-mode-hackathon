@@ -56,6 +56,7 @@
     image_mode_tmp_directory: "{{ image_mode_root }}/tmp"
 
     image_mode_group: image-builders
+    image_builder_access_group: weldr
 
     # Users granted access to the shared build workspace.
     #
@@ -433,7 +434,7 @@
         ('Git LFS initialized' in git_lfs_install.stderr)
 
     ###########################################################################
-    # Shared development group and users
+    # Shared development group and Image Builder access
     ###########################################################################
 
     - name: Create Image Mode builder group
@@ -441,6 +442,12 @@
         name: "{{ image_mode_group }}"
         state: present
         system: true
+
+    - name: Verify weldr group was created by osbuild-composer
+      ansible.builtin.getent:
+        database: group
+        key: "{{ image_builder_access_group }}"
+        fail_key: true
 
     - name: Check configured Image Mode users
       ansible.builtin.command:
@@ -463,19 +470,22 @@
             | list
           }}
 
-    - name: Add existing users to Image Mode builder group
+    - name: Add existing users to Image Mode and weldr groups
       ansible.builtin.user:
         name: "{{ item }}"
         groups:
           - "{{ image_mode_group }}"
+          - "{{ image_builder_access_group }}"
         append: true
       loop: "{{ existing_image_mode_users }}"
+      register: image_mode_group_membership
 
     - name: Report nonexistent requested users
       ansible.builtin.debug:
         msg: >-
           User {{ item }} does not exist on {{ inventory_hostname }} and was
-          not added to the {{ image_mode_group }} group.
+          not added to the {{ image_mode_group }} or
+          {{ image_builder_access_group }} groups.
       loop: >-
         {{
           image_mode_users
@@ -1038,13 +1048,59 @@
         state: started
         daemon_reload: true
 
+    - name: Start osbuild-composer through socket activation
+      ansible.builtin.command:
+        argv:
+          - composer-cli
+          - status
+          - show
+      register: composer_activation_status
+      changed_when: false
+      retries: 5
+      delay: 3
+      until: composer_activation_status.rc == 0
+
     - name: Wait for osbuild-composer API socket
       ansible.builtin.wait_for:
         path: /run/weldr/api.socket
         state: present
-        timeout: 60
+        timeout: 120
 
-    - name: Verify RHEL Image Builder CLI
+    - name: Verify osbuild-composer socket state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - osbuild-composer.socket
+      register: osbuild_composer_socket_status
+      changed_when: false
+
+    - name: Verify osbuild-composer service state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - osbuild-composer.service
+      register: osbuild_composer_service_status
+      changed_when: false
+
+    - name: Inspect weldr API socket
+      ansible.builtin.stat:
+        path: /run/weldr/api.socket
+      register: weldr_api_socket
+
+    - name: Assert weldr API socket is usable
+      ansible.builtin.assert:
+        that:
+          - weldr_api_socket.stat.exists
+          - weldr_api_socket.stat.issock
+          - weldr_api_socket.stat.gr_name == image_builder_access_group
+        fail_msg: >-
+          The Image Builder API socket is missing, is not a Unix socket, or
+          does not belong to the {{ image_builder_access_group }} group.
+          Socket details: {{ weldr_api_socket.stat | default({}) }}
+
+    - name: Verify RHEL Image Builder CLI as root
       ansible.builtin.command:
         argv:
           - composer-cli
@@ -1052,6 +1108,45 @@
           - show
       register: composer_status
       changed_when: false
+
+    - name: Verify RHEL Image Builder access as configured users
+      become: true
+      become_user: "{{ item }}"
+      ansible.builtin.command:
+        argv:
+          - composer-cli
+          - status
+          - show
+      loop: "{{ existing_image_mode_users }}"
+      register: composer_user_status
+      changed_when: false
+
+    - name: Collect osbuild-composer status
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - status
+          - osbuild-composer.service
+          - --no-pager
+          - --full
+      register: osbuild_composer_detailed_status
+      changed_when: false
+      failed_when: false
+
+    - name: Collect recent osbuild-composer logs
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - -u
+          - osbuild-composer.service
+          - -u
+          - osbuild-composer.socket
+          - --since
+          - -10 minutes
+          - --no-pager
+      register: osbuild_composer_logs
+      changed_when: false
+      failed_when: false
 
     ###########################################################################
     # Firewall and Cockpit
@@ -1096,11 +1191,12 @@
         immediate: true
         state: enabled
 
-    - name: Enable and start Cockpit socket
+    - name: Restart Cockpit socket after configuring Image Builder
       ansible.builtin.systemd_service:
         name: cockpit.socket
         enabled: true
-        state: started
+        state: restarted
+        daemon_reload: true
 
     - name: Wait for Cockpit port
       ansible.builtin.wait_for:
@@ -1329,6 +1425,7 @@
       loop:
         - cockpit.socket
         - osbuild-composer.socket
+        - osbuild-composer.service
         - firewalld
       register: image_mode_service_status
       changed_when: false
@@ -1363,6 +1460,13 @@
           - >-
             Registry helper:
             sudo image-mode-registry-copy SOURCE DESTINATION
+          - >-
+            Image Builder API socket:
+            {{ weldr_api_socket.stat.path }}
+            (group={{ weldr_api_socket.stat.gr_name }})
+          - |-
+            osbuild-composer status:
+            {{ osbuild_composer_detailed_status.stdout }}
           - |-
             Installed tools:
             {{ image_mode_tool_versions.stdout }}
