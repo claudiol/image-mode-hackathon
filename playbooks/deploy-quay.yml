@@ -140,9 +140,8 @@
     quay_registry_ldap_email: image-mode-builder@example.com
 
     # Stores a JSON object containing both username and password.
-    quay_registry_ldap_secret_name: >-
-
-      {{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}
+    quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
+  
 
     # Include the dedicated registry account in the existing IdM group that
     # synchronizes to the Quay writers team.
