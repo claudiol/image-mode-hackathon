@@ -509,7 +509,7 @@
           - text
       register: idm_admin_username_secret_result
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Read IdM administrator password
       ansible.builtin.command:
