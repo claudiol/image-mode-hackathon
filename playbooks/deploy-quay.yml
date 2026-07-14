@@ -50,6 +50,12 @@
 
     ###########################################################################
     # AAP robot account in the existing image-mode organization
+    #
+    # The robot is reconciled while Quay is temporarily using Database
+    # authentication and the bootstrap OAuth management token is valid.
+    # Quay 3.13 cannot mint a new OAuth management token from an LDAP
+    # username/password through the API. LDAP credentials are validated only
+    # after the switch; robot authentication remains Quay-native.
     ###########################################################################
 
     quay_aap_robot_short_name: aap
@@ -115,16 +121,6 @@
     quay_admin_users: "{{ idm_users | default([]) | unique }}"
     quay_org_member_users: "{{ quay_admin_users }}"
 
-    # The first configured Quay administrator is used only to validate LDAP
-    # authentication after Quay switches to LDAP. Quay 3.13 does not expose a
-    # supported username/password API for creating OAuth management tokens.
-    quay_ldap_admin_username: "{{ quay_admin_users | first | default('') }}"
-
-    # A valid LDAP-user OAuth token can be supplied manually through this
-    # existing secret after it has been generated once in the Quay UI.
-    quay_ldap_oauth_token_secret_name: >-
-      {{ secret_prefix }}/quay/admin_access_token
-
     quay_idm_owner_group: "quay-{{ quay_default_org }}-owners"
     quay_idm_writer_group: "quay-{{ quay_default_org }}-writers"
 
@@ -171,7 +167,6 @@
       quay_database_secret_key: quay/database_secret_key
       quay_superuser_password: quay/superuser_password
       idm_admin_password: idm/admin_password
-      idm_default_user_password: idm/default_user_password
 
     aws_cli_environment: >-
       {{
@@ -251,8 +246,6 @@
           {{ quay_required_secrets.quay_superuser_password }}
         idm_admin_password: >-
           {{ quay_required_secrets.idm_admin_password }}
-        idm_default_user_password: >-
-          {{ quay_required_secrets.idm_default_user_password }}
       no_log: true
 
     - name: Read optional Quay API token from AWS Secrets Manager
@@ -346,9 +339,7 @@
           - quay_default_repository | length > 0
           - quay_default_team | length > 0
           - idm_admin_password | length > 0
-          - idm_default_user_password | length > 0
           - quay_admin_users | length > 0
-          - quay_ldap_admin_username | length > 0
           - quay_aap_robot_short_name | length > 0
           - quay_aap_robot_username | length > 0
           - quay_aap_team | length > 0
@@ -1046,48 +1037,63 @@
           is not search('already|exists')
         )
 
-    - name: Verify bootstrap Quay API token before administrative operations
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/"
-        method: GET
-        validate_certs: false
-        headers:
-          Authorization: "Bearer {{ quay_api_token }}"
-        status_code: 200
-        return_content: true
-      register: quay_current_user
-      no_log: true
-
-    - name: Confirm bootstrap token identity
-      ansible.builtin.assert:
-        that:
-          - quay_current_user.json.username | default('') == quay_superuser
-        fail_msg: >-
-          The bootstrap API token is not valid for {{ quay_superuser }}.
-          For an existing LDAP-enabled database, use the OAuth token generated
-          manually by an LDAP Quay administrator, or perform a clean bootstrap.
-      no_log: true
-
-    - name: Ensure owner and writer teams exist
+    - name: Check whether owner and writer teams already exist
       ansible.builtin.uri:
         url: >-
           https://127.0.0.1:{{ quay_https_port
           }}/api/v1/organization/{{ quay_default_org
           }}/team/{{ item.team }}
+        method: GET
+        validate_certs: false
+        headers:
+          Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
+        status_code:
+          - 200
+          - 404
+        return_content: true
+      loop: "{{ quay_team_syncs }}"
+      loop_control:
+        label: "{{ item.team }}"
+      register: quay_team_lookups
+      changed_when: false
+      no_log: true
+
+    - name: Create only missing Quay teams
+      ansible.builtin.uri:
+        url: >-
+          https://127.0.0.1:{{ quay_https_port
+          }}/api/v1/organization/{{ quay_default_org
+          }}/team/{{ item.item.team }}
         method: PUT
         validate_certs: false
         headers:
           Authorization: "Bearer {{ quay_api_token }}"
+          Accept: application/json
         body_format: json
         body:
-          role: "{{ item.role }}"
+          role: "{{ item.item.role }}"
         status_code:
           - 200
           - 201
-          - 400
-      loop: "{{ quay_team_syncs }}"
-      register: quay_create_teams
+        return_content: true
+      loop: "{{ quay_team_lookups.results }}"
+      loop_control:
+        label: "{{ item.item.team }}"
+      when: item.status == 404
+      register: quay_missing_team_creates
+      changed_when: true
       no_log: true
+
+    - name: Confirm existing synchronized teams were left unchanged
+      ansible.builtin.debug:
+        msg: >-
+          Team {{ item.item.team }} already exists and was not modified.
+          This avoids HTTP 403 when the team is already LDAP-synchronized.
+      loop: "{{ quay_team_lookups.results }}"
+      loop_control:
+        label: "{{ item.item.team }}"
+      when: item.status == 200
 
     - name: Add bootstrap administrator to owners
       ansible.builtin.uri:
@@ -1298,7 +1304,7 @@
           robot token could be obtained.
       no_log: true
 
-    - name: Add AAP robot to the existing writers team
+    - name: Add AAP robot to the existing writers team when permitted
       ansible.builtin.uri:
         url: >-
           https://127.0.0.1:{{ quay_https_port
@@ -1315,19 +1321,23 @@
           - 201
           - 204
           - 400
+          - 403
         return_content: true
       register: quay_aap_robot_team_membership
       changed_when: quay_aap_robot_team_membership.status in [200, 201, 204]
       failed_when: >
-        quay_aap_robot_team_membership.status == 400
-        and (
-          quay_aap_robot_team_membership.json.error_message
-          | default(
-              quay_aap_robot_team_membership.json.message | default('')
-            )
-          is not search('already|exists|member')
-        )
+        quay_aap_robot_team_membership.status not in
+        [200, 201, 204, 400, 403]
       no_log: true
+
+    - name: Report LDAP-synchronized team membership restriction
+      ansible.builtin.debug:
+        msg: >-
+          Quay did not permit direct modification of synchronized team
+          {{ quay_aap_team }}. Robot {{ quay_aap_robot_username }} will use
+          its explicit {{ quay_aap_repository_permission }} repository
+          permission on {{ quay_default_org }}/{{ quay_default_repository }}.
+      when: quay_aap_robot_team_membership.status == 403
 
     - name: Grant AAP robot write access to the existing repository
       ansible.builtin.uri:
@@ -1575,52 +1585,6 @@
       when: quay_ldap_https_check.rc != 0
 
     ###########################################################################
-    # Validate the first configured LDAP administrator
-    #
-    # This proves that the IdM account can authenticate with the default IdM
-    # password. The token returned by /v2/auth is a registry bearer token and
-    # must not be used as a Quay /api/v1 OAuth management token.
-    ###########################################################################
-
-    - name: Authenticate the first Quay administrator through LDAP
-      ansible.builtin.uri:
-        url: >-
-          https://127.0.0.1:{{ quay_https_port
-          }}/v2/auth?service={{ quay_hostname | urlencode }}
-        method: GET
-        validate_certs: false
-        force_basic_auth: true
-        url_username: "{{ quay_ldap_admin_username }}"
-        url_password: "{{ idm_default_user_password }}"
-        status_code: 200
-        return_content: true
-      register: quay_ldap_admin_registry_auth
-      changed_when: false
-      no_log: true
-
-    - name: Validate first LDAP administrator authentication
-      ansible.builtin.assert:
-        that:
-          - quay_ldap_admin_registry_auth.status == 200
-          - >-
-            (
-              quay_ldap_admin_registry_auth.json.token
-              | default(
-                  quay_ldap_admin_registry_auth.json.access_token
-                  | default('')
-                )
-            ) | length > 0
-        fail_msg: >-
-          The first configured Quay administrator
-          {{ quay_ldap_admin_username }} could not authenticate through IdM
-          LDAP with the default IdM user password.
-        success_msg: >-
-          The first configured Quay administrator
-          {{ quay_ldap_admin_username }} authenticated successfully through
-          IdM LDAP.
-      no_log: true
-
-    ###########################################################################
     # Validate Quay-native robot authentication after LDAP is enabled
     ###########################################################################
 
@@ -1685,79 +1649,7 @@
 
     ###########################################################################
     # Enable and validate LDAP team synchronization
-    #
-    # Red Hat Quay 3.13 OAuth management tokens can only be generated through
-    # the Quay UI. An LDAP username/password or /v2/auth registry token cannot
-    # be exchanged for a /api/v1 OAuth token. The secret is therefore validated
-    # here and the play fails with an actionable message if it is stale.
     ###########################################################################
-
-    - name: Reload LDAP administrator OAuth token from AWS Secrets Manager
-      ansible.builtin.command:
-        argv:
-          - aws
-          - secretsmanager
-          - get-secret-value
-          - --secret-id
-          - "{{ quay_ldap_oauth_token_secret_name }}"
-          - --region
-          - "{{ aws_region }}"
-          - --query
-          - SecretString
-          - --output
-          - text
-      register: quay_ldap_oauth_token_result
-      delegate_to: localhost
-      become: false
-      changed_when: false
-      failed_when: false
-      no_log: true
-      environment: "{{ aws_cli_environment }}"
-
-    - name: Normalize LDAP administrator OAuth token
-      ansible.builtin.set_fact:
-        quay_ldap_oauth_token: >-
-          {{
-            quay_ldap_oauth_token_result.stdout
-            | default('')
-            | trim
-          }}
-      no_log: true
-
-    - name: Validate LDAP administrator OAuth token
-      ansible.builtin.uri:
-        url: "https://127.0.0.1:{{ quay_https_port }}/api/v1/user/"
-        method: GET
-        validate_certs: false
-        headers:
-          Authorization: "Bearer {{ quay_ldap_oauth_token }}"
-        status_code:
-          - 200
-          - 401
-        return_content: true
-      register: quay_ldap_oauth_identity
-      changed_when: false
-      no_log: true
-      when: quay_ldap_oauth_token | length > 0
-
-    - name: Require a valid LDAP administrator OAuth token for team syncing
-      ansible.builtin.assert:
-        that:
-          - quay_ldap_oauth_token | length > 0
-          - quay_ldap_oauth_identity is defined
-          - quay_ldap_oauth_identity.status | default(401) == 200
-          - >-
-            quay_ldap_oauth_identity.json.username
-            | default('') in quay_admin_users
-        fail_msg: >-
-          The secret {{ quay_ldap_oauth_token_secret_name }} does not contain
-          a valid OAuth management token for one of the LDAP Quay
-          administrators. Quay 3.13 requires this OAuth token to be generated
-          once through the Quay UI with Administer Organization, Administer
-          Repositories, Administer User, Read User Information, and, when
-          required, Super User Access. Registry authentication through
-          /v2/auth cannot create or replace this management token.
-      no_log: true
 
     - name: Enable LDAP synchronization for Quay teams
       ansible.builtin.uri:
@@ -1768,7 +1660,7 @@
         method: POST
         validate_certs: false
         headers:
-          Authorization: "Bearer {{ quay_ldap_oauth_token }}"
+          Authorization: "Bearer {{ quay_api_token }}"
         body_format: json
         body:
           group_dn: "{{ item.group_dn }}"
@@ -1777,7 +1669,6 @@
           - 201
           - 204
           - 400
-        return_content: true
       loop: "{{ quay_team_syncs }}"
       register: quay_enable_team_sync
       no_log: true
@@ -1797,7 +1688,7 @@
         method: GET
         validate_certs: false
         headers:
-          Authorization: "Bearer {{ quay_ldap_oauth_token }}"
+          Authorization: "Bearer {{ quay_api_token }}"
           Accept: application/json
         status_code: 200
         return_content: true
@@ -1827,7 +1718,6 @@
         msg:
           - "Quay URL: https://{{ quay_hostname }}"
           - "Authentication: IdM LDAP"
-          - "Validated LDAP administrator: {{ quay_ldap_admin_username }}"
           - "Organization: {{ quay_default_org }}"
           - >-
             Existing/default repository:
