@@ -550,15 +550,14 @@
           playbook so a POSIX group can own the Composer Unix sockets.
       when: image_mode_manage_idm_access_group | bool
 
-    - name: Read current IdM Image Builder access group
+    - name: Read current IdM Image Builder access group membership
       ansible.builtin.command:
         argv:
           - ipa
           - group-show
           - "{{ image_builder_access_group }}"
           - --all
-          - --raw
-      register: image_builder_access_group_details
+      register: image_builder_access_group_membership
       changed_when: false
 
     - name: Determine whether ipausers is already nested
@@ -566,11 +565,11 @@
         idm_all_users_group_is_nested: >-
           {{
             (
-              'member_group: ' ~ idm_all_users_group
+              'Member groups: ' ~ idm_all_users_group
             )
             in
             (
-              image_builder_access_group_details.stdout
+              image_builder_access_group_membership.stdout
               | default('')
             )
           }}
@@ -590,7 +589,22 @@
           'Number of members added 1'
           in image_builder_nested_group.stdout
         )
+      failed_when: >-
+        image_builder_nested_group.rc != 0
+        and
+        (
+          'This entry is already a member'
+          not in
+          (image_builder_nested_group.stdout | default(''))
+        )
       when: not idm_all_users_group_is_nested
+
+    - name: Report existing nested IdM group membership
+      ansible.builtin.debug:
+        msg: >-
+          {{ idm_all_users_group }} is already nested in
+          {{ image_builder_access_group }}. No change was required.
+      when: idm_all_users_group_is_nested
 
     - name: Destroy IdM administrator Kerberos ticket
       ansible.builtin.command:
