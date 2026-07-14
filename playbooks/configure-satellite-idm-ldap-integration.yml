@@ -1,0 +1,177 @@
+---
+- name: Install Disconnected Red Hat Satellite 6.19.1 via Local ISO Staging
+  hosts: satellite
+  become: true
+
+  vars:
+    # Satellite Architecture Settings
+    satellite_fqdn: "satellite.redhat.local"
+    organization_name: "Hackathon_Org"
+    location_name: "AWS_West_Region"
+
+    # ISO source: private S3 bucket, pulled directly onto the Satellite host
+    # via its EC2 instance role (same pattern as deploy-aap.yml). This avoids
+    # streaming the multi-GB ISO through the Ansible controller over SSH.
+    satellite_iso_s3_bucket: "satellite-installer"
+    satellite_iso_s3_key: "6.19/Satellite-6.19.1-rhel-9-x86_64.iso"
+    satellite_iso_dest: "/var/tmp/Satellite-6.19.1-rhel-9-x86_64.iso"
+    satellite_mount_path: "/var/mnt/satellite_iso"
+
+  pre_tasks:
+    - name: Validate required inventory variables
+      ansible.builtin.assert:
+        that:
+          - aws_region is defined
+          - aws_region | length > 0
+          - aws_profile is defined
+          - aws_profile | length > 0
+          - secret_prefix is defined
+          - secret_prefix | length > 0
+        fail_msg: "Missing required inventory variables (aws_region, aws_profile, secret_prefix)."
+
+    - name: Read Satellite admin username from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/satellite/admin_username"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: satellite_admin_username_result
+      changed_when: false
+      no_log: true
+
+    - name: Read Satellite admin password from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ secret_prefix }}/satellite/admin_password"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: satellite_admin_password_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Satellite admin credential facts
+      ansible.builtin.set_fact:
+        initial_admin_username: "{{ satellite_admin_username_result.stdout }}"
+        initial_admin_password: "{{ satellite_admin_password_result.stdout }}"
+      no_log: true
+
+  tasks:
+    - name: 1. Ensure hostname matches the FQDN required by Satellite
+      ansible.builtin.hostname:
+        name: "{{ satellite_fqdn }}"
+
+    - name: 2. Configure /etc/hosts with absolute IP-to-FQDN mapping
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        block: |
+          10.20.1.154 satellite.redhat.local satellite
+          127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+        marker: "# {mark} ANSIBLE MANAGED HOSTS CONFIG"
+
+    - name: 2. Add explicit local hostname resolution helper to /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "10.20.1.154 {{ satellite_fqdn }} satellite"
+        state: present
+
+    - name: 3. Download the Satellite ISO from private S3 using the instance role
+      ansible.builtin.command: >
+        aws s3 cp
+        s3://{{ satellite_iso_s3_bucket }}/{{ satellite_iso_s3_key }}
+        {{ satellite_iso_dest }}
+        --region {{ aws_region }}
+      args:
+        creates: "{{ satellite_iso_dest }}"
+      changed_when: true
+
+    - name: 3.5. Ensure downloaded ISO permissions
+      ansible.builtin.file:
+        path: "{{ satellite_iso_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: 3.9. Safety - Ensure any stale ISO mount is cleared before directory check
+      ansible.posix.mount:
+        path: "{{ satellite_mount_path }}"
+        state: unmounted
+
+    - name: 4. Create a mount point directory within the writable storage tier
+      ansible.builtin.file:
+        path: "{{ satellite_mount_path }}"
+        state: directory
+        mode: '0755' # This will now succeed because it's under /var
+
+    - name: 5. Mount the Satellite 6.19.1 ISO via loopback
+      ansible.posix.mount:
+        path: "{{ satellite_mount_path }}"
+        src: "{{ satellite_iso_dest }}"
+        fstype: iso9660
+        opts: loop,ro
+        state: mounted
+
+    - name: 6. Inject static local offline repository definition targeting the ISO mount subdirectory
+      ansible.builtin.yum_repository:
+        name: "local-satellite-iso-media"
+        description: "Satellite 6.19.1 Installer ISO Media"
+        baseurl: "file://{{ satellite_mount_path }}/Satellite"
+        enabled: true
+        gpgcheck: false
+
+    - name: 7. Inject static local offline repository definition targeting the ISO mount subdirectory
+      ansible.builtin.yum_repository:
+        name: "local-satellite-iso-media"
+        description: "Satellite 6.19.1 Installer ISO Media"
+        # Adjust "/Satellite" below based on your 'ls' output of the mounted disk
+        baseurl: "file://{{ satellite_mount_path }}/Satellite"
+        enabled: true
+        gpgcheck: false
+
+    - name: 8. Synchronize local package storage metadata
+      ansible.builtin.dnf:
+        update_cache: true
+
+    - name: 9. Execute the Unattended Disconnected Satellite Installer Core
+      ansible.builtin.command: >
+        satellite-installer --scenario satellite
+        --foreman-initial-admin-username={{ initial_admin_username }}
+        --foreman-initial-admin-password={{ initial_admin_password }}
+        --certs-node-fqdn={{ satellite_fqdn }}
+        --foreman-initial-organization={{ organization_name | quote }}
+        --foreman-initial-location={{ location_name | quote }}
+      async: 1800
+      poll: 30
+      register: satellite_installer_output
+      no_log: true  # command line embeds the admin password
+
+    - name: 10. Print the deployment finalization parameters
+      ansible.builtin.debug:
+        msg:
+          - "🚀 Local Staged ISO Satellite 6.19.1 Installation Complete!"
+          - "URL: https://{{ satellite_fqdn }}"
+          - "Username: {{ initial_admin_username }}"
+          - "Password: (stored in AWS Secrets Manager at {{ secret_prefix }}/satellite/admin_password)"
