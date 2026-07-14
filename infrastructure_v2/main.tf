@@ -814,7 +814,16 @@ resource "aws_instance" "server" {
 
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
-  iam_instance_profile = each.value.role == "aap" ? aws_iam_instance_profile.aap.name : null
+  
+  iam_instance_profile = (
+    each.value.role == "aap"
+    ? aws_iam_instance_profile.aap.name
+    : (
+      each.value.role == "satellite"
+      ? aws_iam_instance_profile.satellite.name
+      : null
+    )
+  )
 
   root_block_device {
 
