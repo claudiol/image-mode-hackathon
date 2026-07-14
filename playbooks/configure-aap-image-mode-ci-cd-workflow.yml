@@ -77,6 +77,11 @@
     quay_registry_ldap_username: image-mode-builder
     quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
 
+    idm_admin_username_secret_name: admin
+
+    idm_admin_password_secret_name: >-
+      {{ secret_prefix }}/idm/admin_password
+
     resolved_lab_ssh_private_key_secret_name: >-
       {{
         lab_ssh_private_key_secret_name
@@ -479,6 +484,67 @@
           {{ aap_gateway_username_secret_name }} and
           {{ aap_gateway_password_secret_name }}.
       no_log: true
+
+    ###########################################################################
+    # Read IdM administrator credentials
+    ###########################################################################
+
+    - name: Read IdM administrator password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ idm_admin_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: idm_admin_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set IdM administrator credential variables
+      ansible.builtin.set_fact:
+        resolved_idm_admin_username: "admin"
+
+        idm_admin_username: "admin"
+
+        idm_admin_password: >-
+          {{
+            idm_admin_password_secret_result.stdout
+            | string
+            | trim
+          }}
+
+        ipaadmin_principal: "admin"
+
+        ipaadmin_password: >-
+          {{
+            idm_admin_password_secret_result.stdout
+            | string
+            | trim
+          }}
+      no_log: true
+
+    - name: Validate IdM administrator credentials
+      ansible.builtin.assert:
+        that:
+          - idm_admin_username | string | trim | length > 0
+          - idm_admin_password | string | trim | length > 0
+          - idm_admin_username == "admin"
+          - idm_admin_password != "None"
+        fail_msg: >-
+          The IdM administrator password could not be retrieved from AWS
+          Secrets Manager secret
+          '{{ idm_admin_password_secret_name }}'.
+      no_log: true
+
 
     ###########################################################################
     # Read dedicated Quay LDAP registry credentials
