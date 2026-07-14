@@ -550,28 +550,47 @@
           playbook so a POSIX group can own the Composer Unix sockets.
       when: image_mode_manage_idm_access_group | bool
 
-    - name: Ensure ipausers is a member group of Image Builder access group
+    - name: Read current IdM Image Builder access group
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-show
+          - "{{ image_builder_access_group }}"
+          - --all
+          - --raw
+      register: image_builder_access_group_details
+      changed_when: false
+
+    - name: Determine whether ipausers is already nested
+      ansible.builtin.set_fact:
+        idm_all_users_group_is_nested: >-
+          {{
+            (
+              'member_group: ' ~ idm_all_users_group
+            )
+            in
+            (
+              image_builder_access_group_details.stdout
+              | default('')
+            )
+          }}
+
+    - name: Add IdM all-users group as a nested member
       ansible.builtin.command:
         argv:
           - ipa
           - group-add-member
-          - "{{ resolved_image_builder_access_group }}"
-          - "--groups=ipausers"
-      register: image_builder_group_membership
+          - "{{ image_builder_access_group }}"
+          - "--groups={{ idm_all_users_group }}"
+      register: image_builder_nested_group
       changed_when: >-
-        image_builder_group_membership.rc == 0
+        image_builder_nested_group.rc == 0
         and
         (
           'Number of members added 1'
-          in image_builder_group_membership.stdout
+          in image_builder_nested_group.stdout
         )
-      failed_when: >-
-        image_builder_group_membership.rc != 0
-        and
-        (
-          'This entry is already a member'
-          not in image_builder_group_membership.stdout
-        )
+      when: not idm_all_users_group_is_nested
 
     - name: Destroy IdM administrator Kerberos ticket
       ansible.builtin.command:
