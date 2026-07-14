@@ -985,8 +985,8 @@ resource "terraform_data" "bootstrap_lab" {
       REPO_DIR="${abspath(path.module)}/image-mode-hackathon"
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
-      REPO_URL="https://github.com/claudiol/image-mode-hackathon.git"
-      BRANCH="dev"
+      REPO_URL="https://github.com/rh-cpranava/image-mode-hackathon.git"
+      BRANCH="feature/satellite-idm-integration-branch"
 
       echo "Using inventory: $INVENTORY_FILE"
 

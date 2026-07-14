@@ -88,6 +88,8 @@ id_rsa.pub
 # Ansible
 ############################################################
 .ansible
+inventory.ini
+ansible.cfg
 
 ############################################################
 # image-mode-hackaton git repo 

@@ -2,3 +2,5 @@ collections:
   - name: amazon.aws
   - name: redhat.satellite
   - name: ansible.posix
+  - name: ansible.controller
+  - name: infra.aap_configuration
