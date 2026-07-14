@@ -483,7 +483,7 @@
       when:
         - quay_registry_ldap_secret_needs_creation | bool
         - quay_registry_ldap_secret_create.rc != 0
-      no_log: false
+      no_log: true
       environment: >-
         {{
           {'AWS_PROFILE': aws_profile}
