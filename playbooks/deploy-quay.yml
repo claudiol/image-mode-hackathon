@@ -437,34 +437,43 @@
           - secretsmanager
           - create-secret
           - --name
-          - "{{ quay_registry_ldap_secret_name }}"
+          - "{{ quay_registry_ldap_secret_name | trim }}"
           - --description
-          - >-
-            IdM LDAP credentials for the Image Mode Quay registry user
+          - "IdM LDAP credentials for the Image Mode Quay registry user"
           - --secret-string
           - "{{ quay_registry_ldap_credentials | to_json }}"
           - --region
-          - "{{ aws_region }}"
+          - "{{ aws_region | trim }}"
       delegate_to: localhost
       become: false
       register: quay_registry_ldap_secret_create
       changed_when: quay_registry_ldap_secret_create.rc == 0
-      failed_when: >
-        quay_registry_ldap_secret_create.rc != 0
+      failed_when: >-
+
+        (
+          quay_registry_ldap_secret_create.rc != 0
+        )
         and
-        'ResourceExistsException' not in
-        quay_registry_ldap_secret_create.stderr | default('')
+        (
+          'ResourceExistsException'
+          not in
+          (
+            quay_registry_ldap_secret_create.stderr
+            | default('')
+          )
+        )
       when: quay_registry_ldap_secret_needs_creation | bool
-      no_log: false
+      no_log: true
       environment: >-
         {{
-          {'AWS_PROFILE': aws_profile}
+          {'AWS_PROFILE': aws_profile | trim}
           if (
             aws_profile is defined
-            and aws_profile | string | length > 0
+            and aws_profile | string | trim | length > 0
           )
           else {}
         }}
+
 
     - name: Store generated credentials when AWS secret appeared concurrently
       ansible.builtin.command:
