@@ -544,6 +544,86 @@ resource "aws_iam_role_policy" "aap_s3_read" {
 }
 
 ############################################################
+# Satellite IAM Role For Reading Installation ISO From S3
+############################################################
+
+resource "aws_iam_role" "satellite" {
+  name = "${var.environment_name}-satellite-role"
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.environment_name}-satellite-role"
+    Environment = var.environment_name
+  }
+}
+
+resource "aws_iam_role_policy" "satellite_iso_s3_read" {
+  name = "${var.environment_name}-satellite-iso-s3-read"
+  role = aws_iam_role.satellite.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadSatelliteInstallerISO"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = [
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+        ]
+      },
+      {
+        Sid    = "ReadSatelliteInstallerBucketMetadata"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketLocation"
+        ]
+
+        Resource = [
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "satellite" {
+  name = "${var.environment_name}-satellite-instance-profile"
+  role = aws_iam_role.satellite.name
+
+  depends_on = [
+    aws_iam_role.satellite,
+    aws_iam_role_policy.satellite_iso_s3_read
+  ]
+}
+
+
+############################################################
 # Networking
 ############################################################
 
