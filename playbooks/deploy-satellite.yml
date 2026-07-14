@@ -1,22 +1,719 @@
 ---
-- name: Deploy Red Hat IdM Server
-  ansible.builtin.import_playbook: deploy-idm.yml
+###############################################################################
+# Install Red Hat Satellite 6.19.x from an ISO stored in Amazon S3
+#
+# Expected inventory variables:
+#
+#   aws_region
+#   secret_prefix
+#   satellite_iso_s3_bucket
+#   satellite_iso_s3_key
+#   satellite_iso_sha256
+#   satellite_initial_admin_username
+#   satellite_organization_name
+#   satellite_location_name
+#
+# Expected AWS Secrets Manager secret:
+#
+#   <secret_prefix>/satellite/admin_password
+#
+# The Satellite EC2 instance requires an IAM instance profile with:
+#
+#   s3:GetObject
+#
+# for:
+#
+#   s3://<satellite_iso_s3_bucket>/<satellite_iso_s3_key>
+###############################################################################
 
-- name: Enroll hosts into IdM
-  ansible.builtin.import_playbook: enroll-idm-clients.yml
+- name: Install disconnected Red Hat Satellite from S3 ISO
+  hosts: satellite
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
 
-- name: Deploy Ansible Automation Platform
-  ansible.builtin.import_playbook: deploy-aap.yml
+  vars:
+    ###########################################################################
+    # Satellite identity
+    ###########################################################################
 
-- name: Configure Ansible Automation Platform For SSO
-  ansible.builtin.import_playbook: configure-aap-idm-sso.yml
+    satellite_fqdn: "{{ inventory_hostname }}"
+    satellite_short_name: "{{ inventory_hostname.split('.')[0] }}"
 
-- name: Deploy Quay
-  ansible.builtin.import_playbook: deploy-quay.yml
+    satellite_admin_username: >-
+      {{
+        satellite_initial_admin_username
+        | default('admin')
+      }}
 
-- name: Configure Ansible Automation Platform For Image Mode Lab
-  ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
+    satellite_organization: >-
+      {{
+        satellite_organization_name
+        | default('Hackathon_Org')
+      }}
 
-# - name: Deploy Satellite
-#   ansible.builtin.import_playbook: deploy-satellite.yml
+    satellite_location: >-
+      {{
+        satellite_location_name
+        | default('AWS_Region')
+      }}
 
+    ###########################################################################
+    # AWS configuration
+    ###########################################################################
+
+    satellite_aws_region: >-
+      {{
+        aws_region
+        | default('us-east-2')
+      }}
+
+    satellite_secret_prefix: >-
+      {{
+        secret_prefix
+        | default('image-mode-lab')
+      }}
+
+    satellite_admin_password_secret_name: >-
+      {{ satellite_secret_prefix }}/satellite/admin_password
+
+    ###########################################################################
+    # Satellite ISO
+    ###########################################################################
+
+    satellite_iso_bucket: >-
+      {{
+        satellite_iso_s3_bucket
+        | default('aap-containerized-installers')
+      }}
+
+    satellite_iso_key: >-
+      {{
+        satellite_iso_s3_key
+        | default('Satellite-6.19.2-rhel-9-x86_64.dvd.iso')
+      }}
+
+    satellite_iso_s3_uri: >-
+      s3://{{ satellite_iso_bucket }}/{{ satellite_iso_key }}
+
+    satellite_iso_filename: "{{ satellite_iso_key | basename }}"
+    satellite_iso_dest: "/var/tmp/{{ satellite_iso_filename }}"
+    satellite_mount_path: "/var/mnt/satellite_iso"
+
+    # Leave blank to skip checksum validation.
+    expected_satellite_iso_sha256: >-
+      {{
+        satellite_iso_sha256
+        | default('')
+        | trim
+      }}
+
+    ###########################################################################
+    # Logs and installer markers
+    ###########################################################################
+
+    satellite_package_install_log: "/var/log/satellite-iso-install-packages.log"
+    satellite_installer_log: "/var/log/foreman-installer/satellite.log"
+    satellite_installer_rc_file: "/var/tmp/satellite-installer.rc"
+    satellite_install_complete_marker: "/etc/foreman-installer/scenarios.d/satellite-answers.yaml"
+
+    ###########################################################################
+    # Packages
+    ###########################################################################
+
+    satellite_bootstrap_packages:
+      - awscli2
+      - firewalld
+      - chrony
+      - tar
+      - gzip
+      - xz
+      - rsync
+      - bind-utils
+      - sos
+      - tmux
+
+    ###########################################################################
+    # Host firewall
+    #
+    # TCP 80 and 443 are externally reachable through the AWS security group.
+    # The remaining ports are principally for internal Satellite services and
+    # managed hosts inside the VPC.
+    ###########################################################################
+
+    satellite_firewall_tcp_ports:
+      - "80"
+      - "443"
+      - "5646"
+      - "5647"
+      - "8000"
+      - "9090"
+
+  pre_tasks:
+    ###########################################################################
+    # Validate required inventory data
+    ###########################################################################
+
+    - name: Validate required Satellite deployment variables
+      ansible.builtin.assert:
+        that:
+          - satellite_fqdn | length > 0
+          - satellite_fqdn is match('^[A-Za-z0-9][A-Za-z0-9.-]+$')
+          - satellite_iso_bucket | length > 0
+          - satellite_iso_key | length > 0
+          - satellite_admin_username | length > 0
+          - satellite_organization | length > 0
+          - satellite_location | length > 0
+          - satellite_secret_prefix | length > 0
+          - satellite_aws_region | length > 0
+        fail_msg: >-
+          One or more required Satellite variables are missing or invalid.
+          Verify the Terraform-generated [all:vars] inventory values.
+
+    - name: Verify target operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == "RedHat"
+          - ansible_facts.distribution_major_version == "9"
+        fail_msg: >-
+          This Satellite ISO deployment requires Red Hat Enterprise Linux 9.
+          Detected {{ ansible_facts.distribution }}
+          {{ ansible_facts.distribution_version }}.
+
+    ###########################################################################
+    # Read Satellite administrator password from AWS Secrets Manager
+    #
+    # This runs on the Terraform/Ansible controller. It therefore uses the
+    # controller's AWS profile instead of requiring the Satellite EC2 instance
+    # to read Secrets Manager.
+    ###########################################################################
+
+    - name: Read Satellite administrator password from AWS Secrets Manager
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'secretsmanager',
+              'get-secret-value',
+              '--secret-id',
+              satellite_admin_password_secret_name,
+              '--region',
+              satellite_aws_region,
+              '--query',
+              'SecretString',
+              '--output',
+              'text'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: satellite_admin_password_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Satellite administrator password fact
+      ansible.builtin.set_fact:
+        satellite_admin_password: >-
+          {{
+            satellite_admin_password_result.stdout
+            | trim
+          }}
+      no_log: true
+
+    - name: Validate retrieved Satellite administrator password
+      ansible.builtin.assert:
+        that:
+          - satellite_admin_password | length >= 16
+        fail_msg: >-
+          The Satellite administrator password could not be retrieved from
+          {{ satellite_admin_password_secret_name }}.
+      no_log: true
+
+  tasks:
+    ###########################################################################
+    # PHASE 1 | Host preparation
+    ###########################################################################
+
+    - name: PHASE 1 | Configure Satellite hostname
+      block:
+        - name: Set persistent Satellite hostname
+          ansible.builtin.hostname:
+            name: "{{ satellite_fqdn }}"
+
+        - name: Ensure cloud-init preserves the configured hostname
+          ansible.builtin.copy:
+            dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              preserve_hostname: true
+
+        - name: Determine Satellite private IPv4 address
+          ansible.builtin.set_fact:
+            satellite_private_ip: >-
+              {{
+                private_ip
+                | default(ansible_default_ipv4.address)
+              }}
+
+        - name: Validate Satellite private IPv4 address
+          ansible.builtin.assert:
+            that:
+              - >-
+                satellite_private_ip
+                is match(
+                  '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
+                )
+            fail_msg: >-
+              No valid Satellite private IP was found in private_ip or
+              ansible_default_ipv4.address.
+
+        - name: Configure deterministic local hostname resolution
+          ansible.builtin.blockinfile:
+            path: /etc/hosts
+            create: true
+            owner: root
+            group: root
+            mode: "0644"
+            marker: "# {mark} ANSIBLE MANAGED SATELLITE HOST"
+            block: |
+              {{ satellite_private_ip }} {{ satellite_fqdn }} {{ satellite_short_name }}
+
+        - name: Verify Satellite FQDN resolves locally
+          ansible.builtin.command:
+            argv:
+              - getent
+              - ahostsv4
+              - "{{ satellite_fqdn }}"
+          register: satellite_hostname_resolution
+          changed_when: false
+
+        - name: Verify the resolved address includes the private IP
+          ansible.builtin.assert:
+            that:
+              - satellite_private_ip in satellite_hostname_resolution.stdout
+            fail_msg: >-
+              {{ satellite_fqdn }} does not resolve to
+              {{ satellite_private_ip }} on the Satellite host.
+
+    ###########################################################################
+    # PHASE 2 | Base packages and services
+    ###########################################################################
+
+    - name: PHASE 2 | Install bootstrap packages
+      ansible.builtin.dnf:
+        name: "{{ satellite_bootstrap_packages }}"
+        state: present
+        update_cache: true
+
+    - name: PHASE 2 | Enable time synchronization
+      ansible.builtin.service:
+        name: chronyd
+        state: started
+        enabled: true
+
+    - name: PHASE 2 | Start and enable firewalld
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: PHASE 2 | Open Satellite TCP ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ satellite_firewall_tcp_ports }}"
+
+    ###########################################################################
+    # PHASE 3 | Verify EC2 IAM/S3 access
+    ###########################################################################
+
+    - name: PHASE 3 | Verify caller identity from Satellite EC2 instance role
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+          - "--region"
+          - "{{ satellite_aws_region }}"
+          - "--output"
+          - json
+      register: satellite_aws_identity
+      changed_when: false
+
+    - name: PHASE 3 | Verify Satellite ISO exists in S3
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3api
+          - head-object
+          - "--bucket"
+          - "{{ satellite_iso_bucket }}"
+          - "--key"
+          - "{{ satellite_iso_key }}"
+          - "--region"
+          - "{{ satellite_aws_region }}"
+      register: satellite_iso_head
+      changed_when: false
+
+    ###########################################################################
+    # PHASE 4 | Download Satellite ISO
+    ###########################################################################
+
+    - name: PHASE 4 | Check for previously downloaded Satellite ISO
+      ansible.builtin.stat:
+        path: "{{ satellite_iso_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: >-
+          {{
+            expected_satellite_iso_sha256
+            | length > 0
+          }}
+      register: existing_satellite_iso
+
+    - name: PHASE 4 | Determine whether Satellite ISO download is required
+      ansible.builtin.set_fact:
+        satellite_iso_download_required: >-
+          {{
+            not existing_satellite_iso.stat.exists
+            or
+            (
+              expected_satellite_iso_sha256 | length > 0
+              and
+              existing_satellite_iso.stat.checksum
+              | default('')
+              != expected_satellite_iso_sha256
+            )
+          }}
+
+    - name: PHASE 4 | Remove invalid or incomplete Satellite ISO
+      ansible.builtin.file:
+        path: "{{ satellite_iso_dest }}"
+        state: absent
+      when: satellite_iso_download_required
+
+    - name: PHASE 4 | Download Satellite ISO from S3
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3
+          - cp
+          - "{{ satellite_iso_s3_uri }}"
+          - "{{ satellite_iso_dest }}"
+          - "--region"
+          - "{{ satellite_aws_region }}"
+          - "--only-show-errors"
+      register: satellite_iso_download
+      changed_when: true
+      when: satellite_iso_download_required
+
+    - name: PHASE 4 | Set Satellite ISO permissions
+      ansible.builtin.file:
+        path: "{{ satellite_iso_dest }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: PHASE 4 | Calculate downloaded Satellite ISO checksum
+      ansible.builtin.stat:
+        path: "{{ satellite_iso_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: downloaded_satellite_iso
+
+    - name: PHASE 4 | Validate downloaded Satellite ISO checksum
+      ansible.builtin.assert:
+        that:
+          - >-
+            downloaded_satellite_iso.stat.checksum
+            == expected_satellite_iso_sha256
+        fail_msg: >-
+          Satellite ISO checksum verification failed. Expected
+          {{ expected_satellite_iso_sha256 }}, but downloaded
+          {{ downloaded_satellite_iso.stat.checksum }}.
+      when: expected_satellite_iso_sha256 | length > 0
+
+    ###########################################################################
+    # PHASE 5 | Mount Satellite ISO
+    ###########################################################################
+
+    - name: PHASE 5 | Create Satellite ISO mount point
+      ansible.builtin.file:
+        path: "{{ satellite_mount_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: PHASE 5 | Mount Satellite ISO
+      ansible.posix.mount:
+        path: "{{ satellite_mount_path }}"
+        src: "{{ satellite_iso_dest }}"
+        fstype: iso9660
+        opts: loop,ro
+        state: mounted
+
+    - name: PHASE 5 | Verify mounted Satellite ISO
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - "--target"
+          - "{{ satellite_mount_path }}"
+          - "--noheadings"
+          - "--output"
+          - SOURCE,FSTYPE,TARGET
+      register: satellite_iso_findmnt
+      changed_when: false
+
+    - name: PHASE 5 | Verify Satellite package installer exists
+      ansible.builtin.stat:
+        path: "{{ satellite_mount_path }}/install_packages"
+      register: satellite_install_packages_script
+
+    - name: PHASE 5 | Fail when ISO does not contain install_packages
+      ansible.builtin.assert:
+        that:
+          - satellite_install_packages_script.stat.exists
+          - satellite_install_packages_script.stat.isreg
+        fail_msg: >-
+          {{ satellite_mount_path }}/install_packages was not found. Verify that
+          {{ satellite_iso_s3_uri }} is the Red Hat Satellite installation DVD
+          ISO and not a RHEL Binary DVD or another image.
+
+    ###########################################################################
+    # PHASE 6 | Install Satellite RPM packages
+    ###########################################################################
+
+    - name: PHASE 6 | Check whether Satellite packages are already installed
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - "--query"
+          - satellite
+      register: installed_satellite_package
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 6 | Install packages from mounted Satellite ISO
+      ansible.builtin.shell: |
+        set -o pipefail
+
+        ./install_packages \
+          2>&1 | tee "{{ satellite_package_install_log }}"
+      args:
+        chdir: "{{ satellite_mount_path }}"
+        executable: /bin/bash
+      register: satellite_package_install
+      changed_when: true
+      when: installed_satellite_package.rc != 0
+
+    - name: PHASE 6 | Verify Satellite package installation
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - "--query"
+          - satellite
+      register: verified_satellite_package
+      changed_when: false
+
+    - name: PHASE 6 | Verify satellite-installer command is available
+      ansible.builtin.command:
+        argv:
+          - satellite-installer
+          - "--version"
+      register: satellite_installer_version
+      changed_when: false
+
+    ###########################################################################
+    # PHASE 7 | Determine current installation state
+    ###########################################################################
+
+    - name: PHASE 7 | Check for existing Satellite installer answer file
+      ansible.builtin.stat:
+        path: "{{ satellite_install_complete_marker }}"
+      register: satellite_answer_file
+
+    - name: PHASE 7 | Check current Satellite HTTPS endpoint
+      ansible.builtin.uri:
+        url: "https://{{ satellite_fqdn }}/users/login"
+        method: GET
+        validate_certs: false
+        follow_redirects: all
+        status_code:
+          - 200
+          - 301
+          - 302
+          - 401
+          - 403
+          - 422
+          - 503
+        timeout: 30
+      register: existing_satellite_endpoint
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 7 | Determine whether Satellite installer must run
+      ansible.builtin.set_fact:
+        satellite_installer_required: >-
+          {{
+            not satellite_answer_file.stat.exists
+            or
+            existing_satellite_endpoint.status
+            | default(0)
+            not in [200, 301, 302, 401, 403, 422]
+          }}
+
+    ###########################################################################
+    # PHASE 8 | Configure Satellite
+    ###########################################################################
+
+    - name: PHASE 8 | Run Satellite installer
+      ansible.builtin.command:
+        argv:
+          - satellite-installer
+          - "--scenario"
+          - satellite
+          - "--foreman-initial-admin-username"
+          - "{{ satellite_admin_username }}"
+          - "--foreman-initial-admin-password"
+          - "{{ satellite_admin_password }}"
+          - "--foreman-initial-organization"
+          - "{{ satellite_organization }}"
+          - "--foreman-initial-location"
+          - "{{ satellite_location }}"
+      async: 7200
+      poll: 30
+      register: satellite_installer_output
+      changed_when: true
+      no_log: true
+      when: satellite_installer_required
+
+    - name: PHASE 8 | Verify Satellite installer answer file exists
+      ansible.builtin.stat:
+        path: "{{ satellite_install_complete_marker }}"
+      register: completed_satellite_answer_file
+
+    - name: PHASE 8 | Assert Satellite installer completed
+      ansible.builtin.assert:
+        that:
+          - completed_satellite_answer_file.stat.exists
+        fail_msg: >-
+          Satellite installation did not create
+          {{ satellite_install_complete_marker }}. Review
+          {{ satellite_installer_log }}.
+
+    ###########################################################################
+    # PHASE 9 | Validate Satellite services
+    ###########################################################################
+
+    - name: PHASE 9 | Wait for Satellite HTTPS service
+      ansible.builtin.uri:
+        url: "https://{{ satellite_fqdn }}/users/login"
+        method: GET
+        validate_certs: false
+        follow_redirects: all
+        status_code:
+          - 200
+          - 301
+          - 302
+          - 401
+          - 403
+          - 422
+        timeout: 60
+      register: satellite_https_health
+      retries: 40
+      delay: 30
+      until: >-
+        satellite_https_health.status
+        in [200, 301, 302, 401, 403, 422]
+      changed_when: false
+
+    - name: PHASE 9 | Check Satellite service status
+      ansible.builtin.command:
+        argv:
+          - satellite-maintain
+          - service
+          - status
+      register: satellite_service_status
+      changed_when: false
+
+    - name: PHASE 9 | Test Hammer authentication
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - ping
+      register: satellite_hammer_ping
+      changed_when: false
+      no_log: true
+
+    ###########################################################################
+    # PHASE 10 | Configure disconnected behavior
+    ###########################################################################
+
+    - name: PHASE 10 | Read subscription connection setting
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - settings
+          - info
+          - "--name"
+          - subscription_connection_enabled
+      register: satellite_subscription_connection_setting
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Disable upstream subscription connection
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - settings
+          - set
+          - "--name"
+          - subscription_connection_enabled
+          - "--value"
+          - "false"
+      register: disable_satellite_subscription_connection
+      changed_when: true
+      no_log: true
+      when: >-
+        satellite_subscription_connection_setting.stdout
+        is not search('false', ignorecase=true)
+
+    ###########################################################################
+    # PHASE 11 | Final report
+    ###########################################################################
+
+    - name: PHASE 11 | Display Satellite deployment information
+      ansible.builtin.debug:
+        msg:
+          - "Red Hat Satellite installation completed."
+          - "Satellite URL: https://{{ satellite_fqdn }}"
+          - "Administrator username: {{ satellite_admin_username }}"
+          - "Organization: {{ satellite_organization }}"
+          - "Location: {{ satellite_location }}"
+          - "ISO source: {{ satellite_iso_s3_uri }}"
+          - "Package installation log: {{ satellite_package_install_log }}"
+          - "Satellite installer log: {{ satellite_installer_log }}"
+          - "The administrator password remains stored in AWS Secrets Manager."
