@@ -497,7 +497,7 @@
         stdin_add_newline: true
       changed_when: false
       when: image_mode_manage_idm_access_group | bool
-      no_log: false
+      no_log: true
 
     - name: Check whether the POSIX IdM Image Builder group exists
       ansible.builtin.command:
@@ -610,10 +610,31 @@
           resolve locally as a POSIX group through SSSD. Verify the IdM client
           and SSSD domain configuration on {{ inventory_hostname }}.
 
-    - name: Save resolved IdM Image Builder access group
+    - name: Save resolved IdM Image Builder access group details
       ansible.builtin.set_fact:
         resolved_image_builder_access_group: >-
-          {{ image_builder_access_group_lookup.stdout.split(':')[0] | trim }}
+          {{
+            image_builder_access_group_lookup.stdout
+            .split(':')[0]
+            | trim
+          }}
+        resolved_image_builder_access_gid: >-
+          {{
+            image_builder_access_group_lookup.stdout
+            .split(':')[2]
+            | trim
+          }}
+
+    - name: Validate resolved IdM Image Builder access GID
+      ansible.builtin.assert:
+        that:
+          - resolved_image_builder_access_group | length > 0
+          - resolved_image_builder_access_gid is match('^[0-9]+$')
+          - resolved_image_builder_access_gid | int > 0
+        fail_msg: >-
+          The IdM access group did not resolve with a usable numeric GID.
+          Group lookup output:
+          {{ image_builder_access_group_lookup.stdout | default('empty') }}
 
     - name: Display automatic IdM Image Builder access configuration
       ansible.builtin.debug:
