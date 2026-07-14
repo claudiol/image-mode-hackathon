@@ -1017,6 +1017,22 @@ resource "local_file" "ansible_inventory" {
 
     lab_ssh_private_key_secret_name = local.lab_ssh_private_key_secret_name
 
+    satellite_iso_s3_bucket = var.satellite_iso_s3_bucket
+    satellite_iso_s3_key    = var.satellite_iso_s3_key
+    satellite_iso_sha256    = var.satellite_iso_sha256
+
+    satellite_initial_admin_username = (
+      var.satellite_initial_admin_username
+    )
+
+    satellite_organization_name = (
+      var.satellite_organization_name
+    )
+
+    satellite_location_name = (
+      var.satellite_location_name
+    )
+
     lab_users = var.lab_users
     idm_users = var.idm_users
 
