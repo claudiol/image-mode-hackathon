@@ -831,7 +831,7 @@
 
           IdM users authenticate through Cockpit. Every current and future IdM
           account receives Image Builder access through the nested
-          {{ idm_all_users_group }} -> {{ image_mode_group }} group mapping.
+          {{ idm_all_users_group }} -> {{ image_builder_access_group }} group mapping.
 
           ## Open firewall ports
 
@@ -1240,54 +1240,225 @@
 
     ###########################################################################
     # RHEL Image Builder
+    #
+    # Keep the package-supported local weldr group as the primary socket
+    # owner. Grant the IdM POSIX access group permission through a persistent
+    # filesystem ACL. This avoids systemd socket startup failures caused by
+    # using an SSSD-backed group in SocketGroup=.
     ###########################################################################
 
-    - name: Create osbuild-composer socket override directory
+    - name: Find existing osbuild-composer socket override files
+      ansible.builtin.find:
+        paths: /etc/systemd/system/osbuild-composer.socket.d
+        patterns:
+          - "*.conf"
+        file_type: file
+        recurse: false
+      register: osbuild_composer_socket_override_files
+      failed_when: false
+
+    - name: Remove unsupported osbuild-composer SocketGroup overrides
       ansible.builtin.file:
-        path: /etc/systemd/system/osbuild-composer.socket.d
-        state: directory
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ osbuild_composer_socket_override_files.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: removed_osbuild_composer_socket_overrides
+
+    - name: Remove known malformed osbuild-composer override paths
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/osbuild-composer.socket.d/10-idm-access.conf
+        - /etc/systemd/system/osbuild-composer.socket.d/10-idm-image-builder-access.conf
+        - /etc/systemd/system/osbuild-composer.socket.d/20-idm-image-builder-access.conf
+        - "/etc/systemd/system/osbuild-composer.socket.d/ 10-idm-image-builder-access.conf"
+
+    - name: Reload systemd after removing socket overrides
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Reset osbuild-composer failure state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - reset-failed
+          - osbuild-composer.socket
+          - osbuild-composer.service
+      changed_when: false
+      failed_when: false
+
+    - name: Start osbuild-composer socket with supported weldr ownership
+      block:
+        - name: Enable and start osbuild-composer socket
+          ansible.builtin.systemd_service:
+            name: osbuild-composer.socket
+            enabled: true
+            state: started
+            daemon_reload: true
+
+      rescue:
+        - name: Collect effective osbuild-composer socket unit
+          ansible.builtin.command:
+            argv:
+              - systemctl
+              - cat
+              - osbuild-composer.socket
+          register: failed_osbuild_composer_socket_unit
+          changed_when: false
+          failed_when: false
+
+        - name: Collect osbuild-composer socket status
+          ansible.builtin.command:
+            argv:
+              - systemctl
+              - status
+              - osbuild-composer.socket
+              - --no-pager
+              - --full
+          register: failed_osbuild_composer_socket_status
+          changed_when: false
+          failed_when: false
+
+        - name: Collect osbuild-composer socket journal
+          ansible.builtin.command:
+            argv:
+              - journalctl
+              - -xeu
+              - osbuild-composer.socket
+              - --no-pager
+          register: failed_osbuild_composer_socket_journal
+          changed_when: false
+          failed_when: false
+
+        - name: Report osbuild-composer socket startup failure
+          ansible.builtin.fail:
+            msg: |
+              Failed to start osbuild-composer.socket after removing all
+              custom SocketGroup overrides.
+
+              Effective unit:
+              {{ failed_osbuild_composer_socket_unit.stdout | default('unavailable') }}
+
+              Status:
+              {{ failed_osbuild_composer_socket_status.stdout | default('unavailable') }}
+
+              Journal:
+              {{ failed_osbuild_composer_socket_journal.stdout | default('unavailable') }}
+
+    - name: Wait for osbuild-composer API sockets
+      ansible.builtin.wait_for:
+        path: "{{ item }}"
+        state: present
+        timeout: 120
+      loop:
+        - /run/weldr/api.socket
+        - /run/cloudapi/api.socket
+
+    - name: Inspect osbuild-composer API sockets before applying ACLs
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /run/weldr/api.socket
+        - /run/cloudapi/api.socket
+      register: osbuild_composer_socket_stats
+
+    - name: Assert osbuild-composer sockets use the supported weldr group
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.issock
+          - item.stat.gr_name == 'weldr'
+        fail_msg: >-
+          {{ item.stat.path | default(item.item) }} is missing, is not a Unix
+          socket, or does not belong to the package-supported weldr group.
+          Socket details: {{ item.stat | default({}) }}
+      loop: "{{ osbuild_composer_socket_stats.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Apply IdM group ACL to current osbuild-composer sockets
+      ansible.posix.acl:
+        path: "{{ item }}"
+        entity: "{{ resolved_image_builder_access_gid }}"
+        etype: group
+        permissions: rw
+        state: present
+      loop:
+        - /run/weldr/api.socket
+        - /run/cloudapi/api.socket
+
+    - name: Install osbuild-composer IdM ACL helper
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/osbuild-composer-apply-idm-acl
         owner: root
         group: root
         mode: "0755"
+        content: |
+          #!/usr/bin/env bash
 
-    - name: Grant osbuild-composer socket access to all IdM users
+          set -Eeuo pipefail
+
+          IDM_GROUP_GID="{{ resolved_image_builder_access_gid }}"
+
+          SOCKETS=(
+              /run/weldr/api.socket
+              /run/cloudapi/api.socket
+          )
+
+          for socket_path in "${SOCKETS[@]}"; do
+              for attempt in $(seq 1 40); do
+                  if [[ -S "${socket_path}" ]]; then
+                      /usr/bin/setfacl \
+                          -m "g:${IDM_GROUP_GID}:rw" \
+                          "${socket_path}"
+                      break
+                  fi
+
+                  sleep 0.25
+              done
+
+              if [[ ! -S "${socket_path}" ]]; then
+                  echo \
+                      "ERROR: Composer socket was not created: ${socket_path}" \
+                      >&2
+                  exit 1
+              fi
+          done
+
+    - name: Install persistent osbuild-composer IdM ACL service
       ansible.builtin.copy:
-        dest: >-
-          /etc/systemd/system/osbuild-composer.socket.d/
-          10-idm-image-builder-access.conf
+        dest: /etc/systemd/system/osbuild-composer-idm-acl.service
         owner: root
         group: root
         mode: "0644"
         content: |
-          [Socket]
-          SocketGroup={{ resolved_image_builder_access_group }}
-          SocketMode=0660
-      register: osbuild_composer_socket_override
+          [Unit]
+          Description=Grant IdM users access to OSBuild Composer sockets
+          Requires=osbuild-composer.socket
+          After=sssd.service osbuild-composer.socket
+          PartOf=osbuild-composer.socket
 
-    - name: Stop osbuild-composer before recreating API sockets
-      ansible.builtin.systemd_service:
-        name: osbuild-composer.service
-        state: stopped
-      failed_when: false
-      when: osbuild_composer_socket_override.changed
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/osbuild-composer-apply-idm-acl
+          RemainAfterExit=yes
 
-    - name: Stop osbuild-composer socket before applying access group
-      ansible.builtin.systemd_service:
-        name: osbuild-composer.socket
-        state: stopped
-      when: osbuild_composer_socket_override.changed
+          [Install]
+          WantedBy=multi-user.target
+      register: osbuild_composer_idm_acl_unit
 
-    - name: Reload systemd after configuring Image Builder socket access
+    - name: Reload systemd for osbuild-composer IdM ACL service
       ansible.builtin.systemd_service:
         daemon_reload: true
-      when: osbuild_composer_socket_override.changed
 
-    - name: Enable and start osbuild-composer socket
+    - name: Enable and restart osbuild-composer IdM ACL service
       ansible.builtin.systemd_service:
-        name: osbuild-composer.socket
+        name: osbuild-composer-idm-acl.service
         enabled: true
-        state: started
-        daemon_reload: true
+        state: restarted
 
     - name: Start osbuild-composer through socket activation
       ansible.builtin.command:
@@ -1300,12 +1471,6 @@
       retries: 5
       delay: 3
       until: composer_activation_status.rc == 0
-
-    - name: Wait for osbuild-composer API socket
-      ansible.builtin.wait_for:
-        path: /run/weldr/api.socket
-        state: present
-        timeout: 120
 
     - name: Verify osbuild-composer socket state
       ansible.builtin.command:
@@ -1325,35 +1490,54 @@
       register: osbuild_composer_service_status
       changed_when: false
 
+    - name: Verify osbuild-composer IdM ACL service state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - osbuild-composer-idm-acl.service
+      register: osbuild_composer_acl_service_status
+      changed_when: false
+
+    - name: Read numeric ACLs from osbuild-composer sockets
+      ansible.builtin.command:
+        argv:
+          - getfacl
+          - --absolute-names
+          - --numeric
+          - "{{ item }}"
+      loop:
+        - /run/weldr/api.socket
+        - /run/cloudapi/api.socket
+      register: osbuild_composer_socket_acls
+      changed_when: false
+
+    - name: Assert IdM group ACL is present on Composer sockets
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              'group:'
+              ~ resolved_image_builder_access_gid
+              ~ ':rw-'
+            )
+            in item.stdout
+        fail_msg: |
+          The IdM access group ACL is missing from {{ item.item }}.
+
+          Expected:
+          group:{{ resolved_image_builder_access_gid }}:rw-
+
+          Effective ACL:
+          {{ item.stdout }}
+      loop: "{{ osbuild_composer_socket_acls.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     - name: Inspect weldr API socket
       ansible.builtin.stat:
         path: /run/weldr/api.socket
       register: weldr_api_socket
-
-    - name: Assert weldr API socket is usable
-      ansible.builtin.assert:
-        that:
-          - weldr_api_socket.stat.exists
-          - weldr_api_socket.stat.issock
-          - weldr_api_socket.stat.gr_name == resolved_image_builder_access_group
-        fail_msg: >-
-          The Image Builder API socket is missing, is not a Unix socket, or
-          does not belong to the {{ resolved_image_builder_access_group }} group.
-          Socket details: {{ weldr_api_socket.stat | default({}) }}
-
-    - name: Verify systemd socket override is active
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - show
-          - osbuild-composer.socket
-          - --property=SocketGroup
-          - --property=SocketMode
-      register: osbuild_composer_socket_properties
-      changed_when: false
-      failed_when: >-
-        resolved_image_builder_access_group not in
-        osbuild_composer_socket_properties.stdout
 
     - name: Verify RHEL Image Builder CLI as root
       ansible.builtin.command:
@@ -1376,6 +1560,18 @@
       changed_when: false
       failed_when: false
 
+    - name: Collect osbuild-composer ACL service status
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - status
+          - osbuild-composer-idm-acl.service
+          - --no-pager
+          - --full
+      register: osbuild_composer_acl_detailed_status
+      changed_when: false
+      failed_when: false
+
     - name: Collect recent osbuild-composer logs
       ansible.builtin.command:
         argv:
@@ -1384,6 +1580,8 @@
           - osbuild-composer.service
           - -u
           - osbuild-composer.socket
+          - -u
+          - osbuild-composer-idm-acl.service
           - --since
           - -10 minutes
           - --no-pager
@@ -1706,10 +1904,14 @@
           - >-
             Image Builder API socket:
             {{ weldr_api_socket.stat.path }}
-            (group={{ weldr_api_socket.stat.gr_name }})
+            (primary group={{ weldr_api_socket.stat.gr_name }},
+            IdM ACL group={{ resolved_image_builder_access_group }})
           - |-
             osbuild-composer status:
             {{ osbuild_composer_detailed_status.stdout }}
+          - |-
+            osbuild-composer IdM ACL status:
+            {{ osbuild_composer_acl_detailed_status.stdout }}
           - |-
             Installed tools:
             {{ image_mode_tool_versions.stdout }}
