@@ -782,26 +782,49 @@
       register: satellite_installer_scenarios
       changed_when: false
 
+    - name: PHASE 6 | Locate satellite-installer command
+      ansible.builtin.shell: |
+        command -v satellite-installer
+      args:
+        executable: /bin/bash
+      register: satellite_installer_command
+      changed_when: false
+
+    - name: PHASE 6 | List available Satellite installer scenarios
+      ansible.builtin.command:
+        argv:
+          - satellite-installer
+          - "--list-scenarios"
+      environment:
+        NO_COLOR: "1"
+        TERM: "dumb"
+      register: satellite_installer_scenarios
+      changed_when: false
+
     - name: PHASE 6 | Verify Satellite installer scenario is available
       ansible.builtin.assert:
         that:
+          - satellite_installer_command.rc == 0
           - satellite_installer_command.stdout | trim | length > 0
+          - satellite_installer_scenarios.rc == 0
           - >-
-            satellite_installer_scenarios.stdout
-            is search('(^|\\s)satellite(\\s|$)', multiline=true)
+            '--scenario satellite'
+            in
+            (
+              satellite_installer_scenarios.stdout
+              | lower
+            )
         fail_msg: |
-          satellite-installer is installed, but the Satellite scenario could
-          not be found.
+          Satellite installer validation failed.
 
           Command path:
-          {{ satellite_installer_command.stdout | default('not found') }}
+          {{ satellite_installer_command.stdout | default('not found') | trim }}
 
           Available scenarios:
           {{ satellite_installer_scenarios.stdout | default('none returned') }}
         success_msg: >-
-          satellite-installer is available at
-          {{ satellite_installer_command.stdout | trim }} and the satellite
-          scenario is installed.
+          Satellite RPMs, satellite-installer, and the Satellite scenario
+          are available.
 
     ###########################################################################
     # PHASE 7 | Determine current installation state
