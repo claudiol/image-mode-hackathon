@@ -577,7 +577,7 @@ resource "aws_iam_role" "satellite" {
 }
 
 resource "aws_iam_role_policy" "satellite_iso_s3_read" {
-  name = "${var.environment_name}-satellite-iso-s3-read"
+  name = "${var.environment_name}-satellite-installation-s3-read"
   role = aws_iam_role.satellite.id
 
   policy = jsonencode({
@@ -585,7 +585,7 @@ resource "aws_iam_role_policy" "satellite_iso_s3_read" {
 
     Statement = [
       {
-        Sid    = "ReadSatelliteInstallerISO"
+        Sid    = "ReadSatelliteInstallationArtifacts"
         Effect = "Allow"
 
         Action = [
@@ -593,20 +593,22 @@ resource "aws_iam_role_policy" "satellite_iso_s3_read" {
         ]
 
         Resource = [
-          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
         ]
       },
       {
-        Sid    = "ReadSatelliteInstallerBucketMetadata"
+        Sid    = "ReadSatelliteArtifactBucketMetadata"
         Effect = "Allow"
 
         Action = [
           "s3:GetBucketLocation"
         ]
 
-        Resource = [
-          "arn:aws:s3:::${var.satellite_iso_s3_bucket}"
-        ]
+        Resource = distinct([
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
       }
     ]
   })
