@@ -989,8 +989,8 @@
           - 200
           - 401
           - 403
-        connect_timeout: 10
         timeout: 30
+        return_content: false
       register: aap_gateway_health
       retries: 30
       delay: 20
