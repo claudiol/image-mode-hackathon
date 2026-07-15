@@ -298,7 +298,7 @@
           The Satellite administrator password could not be retrieved from
           {{ satellite_admin_password_secret_name }}.
       no_log: true
-      
+
     - name: Read IdM administrator password from AWS Secrets Manager
       ansible.builtin.command:
         argv: >-
@@ -849,6 +849,100 @@
       register: satellite_hammer_ping
       changed_when: false
       no_log: true
+
+    ###########################################################################
+    # PHASE 9B | Configure IdM LDAP authentication
+    ###########################################################################
+
+    - name: PHASE 9B | Enable outbound LDAP connections through SELinux
+      ansible.posix.seboolean:
+        name: nis_enabled
+        state: true
+        persistent: true
+
+    - name: PHASE 9B | Check for existing IdM LDAP authentication source
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - auth-source
+          - ldap
+          - list
+          - "--search"
+          - "name=\"{{ satellite_idm_auth_source_name }}\""
+      register: satellite_idm_auth_source_list
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9B | Determine whether IdM authentication source exists
+      ansible.builtin.set_fact:
+        satellite_idm_auth_source_exists: >-
+          {{
+            (
+              satellite_idm_auth_source_list.stdout
+              | default('[]')
+              | from_json
+              | length
+            ) > 0
+          }}
+
+    - name: PHASE 9B | Create IdM LDAP authentication source
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - auth-source
+          - ldap
+          - create
+          - "--name"
+          - "{{ satellite_idm_auth_source_name }}"
+          - "--host"
+          - "{{ satellite_idm_host }}"
+          - "--port"
+          - "636"
+          - "--tls"
+          - "true"
+          - "--server-type"
+          - "free_ipa"
+          - "--base-dn"
+          - "{{ satellite_idm_users_base_dn }}"
+          - "--groups-base"
+          - "{{ satellite_idm_groups_base_dn }}"
+          - "--account"
+          - "{{ satellite_idm_bind_dn }}"
+          - "--account-password"
+          - "{{ satellite_idm_bind_password }}"
+          - "--attr-login"
+          - "uid"
+          - "--attr-firstname"
+          - "givenName"
+          - "--attr-lastname"
+          - "sn"
+          - "--attr-mail"
+          - "mail"
+          - "--onthefly-register"
+          - "true"
+          - "--usergroup-sync"
+          - "true"
+          - "--ldap-group-membership"
+          - "posix"
+          - "--organizations"
+          - "{{ satellite_organization }}"
+          - "--locations"
+          - "{{ satellite_location }}"
+      register: satellite_idm_auth_source_create
+      changed_when: true
+      no_log: true
+      when: not satellite_idm_auth_source_exists
+
 
     ###########################################################################
     # PHASE 10 | Import Satellite subscription manifest
