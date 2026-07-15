@@ -195,6 +195,7 @@ locals {
 
   static_secret_values = {
     "aap/gateway_admin_username" = "admin"
+    "satellite/admin_username"   = "admin"
     "quay/superuser"             = "quayadmin"
     "quay/admin_access_token"    = "CHANGE_ME_AFTER_QUAY_DEPLOYMENT"
     "idm/default_user_password"  = var.idm_default_user_password
@@ -538,6 +539,27 @@ resource "aws_iam_role_policy" "aap_s3_read" {
           "arn:aws:s3:::aap-containerized-installers/2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz",
           "arn:aws:s3:::aap-containerized-installers/2.7/manifest_AAP.zip"
         ]
+      },
+      {
+        Sid    = "ListSatelliteInstallerBucket"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = [
+          "arn:aws:s3:::satellite-installer"
+        ]
+      },
+      {
+        Sid    = "ReadSatelliteInstallerBucket"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject"
+        ]
+        Resource = [
+          "arn:aws:s3:::satellite-installer/*"
+        ]
       }
     ]
   })
@@ -734,7 +756,10 @@ resource "aws_instance" "server" {
 
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
-  iam_instance_profile = each.value.role == "aap" ? aws_iam_instance_profile.aap.name : null
+  # The lab IAM role/profile (named for aap) is shared by hosts that need AWS
+  # access from the instance itself: aap reads Secrets Manager, and satellite
+  # pulls its installer ISO from the satellite-installer S3 bucket.
+  iam_instance_profile = contains(["aap", "satellite"], each.value.role) ? aws_iam_instance_profile.aap.name : null
 
   root_block_device {
 
