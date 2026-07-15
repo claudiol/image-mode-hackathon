@@ -59,6 +59,10 @@ output "ansible_inventory" {
     satellite_iso_s3_key    = var.satellite_iso_s3_key
     satellite_iso_sha256    = var.satellite_iso_sha256
 
+    satellite_manifest_s3_bucket = var.satellite_manifest_s3_bucket
+    satellite_manifest_s3_key    = var.satellite_manifest_s3_key
+    satellite_manifest_sha256    = var.satellite_manifest_sha256
+
     satellite_initial_admin_username = (
       var.satellite_initial_admin_username
     )
