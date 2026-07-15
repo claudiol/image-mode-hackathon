@@ -139,6 +139,33 @@
         | default('')
         | trim
       }}
+
+    ###########################################################################
+    # IdM LDAP integration
+    ###########################################################################
+
+    satellite_idm_auth_source_name: "Red Hat IdM"
+
+    satellite_idm_admin_group: "satellite-admins"
+
+    satellite_idm_host: "{{ idm_server_fqdn }}"
+
+    satellite_idm_base_dn: >-
+      {{
+        idm_domain_name.split('.')
+        | map('regex_replace', '^(.*)$', 'dc=\\1')
+        | join(',')
+      }}
+
+    satellite_idm_users_base_dn: >-
+      cn=users,cn=accounts,{{ satellite_idm_base_dn }}
+
+    satellite_idm_groups_base_dn: >-
+      cn=groups,cn=accounts,{{ satellite_idm_base_dn }}
+
+    satellite_idm_bind_dn: >-
+      uid=admin,cn=users,cn=accounts,{{ satellite_idm_base_dn }}
+
     ###########################################################################
     # Logs and installer markers
     ###########################################################################
@@ -271,6 +298,47 @@
           The Satellite administrator password could not be retrieved from
           {{ satellite_admin_password_secret_name }}.
       no_log: true
+      
+    - name: Read IdM administrator password from AWS Secrets Manager
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'secretsmanager',
+              'get-secret-value',
+              '--secret-id',
+              satellite_secret_prefix ~ '/idm/admin_password',
+              '--region',
+              satellite_aws_region,
+              '--query',
+              'SecretString',
+              '--output',
+              'text'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: satellite_idm_admin_password_result
+      changed_when: false
+      no_log: true
+
+    - name: Set IdM administrator password fact
+      ansible.builtin.set_fact:
+        satellite_idm_bind_password: >-
+          {{
+
+            satellite_idm_admin_password_result.stdout
+            | trim
+          }}
+      no_log: true
+
 
   tasks:
     ###########################################################################
