@@ -12,7 +12,10 @@
 #   satellite_initial_admin_username
 #   satellite_organization_name
 #   satellite_location_name
-#
+#   satellite_manifest_s3_bucket
+#   satellite_manifest_s3_key
+#   satellite_manifest_sha256
+
 # Expected AWS Secrets Manager secret:
 #
 #   <secret_prefix>/satellite/admin_password
@@ -166,9 +169,43 @@
           - satellite_location | length > 0
           - satellite_secret_prefix | length > 0
           - satellite_aws_region | length > 0
+          - satellite_manifest_bucket | length > 0
+          - satellite_manifest_key | length > 0
         fail_msg: >-
           One or more required Satellite variables are missing or invalid.
           Verify the Terraform-generated [all:vars] inventory values.
+
+
+        ###########################################################################
+        # Satellite subscription manifest
+        ###########################################################################
+
+        satellite_manifest_bucket: >-
+          {{
+            satellite_manifest_s3_bucket
+            | default(satellite_iso_bucket)
+          }}
+
+        satellite_manifest_key: >-
+          {{
+            satellite_manifest_s3_key
+            | default('manifest_Satellite.zip')
+          }}
+
+        satellite_manifest_s3_uri: >-
+          s3://{{ satellite_manifest_bucket }}/{{ satellite_manifest_key }}
+
+        satellite_manifest_filename: "{{ satellite_manifest_key | basename }}"
+        satellite_manifest_dest: "/var/tmp/{{ satellite_manifest_filename }}"
+
+        # Leave blank to skip checksum validation.
+        expected_satellite_manifest_sha256: >-
+          {{
+            satellite_manifest_sha256
+            | default('')
+            | trim
+          }}
+
 
     - name: Verify target operating system
       ansible.builtin.assert:
