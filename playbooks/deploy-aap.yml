@@ -977,10 +977,10 @@
             - aap_installer_result.finished | default(false) | bool
 
     ###########################################################################
-    # PHASE 11 | Validate gateway availability
+    # PHASE 11 | Wait for AAP Gateway
     ###########################################################################
 
-    - name: PHASE 11 | Wait for AAP Gateway
+    - name: PHASE 11 | Wait for AAP Gateway to become available
       ansible.builtin.uri:
         url: "https://{{ aap_fqdn }}/api/gateway/v1/status/"
         method: GET
@@ -994,10 +994,12 @@
       register: aap_gateway_health
       retries: 30
       delay: 20
-      until:
-        - aap_gateway_health.status in [200, 401, 403]
+      until: >-
+        aap_gateway_health.status
+        | default(0)
+        | int
+        in [200, 401, 403]
       changed_when: false
-      no_log: true
 
     ###########################################################################
     # PHASE 12 | Activate AAP manifest
