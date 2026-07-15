@@ -19,5 +19,3 @@
 
 - name: Configure Ansible Automation Platform For Image Mode Lab
   ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
-
-
