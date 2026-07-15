@@ -58,7 +58,10 @@
     satellite_location: >-
       {{
         satellite_location_name
-        | default('AWS_Region')
+        | default(
+            'AWS Region - '
+            ~ satellite_aws_region
+          )
       }}
 
     ###########################################################################
