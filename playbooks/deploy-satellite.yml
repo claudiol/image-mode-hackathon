@@ -637,13 +637,40 @@
     # PHASE 5 | Mount Satellite ISO
     ###########################################################################
 
-    - name: PHASE 5 | Create Satellite ISO mount point
+    ###########################################################################
+    # PHASE 5 | Mount Satellite ISO
+    ###########################################################################
+
+    - name: PHASE 5 | Check whether Satellite ISO mount point is mounted
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - "--mountpoint"
+          - "{{ satellite_mount_path }}"
+          - "--noheadings"
+          - "--output"
+          - SOURCE,FSTYPE,OPTIONS
+      register: satellite_existing_mount
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 5 | Determine current Satellite ISO mount state
+      ansible.builtin.set_fact:
+        satellite_iso_already_mounted: >-
+          {{
+            satellite_existing_mount.rc == 0
+            and
+            satellite_existing_mount.stdout | trim | length > 0
+          }}
+
+    - name: PHASE 5 | Create Satellite ISO mount point when not mounted
       ansible.builtin.file:
         path: "{{ satellite_mount_path }}"
         state: directory
         owner: root
         group: root
         mode: "0755"
+      when: not satellite_iso_already_mounted
 
     - name: PHASE 5 | Mount Satellite ISO
       ansible.posix.mount:
@@ -652,8 +679,9 @@
         fstype: iso9660
         opts: loop,ro
         state: mounted
+      register: satellite_iso_mount
 
-    - name: PHASE 5 | Verify mounted Satellite ISO
+    - name: PHASE 5 | Read mounted Satellite ISO details
       ansible.builtin.command:
         argv:
           - findmnt
@@ -661,9 +689,30 @@
           - "{{ satellite_mount_path }}"
           - "--noheadings"
           - "--output"
-          - SOURCE,FSTYPE,TARGET
+          - SOURCE,FSTYPE,OPTIONS,TARGET
       register: satellite_iso_findmnt
       changed_when: false
+
+    - name: PHASE 5 | Verify Satellite ISO is mounted read-only
+      ansible.builtin.assert:
+        that:
+          - satellite_iso_findmnt.rc == 0
+          - "'iso9660' in satellite_iso_findmnt.stdout"
+          - >-
+            satellite_iso_findmnt.stdout
+            is search('(^|[, (])ro([, )]|$)')
+          - satellite_mount_path in satellite_iso_findmnt.stdout
+        fail_msg: |
+          The Satellite ISO was not mounted as expected.
+
+          Expected source:
+            {{ satellite_iso_dest }}
+
+          Expected mount point:
+            {{ satellite_mount_path }}
+
+          Actual findmnt output:
+            {{ satellite_iso_findmnt.stdout | default('no output') }}
 
     - name: PHASE 5 | Verify Satellite package installer exists
       ansible.builtin.stat:
