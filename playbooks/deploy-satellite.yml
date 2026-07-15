@@ -808,11 +808,22 @@
           - satellite_installer_command.stdout | trim | length > 0
           - satellite_installer_scenarios.rc == 0
           - >-
-            '--scenario satellite'
-            in
             (
-              satellite_installer_scenarios.stdout
-              | lower
+              'satellite (installed)'
+              in
+              (
+                satellite_installer_scenarios.stdout
+                | lower
+              )
+            )
+            or
+            (
+              '--scenario satellite'
+              in
+              (
+                satellite_installer_scenarios.stdout
+                | lower
+              )
             )
         fail_msg: |
           Satellite installer validation failed.
@@ -823,8 +834,8 @@
           Available scenarios:
           {{ satellite_installer_scenarios.stdout | default('none returned') }}
         success_msg: >-
-          Satellite RPMs, satellite-installer, and the Satellite scenario
-          are available.
+          satellite-installer is available and the Satellite scenario is
+          present or already installed.
 
     ###########################################################################
     # PHASE 7 | Determine current installation state
