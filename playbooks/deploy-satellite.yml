@@ -99,11 +99,11 @@
     satellite_iso_s3_uri: >-
       s3://{{ satellite_iso_bucket }}/{{ satellite_iso_key }}
 
-    satellite_iso_filename: "{{ satellite_iso_key | basename }}"
-    satellite_iso_dest: "/var/tmp/{{ satellite_iso_filename }}"
+    satellite_iso_dest: >-
+      /var/tmp/{{ satellite_iso_key | basename }}
+
     satellite_mount_path: "/var/mnt/satellite_iso"
 
-    # Leave blank to skip checksum validation.
     expected_satellite_iso_sha256: >-
       {{
         satellite_iso_sha256
@@ -111,6 +111,34 @@
         | trim
       }}
 
+    ###########################################################################
+    # Satellite subscription manifest
+    ###########################################################################
+
+    satellite_manifest_bucket: >-
+      {{
+        satellite_manifest_s3_bucket
+        | default(satellite_iso_bucket)
+      }}
+
+    satellite_manifest_key: >-
+      {{
+        satellite_manifest_s3_key
+        | default('manifest_Satellite.zip')
+      }}
+
+    satellite_manifest_s3_uri: >-
+      s3://{{ satellite_manifest_bucket }}/{{ satellite_manifest_key }}
+
+    satellite_manifest_dest: >-
+      /var/tmp/{{ satellite_manifest_key | basename }}
+
+    expected_satellite_manifest_sha256: >-
+      {{
+        satellite_manifest_sha256
+        | default('')
+        | trim
+      }}
     ###########################################################################
     # Logs and installer markers
     ###########################################################################
@@ -154,6 +182,7 @@
       - "9090"
 
   pre_tasks:
+
     ###########################################################################
     # Validate required inventory data
     ###########################################################################
@@ -165,47 +194,16 @@
           - satellite_fqdn is match('^[A-Za-z0-9][A-Za-z0-9.-]+$')
           - satellite_iso_bucket | length > 0
           - satellite_iso_key | length > 0
+          - satellite_manifest_bucket | length > 0
+          - satellite_manifest_key | length > 0
           - satellite_admin_username | length > 0
           - satellite_organization | length > 0
           - satellite_location | length > 0
           - satellite_secret_prefix | length > 0
           - satellite_aws_region | length > 0
-          - satellite_manifest_bucket | length > 0
-          - satellite_manifest_key | length > 0
         fail_msg: >-
           One or more required Satellite variables are missing or invalid.
           Verify the Terraform-generated [all:vars] inventory values.
-
-
-        ###########################################################################
-        # Satellite subscription manifest
-        ###########################################################################
-
-        satellite_manifest_bucket: >-
-          {{
-            satellite_manifest_s3_bucket
-            | default(satellite_iso_bucket)
-          }}
-
-        satellite_manifest_key: >-
-          {{
-            satellite_manifest_s3_key
-            | default('manifest_Satellite.zip')
-          }}
-
-        satellite_manifest_s3_uri: >-
-          s3://{{ satellite_manifest_bucket }}/{{ satellite_manifest_key }}
-
-        satellite_manifest_filename: "{{ satellite_manifest_key | basename }}"
-        satellite_manifest_dest: "/var/tmp/{{ satellite_manifest_filename }}"
-
-        # Leave blank to skip checksum validation.
-        expected_satellite_manifest_sha256: >-
-          {{
-            satellite_manifest_sha256
-            | default('')
-            | trim
-          }}
 
 
     - name: Verify target operating system
