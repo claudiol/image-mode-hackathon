@@ -68,11 +68,19 @@
     redhat_registry_password_secret_name: >-
       {{ secret_prefix }}/redhat/registry_password
 
-    quay_superuser_secret_name: >-
-      {{ secret_prefix }}/quay/superuser
+    # quay_superuser_secret_name: >-
+    #   {{ secret_prefix }}/quay/superuser
 
-    quay_superuser_password_secret_name: >-
-      {{ secret_prefix }}/quay/superuser_password
+    # quay_superuser_password_secret_name: >-
+    #   {{ secret_prefix }}/quay/superuser_password
+
+    quay_registry_ldap_username: image-mode-builder
+    quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
+
+    idm_admin_username_secret_name: admin
+
+    idm_admin_password_secret_name: >-
+      {{ secret_prefix }}/idm/admin_password
 
     resolved_lab_ssh_private_key_secret_name: >-
       {{
@@ -478,17 +486,17 @@
       no_log: true
 
     ###########################################################################
-    # Read Quay credentials
+    # Read IdM administrator credentials
     ###########################################################################
 
-    - name: Read Quay administrator username
+    - name: Read IdM administrator password
       ansible.builtin.command:
         argv:
           - aws
           - secretsmanager
           - get-secret-value
           - --secret-id
-          - "{{ quay_superuser_secret_name }}"
+          - "{{ idm_admin_password_secret_name }}"
           - --region
           - "{{ resolved_aws_region }}"
           - --profile
@@ -497,58 +505,138 @@
           - SecretString
           - --output
           - text
-      register: quay_superuser_secret_result
+      register: idm_admin_password_secret_result
       changed_when: false
       no_log: true
 
-    - name: Read Quay administrator password
-      ansible.builtin.command:
-        argv:
-          - aws
-          - secretsmanager
-          - get-secret-value
-          - --secret-id
-          - "{{ quay_superuser_password_secret_name }}"
-          - --region
-          - "{{ resolved_aws_region }}"
-          - --profile
-          - "{{ resolved_aws_profile }}"
-          - --query
-          - SecretString
-          - --output
-          - text
-      register: quay_superuser_password_secret_result
-      changed_when: false
-      no_log: true
-
-    - name: Set Quay registry credentials
+    - name: Set IdM administrator credential variables
       ansible.builtin.set_fact:
-        quay_superuser: >-
-          {{ quay_superuser_secret_result.stdout | trim }}
+        resolved_idm_admin_username: "admin"
 
-        quay_superuser_password: >-
-          {{ quay_superuser_password_secret_result.stdout | trim }}
+        idm_admin_username: "admin"
 
-        quay_hostname: "{{ resolved_quay_hostname }}"
-        quay_registry_host: "{{ resolved_quay_hostname }}"
+        idm_admin_password: >-
+          {{
+            idm_admin_password_secret_result.stdout
+            | string
+            | trim
+          }}
 
-        quay_registry_username: >-
-          {{ quay_superuser_secret_result.stdout | trim }}
+        ipaadmin_principal: "admin"
 
-        quay_registry_password: >-
-          {{ quay_superuser_password_secret_result.stdout | trim }}
+        ipaadmin_password: >-
+          {{
+            idm_admin_password_secret_result.stdout
+            | string
+            | trim
+          }}
       no_log: true
 
-    - name: Validate Quay registry credentials
+    - name: Validate IdM administrator credentials
       ansible.builtin.assert:
         that:
+          - idm_admin_username | string | trim | length > 0
+          - idm_admin_password | string | trim | length > 0
+          - idm_admin_username == "admin"
+          - idm_admin_password != "None"
+        fail_msg: >-
+          The IdM administrator password could not be retrieved from AWS
+          Secrets Manager secret
+          '{{ idm_admin_password_secret_name }}'.
+      no_log: true
+
+
+    ###########################################################################
+    # Read dedicated Quay LDAP registry credentials
+    ###########################################################################
+
+    - name: Read dedicated Quay LDAP registry credential secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ quay_registry_ldap_secret_name | trim }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: quay_registry_ldap_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Parse dedicated Quay LDAP registry credentials
+      ansible.builtin.set_fact:
+        quay_registry_ldap_credentials: >-
+          {{
+            quay_registry_ldap_secret_result.stdout
+            | trim
+            | from_json
+          }}
+      no_log: true
+
+    - name: Validate dedicated Quay LDAP registry secret structure
+      ansible.builtin.assert:
+        that:
+          - quay_registry_ldap_credentials is mapping
+          - quay_registry_ldap_credentials.username is defined
+          - quay_registry_ldap_credentials.password is defined
+          - >-
+            quay_registry_ldap_credentials.username
+            | string
+            | trim
+            | length > 0
+          - >-
+            quay_registry_ldap_credentials.password
+            | string
+            | trim
+            | length > 0
+          - >-
+            quay_registry_ldap_credentials.username
+            | string
+            | trim
+            == quay_registry_ldap_username
+        fail_msg: >-
+          The AWS secret {{ quay_registry_ldap_secret_name | trim }} must
+          contain a JSON object with username and password properties. The
+          username must be {{ quay_registry_ldap_username }}.
+      no_log: true
+
+    - name: Set dedicated Quay LDAP registry credentials
+      ansible.builtin.set_fact:
+        quay_hostname: "{{ resolved_quay_hostname | trim }}"
+        quay_registry_host: "{{ resolved_quay_hostname | trim }}"
+        quay_registry_username: >-
+          {{
+            quay_registry_ldap_credentials.username
+            | string
+            | trim
+          }}
+        quay_registry_password: >-
+          {{
+            quay_registry_ldap_credentials.password
+            | string
+            | trim
+          }}
+      no_log: true
+
+    - name: Validate resolved Quay LDAP registry credentials
+      ansible.builtin.assert:
+        that:
+          - quay_registry_host | string | trim | length > 0
           - quay_registry_username | string | trim | length > 0
           - quay_registry_password | string | trim | length > 0
+          - quay_registry_username == quay_registry_ldap_username
           - quay_registry_username != "None"
           - quay_registry_password != "None"
         fail_msg: >-
-          Quay registry credentials could not be retrieved from AWS Secrets
-          Manager.
+          The dedicated Quay LDAP registry credentials could not be retrieved
+          from {{ quay_registry_ldap_secret_name | trim }}.
       no_log: true
 
     ###########################################################################
