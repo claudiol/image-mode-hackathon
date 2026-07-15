@@ -3,21 +3,39 @@
   hosts: aap
   become: true
   gather_facts: true
+  any_errors_fatal: true
+  serial: 1
 
   vars:
+    ###########################################################################
+    # AAP host identity
+    ###########################################################################
+
     aap_fqdn: "{{ inventory_hostname }}"
     aap_short_name: "{{ inventory_hostname.split('.')[0] }}"
     aap_run_user: "ec2-user"
 
+    ###########################################################################
+    # AAP installer and artifact locations
+    ###########################################################################
+
     aap_work_dir: "/opt"
 
     aap_s3_bucket: "aap-containerized-installers"
-    aap_installer_s3_key: "2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
+    aap_installer_s3_key: >-
+      2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz
     aap_manifest_s3_key: "2.7/manifest_AAP.zip"
 
-    aap_installer_tarball: "{{ aap_work_dir }}/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz"
+    aap_installer_tarball: >-
+      {{ aap_work_dir }}/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz
+
     aap_manifest_dest: "/home/{{ aap_run_user }}/manifest_AAP.zip"
-    aap_activation_playbook: "/home/{{ aap_run_user }}/activate-aap-manifest.yml"
+    aap_activation_playbook: >-
+      /home/{{ aap_run_user }}/activate-aap-manifest.yml
+
+    ###########################################################################
+    # AAP repositories and packages
+    ###########################################################################
 
     aap_repos:
       - ansible-automation-platform-2.7-for-rhel-9-x86_64-rpms
@@ -32,15 +50,51 @@
       - firewalld
       - awscli
 
+    ###########################################################################
+    # IdM CA
+    ###########################################################################
+
+    idm_ca_source: "/etc/ipa/ca.crt"
+    idm_ca_dest: "/etc/pki/ca-trust/source/anchors/idm-ca.crt"
+
+    ###########################################################################
+    # Installer execution controls
+    ###########################################################################
+
+    aap_installer_timeout_seconds: 14400
+    aap_installer_async_timeout: 15000
+    aap_installer_poll_delay: 30
+    aap_installer_poll_retries: 500
+
+    ###########################################################################
+    # Temporary OpenSSL compatibility workaround
+    ###########################################################################
+
+    aap_openssl_workaround_enabled: true
+    aap_openssl_compatible_version: "3.5.5-4.el9_8"
+    aap_openssl_arch: "x86_64"
+
+    aap_openssl_expected_packages:
+      - >-
+        openssl-{{ aap_openssl_compatible_version }}.{{ aap_openssl_arch }}
+      - >-
+        openssl-libs-{{ aap_openssl_compatible_version }}.{{ aap_openssl_arch }}
+
   pre_tasks:
+    ###########################################################################
+    # PHASE 0 | Validate deployment inputs and load secrets
+    ###########################################################################
+
     - name: PHASE 0 | Validate AWS secret lookup variables
       ansible.builtin.assert:
         that:
           - aws_region is defined
-          - aws_region | length > 0
+          - aws_region | string | length > 0
           - secret_prefix is defined
-          - secret_prefix | length > 0
-        fail_msg: "aws_region and secret_prefix must be defined in inventory."
+          - secret_prefix | string | length > 0
+        fail_msg: >-
+          aws_region and secret_prefix must be defined in the Ansible
+          inventory.
 
     - name: PHASE 0 | Ensure AWS CLI is installed
       ansible.builtin.dnf:
@@ -48,7 +102,13 @@
         state: present
 
     - name: PHASE 0 | Verify AWS identity from AAP EC2 instance role
-      ansible.builtin.command: aws sts get-caller-identity --region {{ aws_region }}
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+          - --region
+          - "{{ aws_region }}"
       register: aws_identity_check
       changed_when: false
 
@@ -57,32 +117,55 @@
         var: aws_identity_check.stdout
 
     - name: PHASE 0 | Fetch AAP secrets from AWS Secrets Manager
-      ansible.builtin.command: >
-        aws secretsmanager get-secret-value
-        --region {{ aws_region }}
-        --secret-id {{ secret_prefix }}/{{ item.key }}
-        --query SecretString
-        --output text
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --region
+          - "{{ aws_region }}"
+          - --secret-id
+          - "{{ secret_prefix }}/{{ item.key }}"
+          - --query
+          - SecretString
+          - --output
+          - text
       register: fetched_aap_secrets
       changed_when: false
       no_log: true
       loop:
-        - { key: "aap/postgresql_admin_password", var: "postgresql_admin_password" }
-        - { key: "aap/gateway_admin_username", var: "gateway_admin_username" }
-        - { key: "aap/gateway_admin_password", var: "gateway_admin_password" }
-        - { key: "aap/gateway_pg_password", var: "gateway_pg_password" }
-        - { key: "aap/controller_admin_password", var: "controller_admin_password" }
-        - { key: "aap/controller_pg_password", var: "controller_pg_password" }
-        - { key: "aap/hub_admin_password", var: "hub_admin_password" }
-        - { key: "aap/hub_pg_password", var: "hub_pg_password" }
-        - { key: "aap/eda_admin_password", var: "eda_admin_password" }
-        - { key: "aap/eda_pg_password", var: "eda_pg_password" }
-        - { key: "aap/automationmetrics_pg_password", var: "automationmetrics_pg_password" }
-        - { key: "aap/automationmetrics_controller_read_pg_password", var: "automationmetrics_controller_read_pg_password" }
-        - { key: "redhat/registry_username", var: "registry_username" }
-        - { key: "redhat/registry_password", var: "registry_password" }
-        - { key: "redhat/org_id", var: "aap_org_id" }
-        - { key: "redhat/aap_activation_key", var: "aap_activation_key" }
+        - key: "aap/postgresql_admin_password"
+          var: "postgresql_admin_password"
+        - key: "aap/gateway_admin_username"
+          var: "gateway_admin_username"
+        - key: "aap/gateway_admin_password"
+          var: "gateway_admin_password"
+        - key: "aap/gateway_pg_password"
+          var: "gateway_pg_password"
+        - key: "aap/controller_admin_password"
+          var: "controller_admin_password"
+        - key: "aap/controller_pg_password"
+          var: "controller_pg_password"
+        - key: "aap/hub_admin_password"
+          var: "hub_admin_password"
+        - key: "aap/hub_pg_password"
+          var: "hub_pg_password"
+        - key: "aap/eda_admin_password"
+          var: "eda_admin_password"
+        - key: "aap/eda_pg_password"
+          var: "eda_pg_password"
+        - key: "aap/automationmetrics_pg_password"
+          var: "automationmetrics_pg_password"
+        - key: "aap/automationmetrics_controller_read_pg_password"
+          var: "automationmetrics_controller_read_pg_password"
+        - key: "redhat/registry_username"
+          var: "registry_username"
+        - key: "redhat/registry_password"
+          var: "registry_password"
+        - key: "redhat/org_id"
+          var: "aap_org_id"
+        - key: "redhat/aap_activation_key"
+          var: "aap_activation_key"
 
     - name: PHASE 0 | Convert fetched secrets into Ansible facts
       ansible.builtin.set_fact:
@@ -90,99 +173,329 @@
       loop: "{{ fetched_aap_secrets.results }}"
       no_log: true
 
-    - name: PHASE 0 | Set static PostgreSQL admin username
+    - name: PHASE 0 | Set static PostgreSQL administrator username
       ansible.builtin.set_fact:
         postgresql_admin_username: "postgres"
 
   tasks:
-    - name: PHASE 1 | Prepare RHSM repo management
+    ###########################################################################
+    # PHASE 1 | Configure RHSM repository management
+    ###########################################################################
+
+    - name: PHASE 1 | Prepare RHSM repository management
       block:
-        - name: Remove AWS RHUI client packages
+        - name: PHASE 1 | Remove AWS RHUI client packages
           ansible.builtin.dnf:
             name: "rh-amazon-rhui-client*"
             state: absent
 
-        - name: Force subscription-manager to manage repos
-          ansible.builtin.command: subscription-manager config --rhsm.manage_repos=1
-          changed_when: true
+        - name: PHASE 1 | Force subscription-manager to manage repositories
+          ansible.builtin.command:
+            argv:
+              - subscription-manager
+              - config
+              - --rhsm.manage_repos=1
+          changed_when: false
 
-        - name: Ensure rhsm.conf has manage_repos enabled
+        - name: PHASE 1 | Ensure rhsm.conf enables repository management
           ansible.builtin.lineinfile:
             path: /etc/rhsm/rhsm.conf
             regexp: '^manage_repos\s*='
             line: 'manage_repos = 1'
             state: present
 
-    - name: PHASE 2 | Register and enable AAP repos
+    ###########################################################################
+    # PHASE 2 | Register system and enable AAP repositories
+    ###########################################################################
+
+    - name: PHASE 2 | Register and enable AAP repositories
       block:
-        - name: Register system with activation key
+        - name: PHASE 2 | Register system with activation key
           community.general.redhat_subscription:
             state: present
             activationkey: "{{ aap_activation_key }}"
             org_id: "{{ aap_org_id }}"
-            force_register: true
+            force_register: false
           no_log: true
 
-        - name: Force subscription-manager repo management after registration
-          ansible.builtin.command: subscription-manager config --rhsm.manage_repos=1
+        - name: PHASE 2 | Enable repository management after registration
+          ansible.builtin.command:
+            argv:
+              - subscription-manager
+              - config
+              - --rhsm.manage_repos=1
+          changed_when: false
+
+        - name: PHASE 2 | Refresh subscription-manager
+          ansible.builtin.command:
+            argv:
+              - subscription-manager
+              - refresh
+          changed_when: false
+
+        - name: PHASE 2 | Clean DNF metadata
+          ansible.builtin.command:
+            argv:
+              - dnf
+              - clean
+              - all
           changed_when: true
 
-        - name: Refresh subscription-manager after registration
-          ansible.builtin.command: subscription-manager refresh
-          changed_when: true
-
-        - name: Clean DNF metadata
-          ansible.builtin.command: dnf clean all
-          changed_when: true
-
-        - name: Enable AAP repositories
-          ansible.builtin.command: >
-            subscription-manager repos --enable {{ item }}
+        - name: PHASE 2 | Enable AAP repositories
+          ansible.builtin.command:
+            argv:
+              - subscription-manager
+              - repos
+              - "--enable={{ item }}"
           loop: "{{ aap_repos }}"
-          changed_when: true
+          register: enabled_aap_repositories
+          changed_when: >-
+            'Repository' in enabled_aap_repositories.stdout
+            and
+            'enabled' in enabled_aap_repositories.stdout
 
-        - name: Refresh DNF cache
+        - name: PHASE 2 | Refresh DNF cache
           ansible.builtin.dnf:
             update_cache: true
 
-    - name: PHASE 3 | Hostname and cloud-init hardening
+    ###########################################################################
+    # PHASE 3 | Configure host identity
+    ###########################################################################
+
+    - name: PHASE 3 | Configure hostname and cloud-init
       block:
-        - name: Set persistent AAP hostname
+        - name: PHASE 3 | Set persistent AAP hostname
           ansible.builtin.hostname:
             name: "{{ aap_fqdn }}"
 
-        - name: Ensure cloud-init preserves hostname across reboots
+        - name: PHASE 3 | Ensure cloud-init preserves the hostname
           ansible.builtin.lineinfile:
             path: /etc/cloud/cloud.cfg
             regexp: '^preserve_hostname:'
             line: 'preserve_hostname: true'
             state: present
 
-    - name: PHASE 4 | Configure IPv4-only hosts resolution
+    ###########################################################################
+    # PHASE 4 | Configure local hostname resolution
+    ###########################################################################
+
+    - name: PHASE 4 | Configure IPv4 host resolution
       ansible.builtin.copy:
         dest: /etc/hosts
+        owner: root
+        group: root
+        mode: "0644"
         content: |
           127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
           ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
           {{ ansible_default_ipv4.address }} {{ aap_fqdn }} {{ aap_short_name }}
-        owner: root
-        group: root
-        mode: "0644"
+
+    ###########################################################################
+    # PHASE 5 | Install packages
+    ###########################################################################
 
     - name: PHASE 5 | Install required packages
       ansible.builtin.dnf:
         name: "{{ required_packages }}"
         state: present
 
-    - name: PHASE 6 | Configure firewall for AAP containerized services
+    ###########################################################################
+    # PHASE 5B | Apply temporary OpenSSL workaround
+    ###########################################################################
+
+    - name: PHASE 5B | Apply AAP OpenSSL compatibility workaround
+      when: aap_openssl_workaround_enabled | bool
       block:
-        - name: Start and enable firewalld
+        - name: PHASE 5B | Read currently installed OpenSSL packages
+          ansible.builtin.command:
+            argv:
+              - rpm
+              - -q
+              - --qf
+              - "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n"
+              - openssl
+              - openssl-libs
+          register: current_aap_openssl_packages
+          changed_when: false
+
+        - name: PHASE 5B | Determine whether remediation is required
+          ansible.builtin.set_fact:
+            aap_openssl_remediation_required: >-
+              {{
+                (
+                  'openssl-'
+                  ~ aap_openssl_compatible_version
+                  ~ '.'
+                  ~ aap_openssl_arch
+                )
+                not in current_aap_openssl_packages.stdout_lines
+                or
+                (
+                  'openssl-libs-'
+                  ~ aap_openssl_compatible_version
+                  ~ '.'
+                  ~ aap_openssl_arch
+                )
+                not in current_aap_openssl_packages.stdout_lines
+              }}
+
+        - name: PHASE 5B | Query compatible OpenSSL packages
+          ansible.builtin.command:
+            argv:
+              - dnf
+              - repoquery
+              - --available
+              - --qf
+              - "%{name}-%{version}-%{release}.%{arch}"
+              - >-
+                openssl-{{ aap_openssl_compatible_version }}.{{ aap_openssl_arch }}
+              - >-
+                openssl-libs-{{ aap_openssl_compatible_version }}.{{ aap_openssl_arch }}
+          register: available_aap_openssl_packages
+          changed_when: false
+          when: aap_openssl_remediation_required | bool
+
+        - name: PHASE 5B | Validate compatible OpenSSL availability
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  'openssl-'
+                  ~ aap_openssl_compatible_version
+                  ~ '.'
+                  ~ aap_openssl_arch
+                )
+                in available_aap_openssl_packages.stdout_lines
+              - >-
+                (
+                  'openssl-libs-'
+                  ~ aap_openssl_compatible_version
+                  ~ '.'
+                  ~ aap_openssl_arch
+                )
+                in available_aap_openssl_packages.stdout_lines
+            fail_msg: |
+              Required OpenSSL compatibility packages are unavailable.
+
+              Required:
+              {{ aap_openssl_expected_packages | join('\n') }}
+
+              Repository query:
+              {{
+                available_aap_openssl_packages.stdout_lines
+                | default([])
+                | join('\n')
+              }}
+          when: aap_openssl_remediation_required | bool
+
+        - name: PHASE 5B | Install compatible OpenSSL packages
+          ansible.builtin.dnf:
+            name: "{{ aap_openssl_expected_packages }}"
+            state: present
+            allow_downgrade: true
+          register: aap_openssl_package_change
+          when: aap_openssl_remediation_required | bool
+
+        - name: PHASE 5B | Reboot after replacing OpenSSL libraries
+          ansible.builtin.reboot:
+            msg: >-
+              Rebooting after applying the temporary AAP OpenSSL
+              compatibility workaround
+            reboot_timeout: 1200
+            connect_timeout: 10
+            pre_reboot_delay: 5
+            post_reboot_delay: 30
+            test_command: "systemctl is-system-running --wait"
+          when:
+            - aap_openssl_package_change is defined
+            - aap_openssl_package_change.changed
+
+        - name: PHASE 5B | Reset SSH connection after reboot
+          ansible.builtin.meta: reset_connection
+          when:
+            - aap_openssl_package_change is defined
+            - aap_openssl_package_change.changed
+
+        - name: PHASE 5B | Refresh gathered facts after reboot
+          ansible.builtin.setup:
+          when:
+            - aap_openssl_package_change is defined
+            - aap_openssl_package_change.changed
+
+        - name: PHASE 5B | Read final OpenSSL package versions
+          ansible.builtin.command:
+            argv:
+              - rpm
+              - -q
+              - --qf
+              - "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n"
+              - openssl
+              - openssl-libs
+          register: final_aap_openssl_packages
+          changed_when: false
+
+        - name: PHASE 5B | Validate compatible OpenSSL packages
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  'openssl-'
+                  ~ aap_openssl_compatible_version
+                  ~ '.'
+                  ~ aap_openssl_arch
+                )
+                in final_aap_openssl_packages.stdout_lines
+              - >-
+                (
+                  'openssl-libs-'
+                  ~ aap_openssl_compatible_version
+                  ~ '.'
+                  ~ aap_openssl_arch
+                )
+                in final_aap_openssl_packages.stdout_lines
+            fail_msg: |
+              AAP-compatible OpenSSL packages were not installed.
+
+              Expected:
+              {{ aap_openssl_expected_packages | join('\n') }}
+
+              Installed:
+              {{ final_aap_openssl_packages.stdout_lines | join('\n') }}
+
+        - name: PHASE 5B | Display Python OpenSSL runtime
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "import ssl; print(ssl.OPENSSL_VERSION)"
+          register: aap_python_openssl_runtime
+          changed_when: false
+
+        - name: PHASE 5B | Report OpenSSL compatibility state
+          ansible.builtin.debug:
+            msg:
+              - "Installed RPMs: {{ final_aap_openssl_packages.stdout_lines }}"
+              - "Python runtime: {{ aap_python_openssl_runtime.stdout }}"
+              - >-
+                Reboot performed:
+                {{
+                  aap_openssl_package_change.changed
+                  | default(false)
+                }}
+
+    ###########################################################################
+    # PHASE 6 | Configure firewall
+    ###########################################################################
+
+    - name: PHASE 6 | Configure firewall
+      block:
+        - name: PHASE 6 | Start and enable firewalld
           ansible.builtin.service:
             name: firewalld
             state: started
             enabled: true
 
-        - name: Open required TCP ports
+        - name: PHASE 6 | Open required TCP ports
           ansible.posix.firewalld:
             port: "{{ item }}/tcp"
             permanent: true
@@ -195,32 +508,41 @@
             - 6379
             - 27199
 
-    - name: PHASE 7 | Download and extract AAP 2.7 containerized installer
+    ###########################################################################
+    # PHASE 7 | Download and extract installer
+    ###########################################################################
+
+    - name: PHASE 7 | Download and extract AAP installer
       block:
-        - name: Download AAP 2.7 containerized installer from private S3 using instance role
-          ansible.builtin.command: >
-            aws s3 cp
-            s3://{{ aap_s3_bucket }}/{{ aap_installer_s3_key }}
-            {{ aap_installer_tarball }}
-            --region {{ aws_region }}
+        - name: PHASE 7 | Download AAP installer from S3
+          ansible.builtin.command:
+            argv:
+              - aws
+              - s3
+              - cp
+              - "s3://{{ aap_s3_bucket }}/{{ aap_installer_s3_key }}"
+              - "{{ aap_installer_tarball }}"
+              - --region
+              - "{{ aws_region }}"
           args:
             creates: "{{ aap_installer_tarball }}"
-          changed_when: true
+          register: aap_installer_download
+          changed_when: aap_installer_download.rc == 0
 
-        - name: Ensure AAP installer tarball permissions
+        - name: PHASE 7 | Set installer tarball permissions
           ansible.builtin.file:
             path: "{{ aap_installer_tarball }}"
             owner: root
             group: root
             mode: "0644"
 
-        - name: Extract AAP installer under /opt
+        - name: PHASE 7 | Extract AAP installer
           ansible.builtin.unarchive:
             src: "{{ aap_installer_tarball }}"
             dest: "{{ aap_work_dir }}"
             remote_src: true
 
-        - name: Find extracted AAP installer directory
+        - name: PHASE 7 | Find extracted installer directory
           ansible.builtin.find:
             paths: "{{ aap_work_dir }}"
             file_type: directory
@@ -228,29 +550,82 @@
               - "ansible-automation-platform-containerized-setup*"
           register: installer_dirs
 
-        - name: Set AAP installer directory fact
-          ansible.builtin.set_fact:
-            aap_installer_dir: "{{ (installer_dirs.files | sort(attribute='path') | last).path }}"
+        - name: PHASE 7 | Validate installer directory was found
+          ansible.builtin.assert:
+            that:
+              - installer_dirs.files | length > 0
+            fail_msg: >-
+              No extracted AAP containerized installer directory was found
+              under {{ aap_work_dir }}.
 
-    - name: PHASE 8 | Trust IdM CA and generate AAP containerized inventory
+        - name: PHASE 7 | Set installer directory
+          ansible.builtin.set_fact:
+            aap_installer_dir: >-
+              {{
+                (
+                  installer_dirs.files
+                  | sort(attribute='path')
+                  | last
+                ).path
+              }}
+
+    ###########################################################################
+    # PHASE 8 | Configure installer runtime and inventory
+    ###########################################################################
+
+    - name: PHASE 8 | Configure installer runtime and inventory
       block:
-        - name: Get ec2-user UID
-          ansible.builtin.command: id -u "{{ aap_run_user }}"
+        - name: PHASE 8 | Get installer user UID
+          ansible.builtin.command:
+            argv:
+              - id
+              - -u
+              - "{{ aap_run_user }}"
           register: aap_run_user_uid
           changed_when: false
 
-        - name: Get ec2-user passwd entry
-          ansible.builtin.command: getent passwd "{{ aap_run_user }}"
+        - name: PHASE 8 | Get installer user passwd entry
+          ansible.builtin.command:
+            argv:
+              - getent
+              - passwd
+              - "{{ aap_run_user }}"
           register: aap_run_user_passwd
           changed_when: false
 
-        - name: Set ec2-user home fact
+        - name: PHASE 8 | Set installer runtime facts
           ansible.builtin.set_fact:
             aap_run_user_home: "{{ aap_run_user_passwd.stdout.split(':')[5] }}"
+            aap_async_dir: >-
+              {{ aap_run_user_passwd.stdout.split(':')[5] }}/.ansible_async
+            aap_installer_log: >-
+              {{ aap_run_user_passwd.stdout.split(':')[5] }}/aap-containerized-installer.log
+            aap_installer_rc_file: >-
+              {{ aap_run_user_passwd.stdout.split(':')[5] }}/aap-containerized-installer.rc
+            aap_installer_status_file: >-
+              {{ aap_run_user_passwd.stdout.split(':')[5] }}/aap-containerized-installer.status
+            aap_installer_completion_marker: >-
+              {{ aap_run_user_passwd.stdout.split(':')[5] }}/.aap-containerized-installer-complete
 
-        - name: Read IdM CA certificate from IdM server
+        - name: PHASE 8 | Ensure async directory exists
+          ansible.builtin.file:
+            path: "{{ aap_async_dir }}"
+            state: directory
+            owner: "{{ aap_run_user }}"
+            group: "{{ aap_run_user }}"
+            mode: "0700"
+
+        - name: PHASE 8 | Enable lingering for installer user
+          ansible.builtin.command:
+            argv:
+              - loginctl
+              - enable-linger
+              - "{{ aap_run_user }}"
+          changed_when: false
+
+        - name: PHASE 8 | Read IdM CA certificate
           ansible.builtin.slurp:
-            src: /etc/ipa/ca.crt
+            src: "{{ idm_ca_source }}"
           delegate_to: "{{ groups['idm'][0] }}"
           become: true
           register: idm_ca_cert
@@ -259,25 +634,28 @@
             - groups['idm'] is defined
             - groups['idm'] | length > 0
 
-        - name: Install IdM CA certificate on AAP host
+        - name: PHASE 8 | Install IdM CA certificate
           ansible.builtin.copy:
-            dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+            dest: "{{ idm_ca_dest }}"
             content: "{{ idm_ca_cert.content | b64decode }}"
             owner: root
             group: root
             mode: "0644"
+          register: installed_idm_ca
           when:
             - idm_ca_cert is defined
             - idm_ca_cert.content is defined
 
-        - name: Update AAP host CA trust
-          ansible.builtin.command: update-ca-trust
-          changed_when: true
+        - name: PHASE 8 | Update host CA trust
+          ansible.builtin.command:
+            argv:
+              - update-ca-trust
+          changed_when: installed_idm_ca.changed
           when:
-            - idm_ca_cert is defined
-            - idm_ca_cert.content is defined
+            - installed_idm_ca is defined
+            - installed_idm_ca.changed
 
-        - name: Write clean AAP installer inventory
+        - name: PHASE 8 | Write AAP installer inventory
           ansible.builtin.copy:
             dest: "{{ aap_installer_dir }}/inventory"
             owner: "{{ aap_run_user }}"
@@ -341,111 +719,317 @@
 
               automationmetrics_pg_password={{ automationmetrics_pg_password }}
               automationmetrics_controller_read_pg_password={{ automationmetrics_controller_read_pg_password }}
-              custom_ca_cert=/etc/ipa/ca.crt
+
+              custom_ca_cert={{ idm_ca_dest }}
           no_log: true
 
-        - name: Give ec2-user ownership of installer directory
+        - name: PHASE 8 | Give installer user ownership of installer directory
           ansible.builtin.file:
             path: "{{ aap_installer_dir }}"
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
             recurse: true
 
-        - name: Validate generated AAP installer inventory
+        - name: PHASE 8 | Validate generated installer inventory
           ansible.builtin.shell: |
-            ansible-inventory -i inventory --host "{{ aap_fqdn }}" \
+            set -o errexit
+            set -o nounset
+            set -o pipefail
+
+            ansible-inventory \
+              -i inventory \
+              --host "{{ aap_fqdn }}" \
               > "{{ aap_run_user_home }}/aap-generated-inventory-check.json"
           args:
             chdir: "{{ aap_installer_dir }}"
             executable: /bin/bash
           become: true
           become_user: "{{ aap_run_user }}"
+          environment:
+            HOME: "{{ aap_run_user_home }}"
+            USER: "{{ aap_run_user }}"
+            LOGNAME: "{{ aap_run_user }}"
           changed_when: false
 
-    - name: PHASE 9 | Check if AAP Gateway is already responding
+    ###########################################################################
+    # PHASE 9 | Detect current AAP state
+    ###########################################################################
+
+    - name: PHASE 9 | Check AAP Gateway availability
       ansible.builtin.uri:
         url: "https://{{ aap_fqdn }}/api/gateway/v1/status/"
+        method: GET
         validate_certs: false
         status_code:
           - 200
           - 401
           - 403
+        connect_timeout: 10
+        timeout: 30
       register: existing_aap_gateway
       failed_when: false
       changed_when: false
+      no_log: true
 
-    - name: PHASE 10 | Run AAP 2.7 containerized installer as ec2-user
-      ansible.builtin.shell: |
-        whoami > "{{ aap_run_user_home }}/aap-installer-whoami.txt"
-        id >> "{{ aap_run_user_home }}/aap-installer-whoami.txt"
+    - name: PHASE 9 | Check installer completion marker
+      ansible.builtin.stat:
+        path: "{{ aap_installer_completion_marker }}"
+      register: aap_installer_marker
 
-        ansible-playbook -i inventory ansible.containerized_installer.install \
-          > "{{ aap_run_user_home }}/aap-containerized-installer.log" 2>&1
-
-        echo $? > "{{ aap_run_user_home }}/aap-containerized-installer.rc"
-      args:
-        chdir: "{{ aap_installer_dir }}"
-        executable: /bin/bash
-      become: true
-      become_user: "{{ aap_run_user }}"
-      environment:
-        HOME: "{{ aap_run_user_home }}"
-        USER: "{{ aap_run_user }}"
-        LOGNAME: "{{ aap_run_user }}"
-      changed_when: true
-      when: existing_aap_gateway.status not in [200, 401, 403]
-
-    - name: Read AAP installer return code
-      ansible.builtin.slurp:
-        src: "{{ aap_run_user_home }}/aap-containerized-installer.rc"
-      register: aap_installer_rc_raw
-      when: existing_aap_gateway.status not in [200, 401, 403]
-
-    - name: Set AAP installer return code fact
+    - name: PHASE 9 | Determine whether installation is required
       ansible.builtin.set_fact:
-        aap_installer_rc: "{{ aap_installer_rc_raw.content | b64decode | trim }}"
-      when: existing_aap_gateway.status not in [200, 401, 403]
+        aap_installation_required: >-
+          {{
+            not aap_installer_marker.stat.exists
+          }}
 
-    - name: Fail if AAP installer failed
-      ansible.builtin.fail:
-        msg: "AAP installer failed. Check {{ aap_run_user_home }}/aap-containerized-installer.log"
-      when:
-        - existing_aap_gateway.status not in [200, 401, 403]
-        - aap_installer_rc != "0"
+    - name: PHASE 9 | Report current installation state
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Gateway HTTP status:
+            {{ existing_aap_gateway.status | default('unavailable') }}
+          - >-
+            Installer completion marker:
+            {{ aap_installer_marker.stat.exists }}
+          - >-
+            Installation required:
+            {{ aap_installation_required }}
+
+    ###########################################################################
+    # PHASE 10 | Run AAP installer asynchronously
+    ###########################################################################
+
+    - name: PHASE 10 | Run AAP installer asynchronously
+      vars:
+        ansible_async_dir: "{{ aap_async_dir }}"
+      when: aap_installation_required | bool
+      block:
+        - name: PHASE 10 | Remove stale installer result files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ aap_installer_rc_file }}"
+            - "{{ aap_installer_status_file }}"
+
+        - name: PHASE 10 | Start AAP 2.7 containerized installer
+          ansible.builtin.shell: |
+            set -o pipefail
+
+            installer_log="{{ aap_installer_log }}"
+            installer_rc_file="{{ aap_installer_rc_file }}"
+            installer_status_file="{{ aap_installer_status_file }}"
+
+            {
+              echo "state=running"
+              echo "started=$(date --iso-8601=seconds)"
+              echo "host=$(hostname --fqdn)"
+              echo "user=$(id)"
+            } > "${installer_status_file}"
+
+            {
+              echo
+              echo "============================================================"
+              echo "AAP installer started: $(date --iso-8601=seconds)"
+              echo "Host: $(hostname --fqdn)"
+              echo "User: $(id)"
+              echo "============================================================"
+              echo
+            } >> "${installer_log}"
+
+            timeout \
+              --signal=TERM \
+              --kill-after=60s \
+              "{{ aap_installer_timeout_seconds }}" \
+              ansible-playbook \
+                -i inventory \
+                ansible.containerized_installer.install \
+              </dev/null \
+              >> "${installer_log}" \
+              2>&1
+
+            installer_exit_code=$?
+
+            printf '%s\n' "${installer_exit_code}" \
+              > "${installer_rc_file}"
+
+            {
+              echo "state=finished"
+              echo "finished=$(date --iso-8601=seconds)"
+              echo "return_code=${installer_exit_code}"
+            } > "${installer_status_file}"
+
+            exit "${installer_exit_code}"
+          args:
+            chdir: "{{ aap_installer_dir }}"
+            executable: /bin/bash
+          become: true
+          become_user: "{{ aap_run_user }}"
+          environment:
+            HOME: "{{ aap_run_user_home }}"
+            USER: "{{ aap_run_user }}"
+            LOGNAME: "{{ aap_run_user }}"
+            XDG_RUNTIME_DIR: "/run/user/{{ aap_run_user_uid.stdout }}"
+            ANSIBLE_ASYNC_DIR: "{{ aap_async_dir }}"
+            PYTHONUNBUFFERED: "1"
+            ANSIBLE_FORCE_COLOR: "0"
+          register: aap_installer_job
+          async: "{{ aap_installer_async_timeout }}"
+          poll: 0
+          changed_when: true
+
+        - name: PHASE 10 | Validate installer async job ID
+          ansible.builtin.assert:
+            that:
+              - aap_installer_job.ansible_job_id is defined
+              - aap_installer_job.ansible_job_id | string | length > 0
+            fail_msg: "The AAP installer async job did not start correctly."
+
+        - name: PHASE 10 | Wait for installer async job
+          ansible.builtin.async_status:
+            jid: "{{ aap_installer_job.ansible_job_id }}"
+          become: true
+          become_user: "{{ aap_run_user }}"
+          environment:
+            HOME: "{{ aap_run_user_home }}"
+            USER: "{{ aap_run_user }}"
+            LOGNAME: "{{ aap_run_user }}"
+            XDG_RUNTIME_DIR: "/run/user/{{ aap_run_user_uid.stdout }}"
+            ANSIBLE_ASYNC_DIR: "{{ aap_async_dir }}"
+          register: aap_installer_result
+          until: aap_installer_result.finished | bool
+          retries: "{{ aap_installer_poll_retries }}"
+          delay: "{{ aap_installer_poll_delay }}"
+          changed_when: false
+
+        - name: PHASE 10 | Read recent installer log after failure
+          ansible.builtin.command:
+            argv:
+              - tail
+              - -n
+              - "150"
+              - "{{ aap_installer_log }}"
+          register: aap_installer_log_tail
+          changed_when: false
+          failed_when: false
+          when:
+            - aap_installer_result.rc | default(1) | int != 0
+
+        - name: PHASE 10 | Fail when installer did not complete
+          ansible.builtin.fail:
+            msg: |
+              AAP containerized installer failed or timed out.
+
+              Async job:
+              {{ aap_installer_job.ansible_job_id }}
+
+              Return code:
+              {{ aap_installer_result.rc | default('unavailable') }}
+
+              Async result file:
+              {{ aap_async_dir }}/{{ aap_installer_job.ansible_job_id }}
+
+              Recent installer output:
+              ------------------------------------------------------------
+              {{
+                aap_installer_log_tail.stdout
+                | default('Installer log unavailable')
+              }}
+              ------------------------------------------------------------
+
+              Full installer log:
+              {{ aap_installer_log }}
+
+              Installer status:
+              {{ aap_installer_status_file }}
+          when:
+            - aap_installer_result.rc | default(1) | int != 0
+
+        - name: PHASE 10 | Write installer completion marker
+          ansible.builtin.copy:
+            dest: "{{ aap_installer_completion_marker }}"
+            owner: "{{ aap_run_user }}"
+            group: "{{ aap_run_user }}"
+            mode: "0600"
+            content: |
+              completed={{ ansible_date_time.iso8601 }}
+              return_code={{ aap_installer_result.rc }}
+              installer_directory={{ aap_installer_dir }}
+              installer_log={{ aap_installer_log }}
+          when:
+            - aap_installer_result.rc | int == 0
+
+        - name: PHASE 10 | Clean up completed async job metadata
+          ansible.builtin.async_status:
+            jid: "{{ aap_installer_job.ansible_job_id }}"
+            mode: cleanup
+          become: true
+          become_user: "{{ aap_run_user }}"
+          environment:
+            HOME: "{{ aap_run_user_home }}"
+            USER: "{{ aap_run_user }}"
+            LOGNAME: "{{ aap_run_user }}"
+            ANSIBLE_ASYNC_DIR: "{{ aap_async_dir }}"
+          changed_when: false
+          failed_when: false
+          when:
+            - aap_installer_result.finished | default(false) | bool
+
+    ###########################################################################
+    # PHASE 11 | Wait for AAP Gateway
+    ###########################################################################
 
     - name: PHASE 11 | Wait for AAP Gateway to become available
       ansible.builtin.uri:
         url: "https://{{ aap_fqdn }}/api/gateway/v1/status/"
+        method: GET
         validate_certs: false
         status_code:
           - 200
           - 401
           - 403
+        timeout: 30
+        return_content: false
       register: aap_gateway_health
-      retries: 20
-      delay: 30
-      until: aap_gateway_health.status in [200, 401, 403]
+      retries: 30
+      delay: 20
+      until: >-
+        aap_gateway_health.status
+        | default(0)
+        | int
+        in [200, 401, 403]
+      changed_when: false
 
-    - name: PHASE 12 | Activate AAP using manifest_AAP.zip
+    ###########################################################################
+    # PHASE 12 | Activate AAP manifest
+    ###########################################################################
+
+    - name: PHASE 12 | Activate AAP subscription manifest
       block:
-        - name: Download AAP manifest from private S3 using instance role
-          ansible.builtin.command: >
-            aws s3 cp
-            s3://{{ aap_s3_bucket }}/{{ aap_manifest_s3_key }}
-            {{ aap_manifest_dest }}
-            --region {{ aws_region }}
+        - name: PHASE 12 | Download AAP manifest from S3
+          ansible.builtin.command:
+            argv:
+              - aws
+              - s3
+              - cp
+              - "s3://{{ aap_s3_bucket }}/{{ aap_manifest_s3_key }}"
+              - "{{ aap_manifest_dest }}"
+              - --region
+              - "{{ aws_region }}"
           args:
             creates: "{{ aap_manifest_dest }}"
-          changed_when: true
+          register: aap_manifest_download
+          changed_when: aap_manifest_download.rc == 0
 
-        - name: Ensure AAP manifest ownership and permissions
+        - name: PHASE 12 | Set manifest permissions
           ansible.builtin.file:
             path: "{{ aap_manifest_dest }}"
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
             mode: "0600"
 
-        - name: Write AAP manifest activation playbook
+        - name: PHASE 12 | Write manifest activation playbook
           ansible.builtin.copy:
             dest: "{{ aap_activation_playbook }}"
             owner: "{{ aap_run_user }}"
@@ -453,10 +1037,10 @@
             mode: "0600"
             content: |
               ---
-              - name: Activate AAP with manifest
+              - name: Activate AAP subscription manifest
                 hosts: localhost
-                gather_facts: false
                 connection: local
+                gather_facts: false
 
                 tasks:
                   - name: Upload AAP subscription manifest
@@ -467,12 +1051,25 @@
                       validate_certs: false
                       manifest: "{{ aap_manifest_dest }}"
 
-        - name: Run AAP manifest activation playbook
+        - name: PHASE 12 | Run manifest activation playbook
           ansible.builtin.shell: |
-            ansible-playbook "{{ aap_activation_playbook }}" \
-              > "{{ aap_run_user_home }}/aap-manifest-activation.log" 2>&1
+            set -o pipefail
 
-            echo $? > "{{ aap_run_user_home }}/aap-manifest-activation.rc"
+            activation_log="{{ aap_run_user_home }}/aap-manifest-activation.log"
+            activation_rc_file="{{ aap_run_user_home }}/aap-manifest-activation.rc"
+
+            ansible-playbook \
+              "{{ aap_activation_playbook }}" \
+              </dev/null \
+              > "${activation_log}" \
+              2>&1
+
+            activation_exit_code=$?
+
+            printf '%s\n' "${activation_exit_code}" \
+              > "${activation_rc_file}"
+
+            exit "${activation_exit_code}"
           args:
             executable: /bin/bash
           become: true
@@ -481,31 +1078,37 @@
             HOME: "{{ aap_run_user_home }}"
             USER: "{{ aap_run_user }}"
             LOGNAME: "{{ aap_run_user }}"
-            ANSIBLE_COLLECTIONS_PATH: "{{ aap_installer_dir }}/collections:/usr/share/ansible/collections:{{ aap_run_user_home }}/.ansible/collections"
+            ANSIBLE_COLLECTIONS_PATH: >-
+              {{ aap_installer_dir }}/collections:/usr/share/ansible/collections:{{ aap_run_user_home }}/.ansible/collections
+          register: aap_manifest_activation
           changed_when: true
           no_log: true
 
-        - name: Read AAP manifest activation return code
-          ansible.builtin.slurp:
-            src: "{{ aap_run_user_home }}/aap-manifest-activation.rc"
-          register: aap_manifest_activation_rc_raw
-
-        - name: Set AAP manifest activation return code fact
-          ansible.builtin.set_fact:
-            aap_manifest_activation_rc: "{{ aap_manifest_activation_rc_raw.content | b64decode | trim }}"
-
-        - name: Fail if AAP manifest activation failed
+        - name: PHASE 12 | Fail if manifest activation failed
           ansible.builtin.fail:
-            msg: "AAP manifest activation failed. Check {{ aap_run_user_home }}/aap-manifest-activation.log"
-          when: aap_manifest_activation_rc != "0"
+            msg: >-
+              AAP manifest activation failed. Review
+              {{ aap_run_user_home }}/aap-manifest-activation.log.
+          when:
+            - aap_manifest_activation.rc | int != 0
+
+    ###########################################################################
+    # PHASE 13 | Display completion information
+    ###########################################################################
 
     - name: PHASE 13 | Display AAP access information
       ansible.builtin.debug:
         msg:
-          - "AAP 2.7 containerized install completed."
+          - "AAP 2.7 containerized installation completed."
           - "AAP Gateway URL: https://{{ aap_fqdn }}"
           - "Admin username: {{ gateway_admin_username }}"
-          - "Installer log: /home/ec2-user/aap-containerized-installer.log"
-          - "Manifest activation log: /home/ec2-user/aap-manifest-activation.log"
-          - "Inventory check: /home/ec2-user/aap-generated-inventory-check.json"
-          - "Installer user check: /home/ec2-user/aap-installer-whoami.txt"
+          - "Installer log: {{ aap_installer_log }}"
+          - >-
+            Manifest activation log:
+            {{ aap_run_user_home }}/aap-manifest-activation.log
+          - >-
+            Inventory check:
+            {{ aap_run_user_home }}/aap-generated-inventory-check.json
+          - >-
+            Completion marker:
+            {{ aap_installer_completion_marker }}

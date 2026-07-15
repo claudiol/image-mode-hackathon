@@ -55,6 +55,26 @@ output "ansible_inventory" {
 
     lab_ssh_private_key_secret_name = local.lab_ssh_private_key_secret_name
 
+    satellite_iso_s3_bucket = var.satellite_iso_s3_bucket
+    satellite_iso_s3_key    = var.satellite_iso_s3_key
+    satellite_iso_sha256    = var.satellite_iso_sha256
+
+    satellite_manifest_s3_bucket = var.satellite_manifest_s3_bucket
+    satellite_manifest_s3_key    = var.satellite_manifest_s3_key
+    satellite_manifest_sha256    = var.satellite_manifest_sha256
+
+    satellite_initial_admin_username = (
+      var.satellite_initial_admin_username
+    )
+
+    satellite_organization_name = (
+      var.satellite_organization_name
+    )
+
+    satellite_location_name = (
+      var.satellite_location_name
+    )
+
     lab_users = var.lab_users
     idm_users = var.idm_users
 
@@ -371,5 +391,52 @@ output "ssh_commands" {
   value = {
     for name, instance in aws_instance.server :
     name => "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+  }
+}
+
+############################################################
+# Satellite Installation Information
+############################################################
+
+output "satellite_iso_s3_uri" {
+  description = "S3 URI of the Satellite installation ISO."
+  value = (
+    "s3://${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+  )
+}
+
+output "satellite_iso_s3_object_arn" {
+  description = "S3 object ARN permitted by the Satellite EC2 IAM role."
+  value = (
+    "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+  )
+}
+
+output "satellite_admin_password_secret_name" {
+  description = "AWS Secrets Manager secret containing the Satellite administrator password."
+  value       = "${var.secret_prefix}/satellite/admin_password"
+}
+
+output "satellite_iam_role_name" {
+  description = "Shared IAM role used by the Satellite EC2 instance"
+  value       = aws_iam_role.aap.name
+
+}
+
+output "satellite_iam_instance_profile_name" {
+  description = "Shared IAM instance profile used by the Satellite EC2 instance"
+  value       = aws_iam_instance_profile.aap.name
+
+}
+
+output "satellite_installation_settings" {
+  description = "Non-sensitive Satellite installation settings."
+
+  value = {
+    iso_s3_uri    = "s3://${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+    admin_user    = var.satellite_initial_admin_username
+    organization  = var.satellite_organization_name
+    location      = var.satellite_location_name
+    password_path = "${var.secret_prefix}/satellite/admin_password"
   }
 }

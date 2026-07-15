@@ -195,7 +195,6 @@ locals {
 
   static_secret_values = {
     "aap/gateway_admin_username" = "admin"
-    "satellite/admin_username"   = "admin"
     "quay/superuser"             = "quayadmin"
     "quay/admin_access_token"    = "CHANGE_ME_AFTER_QUAY_DEPLOYMENT"
     "idm/default_user_password"  = var.idm_default_user_password
@@ -528,42 +527,68 @@ resource "aws_iam_role_policy" "aap_s3_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
-        Sid    = "ReadAAPInstallerBucket"
+        Sid    = "ReadInstallationArtifacts"
         Effect = "Allow"
+
         Action = [
           "s3:GetObject"
         ]
-        Resource = [
+
+        Resource = distinct([
           "arn:aws:s3:::aap-containerized-installers/2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz",
-          "arn:aws:s3:::aap-containerized-installers/2.7/manifest_AAP.zip"
-        ]
+          "arn:aws:s3:::aap-containerized-installers/2.7/manifest_AAP.zip",
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
+        ])
       },
       {
-        Sid    = "ListSatelliteInstallerBucket"
+        Sid    = "ReadArtifactBucketMetadata"
         Effect = "Allow"
+
         Action = [
-          "s3:ListBucket",
           "s3:GetBucketLocation"
         ]
-        Resource = [
-          "arn:aws:s3:::satellite-installer"
-        ]
+
+        Resource = distinct([
+          "arn:aws:s3:::aap-containerized-installers",
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
       },
       {
-        Sid    = "ReadSatelliteInstallerBucket"
+        Sid    = "ListSatelliteArtifactKeys"
         Effect = "Allow"
+
         Action = [
-          "s3:GetObject"
+          "s3:ListBucket"
         ]
-        Resource = [
-          "arn:aws:s3:::satellite-installer/*"
-        ]
+
+        Resource = distinct([
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
+
+        Condition = {
+          StringLike = {
+            "s3:prefix" = distinct([
+              var.satellite_iso_s3_key,
+              var.satellite_manifest_s3_key
+            ])
+          }
+        }
       }
     ]
   })
 }
+
+############################################################
+# Satellite IAM Role For Reading Installation ISO From S3
+############################################################
+
+
 
 ############################################################
 # Networking
@@ -756,10 +781,14 @@ resource "aws_instance" "server" {
 
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
-  # The lab IAM role/profile (named for aap) is shared by hosts that need AWS
-  # access from the instance itself: aap reads Secrets Manager, and satellite
-  # pulls its installer ISO from the satellite-installer S3 bucket.
-  iam_instance_profile = contains(["aap", "satellite"], each.value.role) ? aws_iam_instance_profile.aap.name : null
+  
+iam_instance_profile = contains(
+
+  ["aap", "satellite"],
+
+  each.value.role
+
+) ? aws_iam_instance_profile.aap.name : null
 
   root_block_device {
 
@@ -786,16 +815,17 @@ resource "aws_instance" "server" {
 
   depends_on = [
 
-    terraform_data.validate_dns_discovery,
-    terraform_data.validate_idm_server,
-    aws_key_pair.lab,
-    local_sensitive_file.lab_ssh_private_key,
-    aws_iam_instance_profile.aap,
-    aws_security_group.image_builder,
-    aws_secretsmanager_secret_version.ssh_private_key,
-    aws_secretsmanager_secret_version.generated,
-    aws_secretsmanager_secret_version.static,
-    aws_secretsmanager_secret_version.redhat
+  terraform_data.validate_dns_discovery,
+  terraform_data.validate_idm_server,
+  aws_key_pair.lab,
+  local_sensitive_file.lab_ssh_private_key,
+  aws_iam_instance_profile.aap,
+  aws_iam_role_policy.aap_s3_read,
+  aws_security_group.image_builder,
+  aws_secretsmanager_secret_version.ssh_private_key,
+  aws_secretsmanager_secret_version.generated,
+  aws_secretsmanager_secret_version.static,
+  aws_secretsmanager_secret_version.redhat
 
   ]
 }
@@ -952,6 +982,26 @@ resource "local_file" "ansible_inventory" {
     secret_prefix = var.secret_prefix
 
     lab_ssh_private_key_secret_name = local.lab_ssh_private_key_secret_name
+
+    satellite_iso_s3_bucket = var.satellite_iso_s3_bucket
+    satellite_iso_s3_key    = var.satellite_iso_s3_key
+    satellite_iso_sha256    = var.satellite_iso_sha256
+
+    satellite_manifest_s3_bucket = var.satellite_manifest_s3_bucket
+    satellite_manifest_s3_key    = var.satellite_manifest_s3_key
+    satellite_manifest_sha256    = var.satellite_manifest_sha256
+
+    satellite_initial_admin_username = (
+      var.satellite_initial_admin_username
+    )
+
+    satellite_organization_name = (
+      var.satellite_organization_name
+    )
+
+    satellite_location_name = (
+      var.satellite_location_name
+    )
 
     lab_users = var.lab_users
     idm_users = var.idm_users

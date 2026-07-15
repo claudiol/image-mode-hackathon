@@ -245,3 +245,122 @@ variable "idm_default_user_password" {
   sensitive   = true
   description = "Temporary default password for initial IdM lab users."
 }
+
+############################################################
+# Satellite Installation Settings
+############################################################
+
+variable "satellite_iso_s3_bucket" {
+  type        = string
+  default     = "aap-containerized-installers"
+  description = "S3 bucket containing the Red Hat Satellite installation ISO."
+
+  validation {
+    condition     = trimspace(var.satellite_iso_s3_bucket) != ""
+    error_message = "satellite_iso_s3_bucket cannot be empty."
+  }
+}
+
+variable "satellite_iso_s3_key" {
+  type        = string
+  default     = "Satellite-6.19.2-rhel-9-x86_64.dvd.iso"
+  description = "S3 object key for the Red Hat Satellite installation ISO."
+
+  validation {
+    condition     = trimspace(var.satellite_iso_s3_key) != ""
+    error_message = "satellite_iso_s3_key cannot be empty."
+  }
+}
+
+variable "satellite_iso_sha256" {
+  type        = string
+  default     = ""
+  description = "Optional SHA-256 checksum for the Satellite ISO. Leave blank to skip checksum validation."
+
+  validation {
+    condition = (
+      trimspace(var.satellite_iso_sha256) == "" ||
+      can(regex("^[a-fA-F0-9]{64}$", trimspace(var.satellite_iso_sha256)))
+    )
+    error_message = "satellite_iso_sha256 must be blank or a 64-character SHA-256 hexadecimal value."
+  }
+}
+
+variable "satellite_initial_admin_username" {
+  type        = string
+  default     = "admin"
+  description = "Initial local Satellite administrator username."
+
+  validation {
+    condition     = trimspace(var.satellite_initial_admin_username) != ""
+    error_message = "satellite_initial_admin_username cannot be empty."
+  }
+}
+
+variable "satellite_organization_name" {
+  type        = string
+  default     = "Hackathon_Org"
+  description = "Initial Satellite organization name."
+
+  validation {
+    condition     = trimspace(var.satellite_organization_name) != ""
+    error_message = "satellite_organization_name cannot be empty."
+  }
+}
+
+variable "satellite_location_name" {
+  type        = string
+  default     = "AWS_Region"
+  description = "Initial Satellite location name."
+
+  validation {
+    condition     = trimspace(var.satellite_location_name) != ""
+    error_message = "satellite_location_name cannot be empty."
+  }
+}
+
+############################################################
+# Satellite Subscription Manifest
+############################################################
+
+variable "satellite_manifest_s3_bucket" {
+  type        = string
+  default     = "aap-containerized-installers"
+  description = "S3 bucket containing the Red Hat Satellite subscription manifest."
+
+  validation {
+    condition     = trimspace(var.satellite_manifest_s3_bucket) != ""
+    error_message = "satellite_manifest_s3_bucket cannot be empty."
+  }
+}
+
+variable "satellite_manifest_s3_key" {
+  type        = string
+  default     = "manifest_Satellite.zip"
+  description = "S3 object key for the Red Hat Satellite subscription manifest."
+
+  validation {
+    condition     = trimspace(var.satellite_manifest_s3_key) != ""
+    error_message = "satellite_manifest_s3_key cannot be empty."
+  }
+}
+
+variable "satellite_manifest_sha256" {
+  type        = string
+  default     = ""
+  description = "Optional SHA-256 checksum for the Satellite subscription manifest."
+
+  validation {
+    condition = (
+      trimspace(var.satellite_manifest_sha256) == "" ||
+      can(
+        regex(
+          "^[a-fA-F0-9]{64}$",
+          trimspace(var.satellite_manifest_sha256)
+        )
+      )
+    )
+
+    error_message = "satellite_manifest_sha256 must be blank or a 64-character SHA-256 value."
+  }
+}

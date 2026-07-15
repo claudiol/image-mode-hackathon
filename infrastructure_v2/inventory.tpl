@@ -16,6 +16,18 @@ idm_realm_name=${idm_realm_name}
 idm_server_fqdn=${idm_server_fqdn}
 idm_server_ip=${idm_server_ip}
 
+satellite_iso_s3_bucket=${satellite_iso_s3_bucket}
+satellite_iso_s3_key=${satellite_iso_s3_key}
+satellite_iso_sha256=${satellite_iso_sha256}
+
+satellite_manifest_s3_bucket=${satellite_manifest_s3_bucket}
+satellite_manifest_s3_key=${satellite_manifest_s3_key}
+satellite_manifest_sha256=${satellite_manifest_sha256}
+
+satellite_initial_admin_username=${satellite_initial_admin_username}
+satellite_organization_name=${satellite_organization_name}
+satellite_location_name=${satellite_location_name}
+
 lab_users=${jsonencode(lab_users)}
 idm_users=${jsonencode(idm_users)}
 
