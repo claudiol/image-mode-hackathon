@@ -1193,11 +1193,9 @@
           - list
           - "--search"
           - "name=\"{{ satellite_idm_auth_source_name }}\""
-          - "--full-result"
-          - "true"
       register: satellite_idm_auth_source_after
       changed_when: false
-      no_log: false
+      no_log: true
 
     - name: PHASE 9B | Resolve configured IdM LDAP authentication source ID
       ansible.builtin.set_fact:
