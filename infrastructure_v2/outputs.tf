@@ -400,7 +400,6 @@ output "ssh_commands" {
 
 output "satellite_iso_s3_uri" {
   description = "S3 URI of the Satellite installation ISO."
-
   value = (
     "s3://${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
   )
@@ -408,7 +407,6 @@ output "satellite_iso_s3_uri" {
 
 output "satellite_iso_s3_object_arn" {
   description = "S3 object ARN permitted by the Satellite EC2 IAM role."
-
   value = (
     "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
   )
