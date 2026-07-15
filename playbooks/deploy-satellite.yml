@@ -1029,7 +1029,7 @@
           - "true"
       register: satellite_idm_auth_source_list
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: PHASE 9B | Parse existing IdM LDAP authentication sources
       ansible.builtin.set_fact:
