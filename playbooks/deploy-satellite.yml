@@ -1513,7 +1513,7 @@
         success_msg: >-
           Satellite manifest import was verified for organization
           {{ satellite_organization }}.
-      no_log: true
+      no_log: false
 
     - name: PHASE 10 | List imported subscriptions
       ansible.builtin.command:
