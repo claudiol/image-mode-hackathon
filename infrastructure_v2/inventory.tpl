@@ -1,7 +1,7 @@
 [all:vars]
 ansible_user=ec2-user
 ansible_ssh_private_key_file=${ansible_ssh_private_key_file}
-ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_ssh_common_args=’-o StrictHostKeyChecking=no’
 
 aws_region=${aws_region}
 aws_profile=${aws_profile}
@@ -19,6 +19,11 @@ idm_server_ip=${idm_server_ip}
 satellite_iso_s3_bucket=${satellite_iso_s3_bucket}
 satellite_iso_s3_key=${satellite_iso_s3_key}
 satellite_iso_sha256=${satellite_iso_sha256}
+
+satellite_manifest_s3_bucket=${satellite_manifest_s3_bucket}
+satellite_manifest_s3_key=${satellite_manifest_s3_key}
+satellite_manifest_sha256=${satellite_manifest_sha256}
+
 satellite_initial_admin_username=${satellite_initial_admin_username}
 satellite_organization_name=${satellite_organization_name}
 satellite_location_name=${satellite_location_name}
@@ -28,35 +33,35 @@ idm_users=${jsonencode(idm_users)}
 
 [idm]
 %{ for name, s in servers ~}
-%{ if s.role == "idm" ~}
+%{ if s.role == “idm” ~}
 ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
 %{ endif ~}
 %{ endfor ~}
 
 [satellite]
 %{ for name, s in servers ~}
-%{ if s.role == "satellite" ~}
+%{ if s.role == “satellite” ~}
 ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
 %{ endif ~}
 %{ endfor ~}
 
 [aap]
 %{ for name, s in servers ~}
-%{ if s.role == "aap" ~}
+%{ if s.role == “aap” ~}
 ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
 %{ endif ~}
 %{ endfor ~}
 
 [quay]
 %{ for name, s in servers ~}
-%{ if s.role == "quay" ~}
+%{ if s.role == “quay” ~}
 ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} quay_hostname=${s.fqdn}
 %{ endif ~}
 %{ endfor ~}
 
 [image_builder]
 %{ for name, s in servers ~}
-%{ if s.role == "image-builder" ~}
+%{ if s.role == “image-builder” ~}
 ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
 %{ endif ~}
 %{ endfor ~}
