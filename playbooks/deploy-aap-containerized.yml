@@ -207,6 +207,9 @@
               redis_mode=standalone
               routable_hostname={{ ansible_default_ipv4.address }}
 
+              automationgateway_ready_retries=60
+              automationgateway_ready_delay=10
+
               automationgateway_main_url=https://{{ aap_fqdn }}
               gateway_hostname={{ aap_fqdn }}
 
