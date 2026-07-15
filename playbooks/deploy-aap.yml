@@ -586,15 +586,26 @@
       failed_when: false
       changed_when: false
 
-    - name: PHASE 10 | Run AAP 2.7 containerized installer as ec2-user
+    - name: PHASE 10 | Start AAP 2.7 containerized installer
       ansible.builtin.shell: |
-        whoami > "{{ aap_run_user_home }}/aap-installer-whoami.txt"
-        id >> "{{ aap_run_user_home }}/aap-installer-whoami.txt"
+        set -o pipefail
 
-        ansible-playbook -i inventory ansible.containerized_installer.install \
-          > "{{ aap_run_user_home }}/aap-containerized-installer.log" 2>&1
+        rm -f "{{ aap_run_user_home }}/aap-containerized-installer.rc"
 
-        echo $? > "{{ aap_run_user_home }}/aap-containerized-installer.rc"
+        timeout --signal=TERM --kill-after=60s 4h \
+          ansible-playbook \
+            -i inventory \
+            ansible.containerized_installer.install \
+          </dev/null \
+          >> "{{ aap_run_user_home }}/aap-containerized-installer.log" \
+          2>&1
+
+        installer_rc=$?
+
+        printf '%s\n' "${installer_rc}" \
+          > "{{ aap_run_user_home }}/aap-containerized-installer.rc"
+
+        exit "${installer_rc}"
       args:
         chdir: "{{ aap_installer_dir }}"
         executable: /bin/bash
@@ -604,26 +615,55 @@
         HOME: "{{ aap_run_user_home }}"
         USER: "{{ aap_run_user }}"
         LOGNAME: "{{ aap_run_user }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ aap_run_user_uid.stdout }}"
+        PYTHONUNBUFFERED: "1"
+        ANSIBLE_FORCE_COLOR: "0"
+      register: aap_installer_job
+      async: 15000
+      poll: 0
       changed_when: true
       when: existing_aap_gateway.status not in [200, 401, 403]
 
-    - name: Read AAP installer return code
-      ansible.builtin.slurp:
-        src: "{{ aap_run_user_home }}/aap-containerized-installer.rc"
-      register: aap_installer_rc_raw
+    - name: PHASE 10 | Wait for AAP installer job to finish
+      ansible.builtin.async_status:
+        jid: "{{ aap_installer_job.ansible_job_id }}"
+      register: aap_installer_result
+      until: aap_installer_result.finished | bool
+      retries: 500
+      delay: 30
+      changed_when: false
       when: existing_aap_gateway.status not in [200, 401, 403]
 
-    - name: Set AAP installer return code fact
-      ansible.builtin.set_fact:
-        aap_installer_rc: "{{ aap_installer_rc_raw.content | b64decode | trim }}"
-      when: existing_aap_gateway.status not in [200, 401, 403]
-
-    - name: Fail if AAP installer failed
-      ansible.builtin.fail:
-        msg: "AAP installer failed. Check {{ aap_run_user_home }}/aap-containerized-installer.log"
+    - name: PHASE 10 | Read recent installer log after failure
+      ansible.builtin.command:
+        argv:
+          - tail
+          - -n
+          - "100"
+          - "{{ aap_run_user_home }}/aap-containerized-installer.log"
+      register: aap_installer_log_tail
+      changed_when: false
+      failed_when: false
       when:
         - existing_aap_gateway.status not in [200, 401, 403]
-        - aap_installer_rc != "0"
+        - aap_installer_result.rc | default(1) | int != 0
+
+    - name: PHASE 10 | Fail if AAP installer failed
+      ansible.builtin.fail:
+        msg: |
+          AAP installer failed or timed out.
+
+          Return code:
+          {{ aap_installer_result.rc | default('unavailable') }}
+
+          Recent log output:
+          {{ aap_installer_log_tail.stdout | default('unavailable') }}
+
+          Full log:
+          {{ aap_run_user_home }}/aap-containerized-installer.log
+      when:
+        - existing_aap_gateway.status not in [200, 401, 403]
+        - aap_installer_result.rc | default(1) | int != 0
 
     - name: PHASE 11 | Wait for AAP Gateway to become available
       ansible.builtin.uri:
