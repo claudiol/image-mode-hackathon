@@ -527,17 +527,58 @@ resource "aws_iam_role_policy" "aap_s3_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
-        Sid    = "ReadAAPInstallerBucket"
+        Sid    = "ReadInstallationArtifacts"
         Effect = "Allow"
+
         Action = [
           "s3:GetObject"
         ]
-        Resource = [
+
+        Resource = distinct([
           "arn:aws:s3:::aap-containerized-installers/2.7/ansible-automation-platform-containerized-setup-bundle-2.7-1.2-x86_64.tar.gz",
-          "arn:aws:s3:::aap-containerized-installers/2.7/manifest_AAP.zip"
+          "arn:aws:s3:::aap-containerized-installers/2.7/manifest_AAP.zip",
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
+        ])
+      },
+      {
+        Sid    = "ReadArtifactBucketMetadata"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketLocation"
         ]
+
+        Resource = distinct([
+          "arn:aws:s3:::aap-containerized-installers",
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
+      },
+      {
+        Sid    = "ListSatelliteArtifactKeys"
+        Effect = "Allow"
+
+        Action = [
+          "s3:ListBucket"
+        ]
+
+        Resource = distinct([
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
+
+        Condition = {
+          StringLike = {
+            "s3:prefix" = distinct([
+              var.satellite_iso_s3_key,
+              var.satellite_manifest_s3_key
+            ])
+          }
+        }
       }
     ]
   })
@@ -547,82 +588,6 @@ resource "aws_iam_role_policy" "aap_s3_read" {
 # Satellite IAM Role For Reading Installation ISO From S3
 ############################################################
 
-resource "aws_iam_role" "satellite" {
-  name = "${var.environment_name}-satellite-role"
-
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-
-    Statement = [
-      {
-        Effect = "Allow"
-
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
-
-  tags = {
-    Name        = "${var.environment_name}-satellite-role"
-    Environment = var.environment_name
-  }
-}
-
-resource "aws_iam_role_policy" "satellite_iso_s3_read" {
-  name = "${var.environment_name}-satellite-installation-s3-read"
-  role = aws_iam_role.satellite.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-
-    Statement = [
-      {
-        Sid    = "ReadSatelliteInstallationArtifacts"
-        Effect = "Allow"
-
-        Action = [
-          "s3:GetObject"
-        ]
-
-        Resource = [
-          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}",
-          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
-        ]
-      },
-      {
-        Sid    = "ReadSatelliteArtifactBucketMetadata"
-        Effect = "Allow"
-
-        Action = [
-          "s3:GetBucketLocation"
-        ]
-
-        Resource = distinct([
-          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
-          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
-        ])
-      }
-    ]
-  })
-}
-
-resource "aws_iam_instance_profile" "satellite" {
-  name = "${var.environment_name}-satellite-instance-profile"
-  role = aws_iam_role.satellite.name
-
-  depends_on = [
-    aws_iam_role.satellite,
-    aws_iam_role_policy.satellite_iso_s3_read
-  ]
-}
 
 
 ############################################################
@@ -817,15 +782,13 @@ resource "aws_instance" "server" {
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
   
-  iam_instance_profile = (
-    each.value.role == "aap"
-    ? aws_iam_instance_profile.aap.name
-    : (
-      each.value.role == "satellite"
-      ? aws_iam_instance_profile.satellite.name
-      : null
-    )
-  )
+iam_instance_profile = contains(
+
+  ["aap", "satellite"],
+
+  each.value.role
+
+) ? aws_iam_instance_profile.aap.name : null
 
   root_block_device {
 
@@ -852,16 +815,17 @@ resource "aws_instance" "server" {
 
   depends_on = [
 
-    terraform_data.validate_dns_discovery,
-    terraform_data.validate_idm_server,
-    aws_key_pair.lab,
-    local_sensitive_file.lab_ssh_private_key,
-    aws_iam_instance_profile.aap,
-    aws_security_group.image_builder,
-    aws_secretsmanager_secret_version.ssh_private_key,
-    aws_secretsmanager_secret_version.generated,
-    aws_secretsmanager_secret_version.static,
-    aws_secretsmanager_secret_version.redhat
+  terraform_data.validate_dns_discovery,
+  terraform_data.validate_idm_server,
+  aws_key_pair.lab,
+  local_sensitive_file.lab_ssh_private_key,
+  aws_iam_instance_profile.aap,
+  aws_iam_role_policy.aap_s3_read,
+  aws_security_group.image_builder,
+  aws_secretsmanager_secret_version.ssh_private_key,
+  aws_secretsmanager_secret_version.generated,
+  aws_secretsmanager_secret_version.static,
+  aws_secretsmanager_secret_version.redhat
 
   ]
 }
