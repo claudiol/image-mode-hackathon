@@ -1247,8 +1247,6 @@
           - list
           - "--search"
           - "name=\"{{ satellite_admin_user_group_name }}\""
-          - "--full-result"
-          - "true"
       register: satellite_admin_user_group_list
       changed_when: false
       no_log: true
@@ -1278,7 +1276,7 @@
           - "--admin"
           - "true"
       register: satellite_admin_user_group_create
-      changed_when: true
+      changed_when: satellite_admin_user_group_create.rc == 0
       no_log: true
       when: satellite_admin_user_group_records | length == 0
 
@@ -1297,7 +1295,12 @@
           - "--admin"
           - "true"
       register: satellite_admin_user_group_update
-      changed_when: true
+      changed_when: >-
+        'User group updated' in
+        (
+          satellite_admin_user_group_update.stdout
+          | default('')
+        )
       no_log: true
 
     - name: PHASE 9C | Read external group mappings
@@ -1329,15 +1332,24 @@
           }}
       no_log: true
 
+    - name: PHASE 9C | Normalize external administrator group names
+      ansible.builtin.set_fact:
+        satellite_external_admin_group_names: >-
+          {{
+            satellite_external_admin_group_records
+            | map(attribute='Name', default='')
+            | map('lower')
+            | list
+          }}
+      no_log: true
+
     - name: PHASE 9C | Determine whether IdM administrator group is mapped
       ansible.builtin.set_fact:
         satellite_idm_admin_group_is_mapped: >-
           {{
-            satellite_external_admin_group_records
-            | selectattr('Name', 'defined')
-            | selectattr('Name', 'equalto', satellite_idm_admin_group)
-            | list
-            | length > 0
+            satellite_idm_admin_group | lower
+            in
+            satellite_external_admin_group_names
           }}
       no_log: true
 
@@ -1359,7 +1371,7 @@
           - "--auth-source-id"
           - "{{ satellite_idm_auth_source_id }}"
       register: satellite_external_admin_group_create
-      changed_when: true
+      changed_when: satellite_external_admin_group_create.rc == 0
       no_log: true
       when: not satellite_idm_admin_group_is_mapped
 
@@ -1369,7 +1381,7 @@
           - foreman-rake
           - ldap:refresh_usergroups
       register: satellite_ldap_group_refresh
-      changed_when: true
+      changed_when: false
 
     - name: PHASE 9C | Verify Satellite administrator user group
       ansible.builtin.command:
@@ -1408,21 +1420,39 @@
       changed_when: false
       no_log: true
 
+    - name: PHASE 9C | Parse verified administrator user group
+      ansible.builtin.set_fact:
+        satellite_admin_user_group_info_data: >-
+          {{
+            satellite_admin_user_group_info.stdout
+            | default('{}', true)
+            | from_json
+          }}
+        satellite_external_admin_group_after_data: >-
+          {{
+            satellite_external_admin_group_after.stdout
+            | default('[]', true)
+            | from_json
+          }}
+      no_log: true
+
     - name: PHASE 9C | Assert IdM administrator mapping is configured
       ansible.builtin.assert:
         that:
           - >-
-            (
-              satellite_admin_user_group_info.stdout
-              | from_json
-            ).get('Admin', false)
+            satellite_admin_user_group_info_data.get(
+              'Admin',
+              satellite_admin_user_group_info_data.get('admin', false)
+            )
             | bool
           - >-
-            satellite_idm_admin_group
+            satellite_idm_admin_group | lower
             in
             (
-              satellite_external_admin_group_after.stdout
-              | lower
+              satellite_external_admin_group_after_data
+              | map(attribute='Name', default='')
+              | map('lower')
+              | list
             )
         fail_msg: >-
           The IdM administrator group could not be mapped to the Satellite
@@ -1431,7 +1461,6 @@
           Members of IdM group {{ satellite_idm_admin_group }} are mapped to
           the Satellite administrator group.
       no_log: true
-
 
     ###########################################################################
     # PHASE 10 | Import Satellite subscription manifest
