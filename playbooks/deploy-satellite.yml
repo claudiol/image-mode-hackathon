@@ -151,11 +151,7 @@
     satellite_idm_host: "{{ idm_server_fqdn }}"
 
     satellite_idm_base_dn: >-
-      {{
-        idm_domain_name.split('.')
-        | map('regex_replace', '^(.*)$', 'dc=\\1')
-        | join(',')
-      }}
+      dc={{ idm_domain_name.split('.') | join(',dc=') }}
 
     satellite_idm_users_base_dn: >-
       cn=users,cn=accounts,{{ satellite_idm_base_dn }}
