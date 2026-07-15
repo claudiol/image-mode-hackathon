@@ -318,3 +318,49 @@ variable "satellite_location_name" {
     error_message = "satellite_location_name cannot be empty."
   }
 }
+
+############################################################
+# Satellite Subscription Manifest
+############################################################
+
+variable "satellite_manifest_s3_bucket" {
+  type        = string
+  default     = "aap-containerized-installers"
+  description = "S3 bucket containing the Red Hat Satellite subscription manifest."
+
+  validation {
+    condition     = trimspace(var.satellite_manifest_s3_bucket) != ""
+    error_message = "satellite_manifest_s3_bucket cannot be empty."
+  }
+}
+
+variable "satellite_manifest_s3_key" {
+  type        = string
+  default     = "manifest_Satellite.zip"
+  description = "S3 object key for the Red Hat Satellite subscription manifest."
+
+  validation {
+    condition     = trimspace(var.satellite_manifest_s3_key) != ""
+    error_message = "satellite_manifest_s3_key cannot be empty."
+  }
+}
+
+variable "satellite_manifest_sha256" {
+  type        = string
+  default     = ""
+  description = "Optional SHA-256 checksum for the Satellite subscription manifest."
+
+  validation {
+    condition = (
+      trimspace(var.satellite_manifest_sha256) == "" ||
+      can(
+        regex(
+          "^[a-fA-F0-9]{64}$",
+          trimspace(var.satellite_manifest_sha256)
+        )
+      )
+    )
+
+    error_message = "satellite_manifest_sha256 must be blank or a 64-character SHA-256 value."
+  }
+}
