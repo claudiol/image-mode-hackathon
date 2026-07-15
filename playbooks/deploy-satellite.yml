@@ -52,7 +52,7 @@
     satellite_organization: >-
       {{
         satellite_organization_name
-        | default('Hackathon_Org')
+        | default('Image Mode Lab')
       }}
 
     satellite_location: >-
