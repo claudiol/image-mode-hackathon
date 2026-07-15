@@ -135,6 +135,7 @@
       - bind-utils
       - sos
       - tmux
+      - unzip
 
     ###########################################################################
     # Host firewall
@@ -481,6 +482,92 @@
       when: expected_satellite_iso_sha256 | length > 0
 
     ###########################################################################
+    # PHASE 4B | Download Satellite subscription manifest
+    ###########################################################################
+
+    - name: PHASE 4B | Check for previously downloaded Satellite manifest
+      ansible.builtin.stat:
+        path: "{{ satellite_manifest_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: >-
+          {{
+            expected_satellite_manifest_sha256
+            | length > 0
+          }}
+      register: existing_satellite_manifest
+
+    - name: PHASE 4B | Determine whether manifest download is required
+      ansible.builtin.set_fact:
+        satellite_manifest_download_required: >-
+          {{
+            not existing_satellite_manifest.stat.exists
+            or
+            (
+              expected_satellite_manifest_sha256 | length > 0
+              and
+              existing_satellite_manifest.stat.checksum
+              | default('')
+              != expected_satellite_manifest_sha256
+            )
+          }}
+
+    - name: PHASE 4B | Remove invalid or incomplete manifest
+      ansible.builtin.file:
+        path: "{{ satellite_manifest_dest }}"
+        state: absent
+      when: satellite_manifest_download_required
+
+    - name: PHASE 4B | Download Satellite manifest from S3
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3
+          - cp
+          - "{{ satellite_manifest_s3_uri }}"
+          - "{{ satellite_manifest_dest }}"
+          - "--region"
+          - "{{ satellite_aws_region }}"
+          - "--only-show-errors"
+      register: satellite_manifest_download
+      changed_when: true
+      when: satellite_manifest_download_required
+
+    - name: PHASE 4B | Set Satellite manifest permissions
+      ansible.builtin.file:
+        path: "{{ satellite_manifest_dest }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: PHASE 4B | Calculate downloaded manifest checksum
+      ansible.builtin.stat:
+        path: "{{ satellite_manifest_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: downloaded_satellite_manifest
+
+    - name: PHASE 4B | Validate downloaded manifest checksum
+      ansible.builtin.assert:
+        that:
+          - >-
+            downloaded_satellite_manifest.stat.checksum
+            == expected_satellite_manifest_sha256
+        fail_msg: >-
+          Satellite manifest checksum verification failed. Expected
+          {{ expected_satellite_manifest_sha256 }}, but downloaded
+          {{ downloaded_satellite_manifest.stat.checksum }}.
+      when: expected_satellite_manifest_sha256 | length > 0
+
+    - name: PHASE 4B | Verify manifest is a readable ZIP archive
+      ansible.builtin.command:
+        argv:
+          - unzip
+          - "-t"
+          - "{{ satellite_manifest_dest }}"
+      register: satellite_manifest_zip_test
+      changed_when: false
+
+    ###########################################################################
     # PHASE 5 | Mount Satellite ISO
     ###########################################################################
 
@@ -698,10 +785,135 @@
       no_log: true
 
     ###########################################################################
-    # PHASE 10 | Configure disconnected behavior
+    # PHASE 10 | Import Satellite subscription manifest
     ###########################################################################
 
-    - name: PHASE 10 | Read subscription connection setting
+    - name: PHASE 10 | Read existing manifest history
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - subscription
+          - manifest-history
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_manifest_history_before
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Determine whether a manifest is already imported
+      ansible.builtin.set_fact:
+        satellite_manifest_already_imported: >-
+          {{
+            satellite_manifest_history_before.rc == 0
+            and
+            (
+              satellite_manifest_history_before.stdout
+              | default('')
+              | from_json
+              | length
+            ) > 0
+          }}
+      no_log: true
+
+    - name: PHASE 10 | Upload Satellite subscription manifest
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - subscription
+          - upload
+          - "--file"
+          - "{{ satellite_manifest_dest }}"
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_manifest_upload
+      changed_when: true
+      no_log: true
+      when: not satellite_manifest_already_imported
+
+    - name: PHASE 10 | Read manifest history after upload
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - subscription
+          - manifest-history
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_manifest_history_after
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Validate manifest import history
+      ansible.builtin.assert:
+        that:
+          - satellite_manifest_history_after.rc == 0
+          - >-
+            (
+              satellite_manifest_history_after.stdout
+              | from_json
+              | length
+            ) > 0
+        fail_msg: >-
+          Satellite manifest import could not be verified for organization
+          {{ satellite_organization }}.
+      no_log: true
+
+    - name: PHASE 10 | List imported subscriptions
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - subscription
+          - list
+          - "--organization"
+          - "{{ satellite_organization }}"
+          - "--full-result"
+          - "true"
+      register: satellite_imported_subscriptions
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Validate subscriptions were imported
+      ansible.builtin.assert:
+        that:
+          - satellite_imported_subscriptions.rc == 0
+          - >-
+            (
+              satellite_imported_subscriptions.stdout
+              | from_json
+              | length
+            ) > 0
+        fail_msg: >-
+          The manifest was uploaded, but no subscriptions were returned for
+          organization {{ satellite_organization }}.
+      no_log: true
+
+    ###########################################################################
+    # PHASE 11 | Configure disconnected behavior
+    ###########################################################################
+
+    - name: PHASE 11 | Read subscription connection setting
       ansible.builtin.command:
         argv:
           - hammer
@@ -717,7 +929,7 @@
       changed_when: false
       no_log: true
 
-    - name: PHASE 10 | Disable upstream subscription connection
+    - name: PHASE 11 | Disable upstream subscription connection
       ansible.builtin.command:
         argv:
           - hammer
@@ -737,12 +949,11 @@
       when: >-
         satellite_subscription_connection_setting.stdout
         is not search('false', ignorecase=true)
-
     ###########################################################################
-    # PHASE 11 | Final report
+    # PHASE 12 | Final report
     ###########################################################################
 
-    - name: PHASE 11 | Display Satellite deployment information
+    - name: PHASE 12 | Display Satellite deployment information
       ansible.builtin.debug:
         msg:
           - "Red Hat Satellite installation completed."
@@ -751,6 +962,9 @@
           - "Organization: {{ satellite_organization }}"
           - "Location: {{ satellite_location }}"
           - "ISO source: {{ satellite_iso_s3_uri }}"
+          - "Manifest source: {{ satellite_manifest_s3_uri }}"
+          - "Manifest destination: {{ satellite_manifest_dest }}"
+          - "Subscription manifest import verified."
           - "Package installation log: {{ satellite_package_install_log }}"
           - "Satellite installer log: {{ satellite_installer_log }}"
           - "The administrator password remains stored in AWS Secrets Manager."
