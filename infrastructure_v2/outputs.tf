@@ -420,13 +420,15 @@ output "satellite_admin_password_secret_name" {
 }
 
 output "satellite_iam_role_name" {
-  description = "IAM role used by the Satellite EC2 instance."
-  value       = aws_iam_role.satellite.name
+  description = "Shared IAM role used by the Satellite EC2 instance"
+  value       = aws_iam_role.aap.name
+
 }
 
 output "satellite_iam_instance_profile_name" {
-  description = "IAM instance profile attached to the Satellite EC2 instance."
-  value       = aws_iam_instance_profile.satellite.name
+  description = "Shared IAM instance profile used by the Satellite EC2 instance"
+  value       = aws_iam_instance_profile.aap.name
+
 }
 
 output "satellite_installation_settings" {
