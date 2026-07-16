@@ -29,7 +29,7 @@
 ###############################################################################
 
 - name: Configure all hosts for Image Mode development
-  hosts: all
+  hosts: image_builder
   become: true
   gather_facts: true
 
@@ -1789,8 +1789,7 @@
 
         - name: Write exported Cockpit ACM files locally
           ansible.builtin.copy:
-            content: "{{ item.content | trim }}
-"
+            content: "{{ item.content | trim }}"
             dest: "{{ cockpit_tls_local_staging.path }}/{{ item.filename }}"
             mode: "0600"
           loop:
