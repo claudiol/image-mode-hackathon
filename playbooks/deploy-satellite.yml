@@ -83,6 +83,55 @@
     satellite_admin_password_secret_name: >-
       {{ satellite_secret_prefix }}/satellite/admin_password
 
+
+    ###########################################################################
+    # Public TLS certificate configuration
+    ###########################################################################
+
+    satellite_public_tls_fqdn: >-
+      {{
+        public_tls_fqdn
+        | default(satellite_fqdn, true)
+      }}
+
+    satellite_acm_certificate_arn: >-
+      {{
+        acm_certificate_arn
+        | default('', true)
+      }}
+
+    # Red Hat recommends retaining these files because later
+    # satellite-installer and upgrade operations reference them.
+    satellite_tls_directory: "/root/satellite_cert"
+
+    satellite_tls_certificate_path: >-
+      {{ satellite_tls_directory }}/satellite_cert.pem
+
+    satellite_tls_private_key_path: >-
+      {{ satellite_tls_directory }}/satellite_cert_key.pem
+
+    satellite_tls_acm_chain_path: >-
+      {{ satellite_tls_directory }}/acm_chain.pem
+
+    satellite_tls_ca_bundle_path: >-
+      {{ satellite_tls_directory }}/ca_cert_bundle.pem
+
+    satellite_tls_current_certificate_path: >-
+      {{ satellite_tls_directory }}/current_satellite_cert.pem
+
+    satellite_tls_system_ca_parts_directory: >-
+      {{ satellite_tls_directory }}/system-ca-parts
+
+    satellite_tls_acm_chain_parts_directory: >-
+      {{ satellite_tls_directory }}/acm-chain-parts
+
+    satellite_tls_local_staging_prefix: "satellite-acm-tls-"
+
+    satellite_tls_minimum_validity_seconds: 1209600
+
+    satellite_force_public_tls_install: false
+
+
     ###########################################################################
     # Satellite ISO
     ###########################################################################
@@ -229,6 +278,8 @@
           - satellite_location | length > 0
           - satellite_secret_prefix | length > 0
           - satellite_aws_region | length > 0
+          - satellite_public_tls_fqdn | length > 0
+          - satellite_acm_certificate_arn | length > 0
         fail_msg: >-
           One or more required Satellite variables are missing or invalid.
           Verify the Terraform-generated [all:vars] inventory values.
@@ -340,6 +391,38 @@
           }}
       no_log: true
 
+    - name: Verify Satellite ACM certificate is issued
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'acm',
+              'describe-certificate',
+              '--certificate-arn',
+              satellite_acm_certificate_arn,
+              '--region',
+              satellite_aws_region,
+              '--query',
+              'Certificate.Status',
+              '--output',
+              'text'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: satellite_acm_certificate_status
+      changed_when: false
+      failed_when: >-
+        satellite_acm_certificate_status.rc != 0
+        or
+        satellite_acm_certificate_status.stdout | trim != 'ISSUED'
 
   tasks:
     ###########################################################################
@@ -917,6 +1000,827 @@
           {{ satellite_installer_log }}.
 
     ###########################################################################
+    # PHASE 8B | Install public ACM TLS certificate
+    ###########################################################################
+
+    - name: PHASE 8B | Create persistent Satellite TLS directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ satellite_tls_directory }}"
+        - "{{ satellite_tls_system_ca_parts_directory }}"
+        - "{{ satellite_tls_acm_chain_parts_directory }}"
+
+    - name: PHASE 8B | Read currently served Satellite certificate
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl s_client \
+          -connect 127.0.0.1:443 \
+          -servername "{{ satellite_public_tls_fqdn }}" \
+          -showcerts \
+          </dev/null 2>/dev/null |
+          awk '
+            /-----BEGIN CERTIFICATE-----/ {
+              capture = 1
+            }
+
+            capture {
+              print
+            }
+
+            /-----END CERTIFICATE-----/ {
+              exit
+            }
+          '
+      args:
+        executable: /bin/bash
+      register: satellite_current_tls_certificate_pem
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 8B | Write currently served Satellite certificate
+      ansible.builtin.copy:
+        content: |
+          {{ satellite_current_tls_certificate_pem.stdout | trim }}
+        dest: "{{ satellite_tls_current_certificate_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - >-
+          satellite_current_tls_certificate_pem.stdout
+          | default('')
+          | trim
+          | length > 0
+
+    - name: PHASE 8B | Read current Satellite certificate fingerprint
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ satellite_tls_current_certificate_path }}"
+          - -noout
+          - -fingerprint
+          - -sha256
+      register: satellite_current_tls_fingerprint
+      changed_when: false
+      failed_when: false
+      when:
+        - >-
+          satellite_current_tls_certificate_pem.stdout
+          | default('')
+          | trim
+          | length > 0
+
+    - name: PHASE 8B | Normalize current Satellite certificate fingerprint
+      ansible.builtin.set_fact:
+        satellite_current_tls_sha256: >-
+          {{
+            satellite_current_tls_fingerprint.stdout
+            | default('')
+            | regex_replace('^.*=', '')
+            | regex_replace(':', '')
+            | trim
+            | upper
+          }}
+
+    - name: PHASE 8B | Create local ACM staging directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "{{ satellite_tls_local_staging_prefix }}"
+      delegate_to: localhost
+      become: false
+      register: satellite_tls_local_staging
+      no_log: true
+
+    - name: PHASE 8B | Export and deploy ACM certificate
+      block:
+        #######################################################################
+        # Export ACM material on the Ansible controller
+        #######################################################################
+
+        - name: PHASE 8B | Generate ACM export passphrase
+          ansible.builtin.set_fact:
+            satellite_acm_export_passphrase: >-
+              {{
+                lookup(
+                  'ansible.builtin.password',
+                  '/dev/null',
+                  length=64,
+                  chars=['ascii_letters', 'digits']
+                )
+              }}
+          no_log: true
+
+        - name: PHASE 8B | Write local ACM export passphrase
+          ansible.builtin.copy:
+            content: "{{ satellite_acm_export_passphrase }}"
+            dest: "{{ satellite_tls_local_staging.path }}/passphrase"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: PHASE 8B | Export Satellite certificate from ACM
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  'aws',
+                  'acm',
+                  'export-certificate',
+                  '--certificate-arn',
+                  satellite_acm_certificate_arn,
+                  '--passphrase',
+                  'fileb://' ~ satellite_tls_local_staging.path ~ '/passphrase',
+                  '--region',
+                  satellite_aws_region,
+                  '--output',
+                  'json',
+                  '--no-cli-pager'
+                ]
+                +
+                (
+                  ['--profile', aws_profile]
+                  if aws_profile | default('') | trim | length > 0
+                  else []
+                )
+              }}
+          delegate_to: localhost
+          become: false
+          register: satellite_acm_export_result
+          changed_when: false
+          no_log: true
+
+        - name: PHASE 8B | Parse exported ACM certificate
+          ansible.builtin.set_fact:
+            satellite_acm_exported_certificate: >-
+              {{
+                satellite_acm_export_result.stdout
+                | from_json
+              }}
+          no_log: true
+
+        - name: PHASE 8B | Validate exported ACM material
+          ansible.builtin.assert:
+            that:
+              - >-
+                satellite_acm_exported_certificate.Certificate
+                | default('')
+                | length > 0
+              - >-
+                satellite_acm_exported_certificate.CertificateChain
+                | default('')
+                | length > 0
+              - >-
+                satellite_acm_exported_certificate.PrivateKey
+                | default('')
+                | length > 0
+            fail_msg: >-
+              ACM did not return a certificate, certificate chain, and
+              encrypted private key.
+          no_log: true
+
+        - name: PHASE 8B | Write exported ACM leaf certificate locally
+          ansible.builtin.copy:
+            content: |
+              {{ satellite_acm_exported_certificate.Certificate | trim }}
+            dest: "{{ satellite_tls_local_staging.path }}/satellite_cert.pem"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: PHASE 8B | Write exported ACM chain locally
+          ansible.builtin.copy:
+            content: |
+              {{ satellite_acm_exported_certificate.CertificateChain | trim }}
+            dest: "{{ satellite_tls_local_staging.path }}/acm_chain.pem"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: PHASE 8B | Write encrypted ACM private key locally
+          ansible.builtin.copy:
+            content: |
+              {{ satellite_acm_exported_certificate.PrivateKey | trim }}
+            dest: >-
+              {{ satellite_tls_local_staging.path }}/satellite_cert_key.encrypted
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        #######################################################################
+        # Validate the ACM certificate before changing Satellite
+        #######################################################################
+
+        - name: PHASE 8B | Validate ACM certificate hostname
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ satellite_tls_local_staging.path }}/satellite_cert.pem"
+              - -noout
+              - -checkhost
+              - "{{ satellite_public_tls_fqdn }}"
+          delegate_to: localhost
+          become: false
+          register: satellite_acm_hostname_check
+          changed_when: false
+          failed_when: satellite_acm_hostname_check.rc != 0
+
+        - name: PHASE 8B | Validate ACM certificate remaining lifetime
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ satellite_tls_local_staging.path }}/satellite_cert.pem"
+              - -noout
+              - -checkend
+              - "{{ satellite_tls_minimum_validity_seconds | string }}"
+          delegate_to: localhost
+          become: false
+          register: satellite_acm_validity_check
+          changed_when: false
+          failed_when: satellite_acm_validity_check.rc != 0
+
+        - name: PHASE 8B | Read exported ACM fingerprint
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ satellite_tls_local_staging.path }}/satellite_cert.pem"
+              - -noout
+              - -fingerprint
+              - -sha256
+          delegate_to: localhost
+          become: false
+          register: satellite_acm_fingerprint
+          changed_when: false
+
+        - name: PHASE 8B | Normalize exported ACM fingerprint
+          ansible.builtin.set_fact:
+            satellite_acm_tls_sha256: >-
+              {{
+                satellite_acm_fingerprint.stdout
+                | default('')
+                | regex_replace('^.*=', '')
+                | regex_replace(':', '')
+                | trim
+                | upper
+              }}
+
+        - name: PHASE 8B | Validate exported ACM fingerprint
+          ansible.builtin.assert:
+            that:
+              - satellite_acm_fingerprint.rc == 0
+              - satellite_acm_tls_sha256 | length == 64
+              - satellite_acm_tls_sha256 is match('^[0-9A-F]{64}$')
+            fail_msg: >-
+              Could not determine a valid SHA-256 fingerprint for the
+              exported Satellite ACM certificate.
+
+        - name: PHASE 8B | Determine whether Satellite TLS update is required
+          ansible.builtin.set_fact:
+            satellite_public_tls_install_required: >-
+              {{
+                satellite_force_public_tls_install | bool
+                or
+                (
+                  satellite_current_tls_sha256
+                  | default('')
+                )
+                !=
+                satellite_acm_tls_sha256
+              }}
+
+        - name: PHASE 8B | Report Satellite TLS state
+          ansible.builtin.debug:
+            msg:
+              - "TLS FQDN: {{ satellite_public_tls_fqdn }}"
+              - "ACM ARN: {{ satellite_acm_certificate_arn }}"
+              - >-
+                Current fingerprint:
+                {{
+                  satellite_current_tls_sha256
+                  | default('not detected')
+                }}
+              - "ACM fingerprint: {{ satellite_acm_tls_sha256 }}"
+              - >-
+                Certificate update required:
+                {{ satellite_public_tls_install_required }}
+
+        #######################################################################
+        # Install persistent certificate files on Satellite
+        #######################################################################
+
+        - name: PHASE 8B | Install ACM leaf certificate
+          ansible.builtin.copy:
+            src: "{{ satellite_tls_local_staging.path }}/satellite_cert.pem"
+            dest: "{{ satellite_tls_certificate_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Install ACM certificate chain
+          ansible.builtin.copy:
+            src: "{{ satellite_tls_local_staging.path }}/acm_chain.pem"
+            dest: "{{ satellite_tls_acm_chain_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Install encrypted ACM private key temporarily
+          ansible.builtin.copy:
+            src: >-
+              {{ satellite_tls_local_staging.path }}/satellite_cert_key.encrypted
+            dest: "{{ satellite_tls_private_key_path }}.encrypted"
+            owner: root
+            group: root
+            mode: "0600"
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        - name: PHASE 8B | Install temporary ACM passphrase
+          ansible.builtin.copy:
+            content: "{{ satellite_acm_export_passphrase }}"
+            dest: "{{ satellite_tls_directory }}/.acm-passphrase"
+            owner: root
+            group: root
+            mode: "0600"
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        - name: PHASE 8B | Decrypt ACM private key
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - "{{ satellite_tls_private_key_path }}.encrypted"
+              - -out
+              - "{{ satellite_tls_private_key_path }}"
+              - -passin
+              - "file:{{ satellite_tls_directory }}/.acm-passphrase"
+          register: satellite_acm_key_decrypt
+          changed_when: satellite_acm_key_decrypt.rc == 0
+          failed_when: satellite_acm_key_decrypt.rc != 0
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        - name: PHASE 8B | Secure unencrypted Satellite private key
+          ansible.builtin.file:
+            path: "{{ satellite_tls_private_key_path }}"
+            state: file
+            owner: root
+            group: root
+            mode: "0600"
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Verify Satellite private key is unencrypted
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - "{{ satellite_tls_private_key_path }}"
+              - -noout
+              - -check
+              - -passin
+              - "pass:"
+          register: satellite_unencrypted_key_check
+          changed_when: false
+          failed_when: satellite_unencrypted_key_check.rc != 0
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        #######################################################################
+        # Verify key and certificate match
+        #######################################################################
+
+        - name: PHASE 8B | Read certificate public key hash
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl x509 \
+              -in "{{ satellite_tls_certificate_path }}" \
+              -noout \
+              -pubkey |
+              openssl pkey \
+                -pubin \
+                -outform DER |
+              openssl dgst -sha256
+          args:
+            executable: /bin/bash
+          register: satellite_certificate_public_key_hash
+          changed_when: false
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Read private key public key hash
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl pkey \
+              -in "{{ satellite_tls_private_key_path }}" \
+              -pubout \
+              -outform DER |
+              openssl dgst -sha256
+          args:
+            executable: /bin/bash
+          register: satellite_private_key_public_key_hash
+          changed_when: false
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        - name: PHASE 8B | Verify Satellite certificate and key match
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  satellite_certificate_public_key_hash.stdout
+                  | regex_replace('^.*=', '')
+                  | trim
+                  | lower
+                )
+                ==
+                (
+                  satellite_private_key_public_key_hash.stdout
+                  | regex_replace('^.*=', '')
+                  | trim
+                  | lower
+                )
+            fail_msg: >-
+              The exported ACM certificate and private key do not match.
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        #######################################################################
+        # Build Satellite CA bundle: root first, then intermediates
+        #######################################################################
+
+        - name: PHASE 8B | Build complete Satellite CA bundle
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            python3 - \
+              "{{ satellite_tls_acm_chain_path }}" \
+              "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem" \
+              "{{ satellite_tls_ca_bundle_path }}" <<'PYTHON'
+            import pathlib
+            import re
+            import subprocess
+            import sys
+            import tempfile
+
+            chain_path = pathlib.Path(sys.argv[1])
+            system_bundle_path = pathlib.Path(sys.argv[2])
+            output_path = pathlib.Path(sys.argv[3])
+
+            pem_pattern = re.compile(
+                r"-----BEGIN CERTIFICATE-----.*?"
+                r"-----END CERTIFICATE-----",
+                re.DOTALL,
+            )
+
+            def read_certificates(path):
+                return pem_pattern.findall(
+                    path.read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                )
+
+            def certificate_field(pem, field):
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".pem",
+                ) as handle:
+                    handle.write(pem.strip() + "\n")
+                    handle.flush()
+
+                    result = subprocess.run(
+                        [
+                            "openssl",
+                            "x509",
+                            "-in",
+                            handle.name,
+                            "-noout",
+                            f"-{field}",
+                            "-nameopt",
+                            "RFC2253",
+                        ],
+                        check=True,
+                        text=True,
+                        capture_output=True,
+                    )
+
+                return result.stdout.strip().split("=", 1)[-1]
+
+            chain = read_certificates(chain_path)
+            system_roots = read_certificates(system_bundle_path)
+
+            if not chain:
+                raise SystemExit(
+                    f"No CA certificates found in {chain_path}"
+                )
+
+            chain_details = [
+                {
+                    "pem": pem,
+                    "subject": certificate_field(pem, "subject"),
+                    "issuer": certificate_field(pem, "issuer"),
+                }
+                for pem in chain
+            ]
+
+            system_root_details = [
+                {
+                    "pem": pem,
+                    "subject": certificate_field(pem, "subject"),
+                    "issuer": certificate_field(pem, "issuer"),
+                }
+                for pem in system_roots
+            ]
+
+            subjects = {
+                item["subject"]
+                for item in chain_details
+            }
+
+            highest_intermediate = next(
+                (
+                    item
+                    for item in chain_details
+                    if item["issuer"] not in subjects
+                ),
+                chain_details[-1],
+            )
+
+            root = next(
+                (
+                    item
+                    for item in system_root_details
+                    if
+                    item["subject"] == highest_intermediate["issuer"]
+                    and
+                    item["subject"] == item["issuer"]
+                ),
+                None,
+            )
+
+            if root is None:
+                raise SystemExit(
+                    "Could not find the public root CA in the "
+                    "RHEL system trust store. Required subject: "
+                    f"{highest_intermediate['issuer']}"
+                )
+
+            ordered_intermediates = []
+            current_subject = highest_intermediate["subject"]
+
+            while True:
+                current = next(
+                    (
+                        item
+                        for item in chain_details
+                        if item["subject"] == current_subject
+                    ),
+                    None,
+                )
+
+                if current is None:
+                    break
+
+                ordered_intermediates.insert(0, current)
+
+                child = next(
+                    (
+                        item
+                        for item in chain_details
+                        if item["issuer"] == current["subject"]
+                    ),
+                    None,
+                )
+
+                if child is None:
+                    break
+
+                current_subject = child["subject"]
+
+            bundle = [root["pem"]]
+            bundle.extend(
+                item["pem"]
+                for item in ordered_intermediates
+            )
+
+            output_path.write_text(
+                "\n".join(
+                    certificate.strip()
+                    for certificate in bundle
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            output_path.chmod(0o644)
+
+            print(
+                f"Created CA bundle with {len(bundle)} certificates"
+            )
+            PYTHON
+          args:
+            executable: /bin/bash
+          register: satellite_ca_bundle_build
+          changed_when: >-
+            'Created CA bundle'
+            in (satellite_ca_bundle_build.stdout | default(''))
+          failed_when: satellite_ca_bundle_build.rc != 0
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Verify ACM certificate chain
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - verify
+              - -CAfile
+              - "{{ satellite_tls_ca_bundle_path }}"
+              - "{{ satellite_tls_certificate_path }}"
+          register: satellite_tls_chain_validation
+          changed_when: false
+          failed_when: satellite_tls_chain_validation.rc != 0
+          when: satellite_public_tls_install_required
+
+        #######################################################################
+        # Validate and deploy through supported Satellite tooling
+        #######################################################################
+
+        - name: PHASE 8B | Validate custom Satellite TLS files
+          ansible.builtin.command:
+            argv:
+              - katello-certs-check
+              - "-t"
+              - satellite
+              - "-b"
+              - "{{ satellite_tls_ca_bundle_path }}"
+              - "-c"
+              - "{{ satellite_tls_certificate_path }}"
+              - "-k"
+              - "{{ satellite_tls_private_key_path }}"
+          register: satellite_katello_certs_check
+          changed_when: false
+          failed_when: satellite_katello_certs_check.rc != 0
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Deploy public ACM certificate to Satellite
+          ansible.builtin.command:
+            argv:
+              - satellite-installer
+              - "--certs-server-cert"
+              - "{{ satellite_tls_certificate_path }}"
+              - "--certs-server-key"
+              - "{{ satellite_tls_private_key_path }}"
+              - "--certs-server-ca-cert"
+              - "{{ satellite_tls_ca_bundle_path }}"
+              - "--certs-update-server"
+              - "--certs-update-server-ca"
+          async: 3600
+          poll: 30
+          register: satellite_public_tls_installer
+          changed_when: satellite_public_tls_installer.rc == 0
+          failed_when: satellite_public_tls_installer.rc != 0
+          when: satellite_public_tls_install_required
+          no_log: false
+
+        - name: PHASE 8B | Wait for Satellite HTTPS after TLS update
+          ansible.builtin.uri:
+            url: "https://{{ satellite_public_tls_fqdn }}/users/login"
+            method: GET
+            validate_certs: true
+            follow_redirects: all
+            status_code:
+              - 200
+              - 301
+              - 302
+              - 401
+              - 403
+              - 422
+            timeout: 60
+          register: satellite_public_tls_https_check
+          retries: 30
+          delay: 20
+          until: >-
+            satellite_public_tls_https_check.status
+            in [200, 301, 302, 401, 403, 422]
+          changed_when: false
+
+        #######################################################################
+        # Validate and deploy through supported Satellite tooling
+        #######################################################################
+
+        - name: PHASE 8B | Validate custom Satellite TLS files
+          ansible.builtin.command:
+            argv:
+              - katello-certs-check
+              - "-t"
+              - satellite
+              - "-b"
+              - "{{ satellite_tls_ca_bundle_path }}"
+              - "-c"
+              - "{{ satellite_tls_certificate_path }}"
+              - "-k"
+              - "{{ satellite_tls_private_key_path }}"
+          register: satellite_katello_certs_check
+          changed_when: false
+          failed_when: satellite_katello_certs_check.rc != 0
+          when: satellite_public_tls_install_required
+
+        - name: PHASE 8B | Deploy public ACM certificate to Satellite
+          ansible.builtin.command:
+            argv:
+              - satellite-installer
+              - "--certs-server-cert"
+              - "{{ satellite_tls_certificate_path }}"
+              - "--certs-server-key"
+              - "{{ satellite_tls_private_key_path }}"
+              - "--certs-server-ca-cert"
+              - "{{ satellite_tls_ca_bundle_path }}"
+              - "--certs-update-server"
+              - "--certs-update-server-ca"
+          async: 3600
+          poll: 30
+          register: satellite_public_tls_installer
+          changed_when: satellite_public_tls_installer.rc == 0
+          failed_when: satellite_public_tls_installer.rc != 0
+          when: satellite_public_tls_install_required
+          no_log: false
+
+        - name: PHASE 8B | Wait for Satellite HTTPS after TLS update
+          ansible.builtin.uri:
+            url: "https://{{ satellite_public_tls_fqdn }}/users/login"
+            method: GET
+            validate_certs: true
+            follow_redirects: all
+            status_code:
+              - 200
+              - 301
+              - 302
+              - 401
+              - 403
+              - 422
+            timeout: 60
+          register: satellite_public_tls_https_check
+          retries: 30
+          delay: 20
+          until: >-
+            satellite_public_tls_https_check.status
+            in [200, 301, 302, 401, 403, 422]
+          changed_when: false
+
+      always:
+        - name: PHASE 8B | Remove local ACM staging directory
+          ansible.builtin.file:
+            path: >-
+              {{
+                satellite_tls_local_staging.path
+                | default('/nonexistent')
+              }}
+            state: absent
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: PHASE 8B | Remove encrypted ACM private key
+          ansible.builtin.file:
+            path: "{{ satellite_tls_private_key_path }}.encrypted"
+            state: absent
+          no_log: true
+
+        - name: PHASE 8B | Remove temporary ACM passphrase
+          ansible.builtin.file:
+            path: "{{ satellite_tls_directory }}/.acm-passphrase"
+            state: absent
+          no_log: true
+
+        - name: PHASE 8B | Clear ACM export facts
+          ansible.builtin.set_fact:
+            satellite_acm_export_passphrase: ""
+            satellite_acm_exported_certificate: {}
+          no_log: true
+
+    ###########################################################################
     # PHASE 9 | Validate Satellite services
     ###########################################################################
 
@@ -924,7 +1828,7 @@
       ansible.builtin.uri:
         url: "https://{{ satellite_fqdn }}/users/login"
         method: GET
-        validate_certs: false
+        validate_certs: true
         follow_redirects: all
         status_code:
           - 200
@@ -1728,3 +2632,6 @@
           - "Package installation log: {{ satellite_package_install_log }}"
           - "Satellite installer log: {{ satellite_installer_log }}"
           - "The administrator password remains stored in AWS Secrets Manager."
+          - "Public TLS certificate ARN: {{ satellite_acm_certificate_arn }}"
+          - "Public TLS certificate: {{ satellite_tls_certificate_path }}"
+          - "Public TLS CA bundle: {{ satellite_tls_ca_bundle_path }}"
