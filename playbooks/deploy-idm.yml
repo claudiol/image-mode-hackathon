@@ -1705,6 +1705,7 @@
             mode: "0644"
           when: idm_public_tls_install_required
 
+
         - name: Install encrypted ACM private key temporarily
           ansible.builtin.copy:
             src: "{{ idm_tls_local_staging.path }}/server-encrypted.key"
@@ -1725,66 +1726,6 @@
           when: idm_public_tls_install_required
           no_log: true
 
- 
-        - name: Validate ACM certificate hostname
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - x509
-              - -in
-              - "{{ idm_tls_certificate_path }}"
-              - -noout
-              - -checkhost
-              - "{{ idm_public_tls_fqdn }}"
-          changed_when: false
-
-        - name: Verify ACM certificate remains valid for at least 14 days
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - x509
-              - -in
-              - "{{ idm_tls_certificate_path }}"
-              - -noout
-              - -checkend
-              - "{{ idm_acm_certificate_minimum_validity_seconds | string }}"
-          changed_when: false
-
-        - name: Read ACM certificate public key hash
-          ansible.builtin.shell: |
-            set -euo pipefail
-
-            openssl x509 \
-              -in "{{ idm_tls_certificate_path }}" \
-              -noout \
-              -pubkey |
-              openssl pkey \
-                -pubin \
-                -outform DER |
-              openssl sha256
-          args:
-            executable: /bin/bash
-          register: idm_acm_certificate_public_key_hash
-          changed_when: false
-          when: idm_public_tls_install_required
-
-        - name: Read ACM private key public key hash
-          ansible.builtin.shell: |
-            set -euo pipefail
-
-            openssl pkey \
-              -in "{{ idm_tls_private_key_path }}" \
-              -pubout \
-              -outform DER |
-              openssl sha256
-          args:
-            executable: /bin/bash
-          register: idm_acm_private_key_public_key_hash
-          changed_when: false
-          no_log: true
-          when: idm_public_tls_install_required
-
-
         - name: Decrypt ACM private key on the IdM server
           ansible.builtin.command:
             argv:
@@ -1797,29 +1738,136 @@
               - -passin
               - "file:{{ idm_tls_directory }}/.acm-passphrase"
           register: idm_acm_private_key_decrypt
-          changed_when: true
+          changed_when: idm_acm_private_key_decrypt.rc == 0
+          failed_when: idm_acm_private_key_decrypt.rc != 0
           when: idm_public_tls_install_required
           no_log: true
 
         - name: Secure decrypted ACM private key
           ansible.builtin.file:
             path: "{{ idm_tls_private_key_path }}"
+            state: file
             owner: root
             group: root
             mode: "0600"
           when: idm_public_tls_install_required
 
+        - name: Verify decrypted ACM private key is readable
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - "{{ idm_tls_private_key_path }}"
+              - -noout
+              - -check
+          register: idm_acm_private_key_check
+          changed_when: false
+          failed_when: idm_acm_private_key_check.rc != 0
+          when: idm_public_tls_install_required
+          no_log: true
+
+        - name: Validate installed ACM certificate hostname
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_certificate_path }}"
+              - -noout
+              - -checkhost
+              - "{{ idm_public_tls_fqdn }}"
+          register: idm_acm_certificate_hostname_check
+          changed_when: false
+          failed_when: idm_acm_certificate_hostname_check.rc != 0
+          when: idm_public_tls_install_required
+
+        - name: Verify installed ACM certificate remains valid for at least 14 days
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_certificate_path }}"
+              - -noout
+              - -checkend
+              - "{{ idm_acm_certificate_minimum_validity_seconds | string }}"
+          register: idm_acm_certificate_validity_check
+          changed_when: false
+          failed_when: idm_acm_certificate_validity_check.rc != 0
+          when: idm_public_tls_install_required
+
+        - name: Read ACM certificate public key hash
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl x509 \
+              -in "{{ idm_tls_certificate_path }}" \
+              -noout \
+              -pubkey |
+              openssl pkey \
+                -pubin \
+                -outform DER |
+              openssl dgst -sha256
+          args:
+            executable: /bin/bash
+          register: idm_acm_certificate_public_key_hash
+          changed_when: false
+          failed_when: idm_acm_certificate_public_key_hash.rc != 0
+          when: idm_public_tls_install_required
+
+        - name: Read ACM private key public key hash
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl pkey \
+              -in "{{ idm_tls_private_key_path }}" \
+              -pubout \
+              -outform DER |
+              openssl dgst -sha256
+          args:
+            executable: /bin/bash
+          register: idm_acm_private_key_public_key_hash
+          changed_when: false
+          failed_when: idm_acm_private_key_public_key_hash.rc != 0
+          when: idm_public_tls_install_required
+          no_log: true
+
+        - name: Normalize ACM certificate and private key public key hashes
+          ansible.builtin.set_fact:
+            idm_acm_certificate_public_key_sha256: >-
+              {{
+                idm_acm_certificate_public_key_hash.stdout
+                | default('')
+                | regex_replace('^.*=', '')
+                | trim
+                | lower
+              }}
+            idm_acm_private_key_public_key_sha256: >-
+              {{
+                idm_acm_private_key_public_key_hash.stdout
+                | default('')
+                | regex_replace('^.*=', '')
+                | trim
+                | lower
+              }}
+          when: idm_public_tls_install_required
+          no_log: true
+
         - name: Verify ACM certificate and private key match
           ansible.builtin.assert:
             that:
+              - idm_acm_certificate_public_key_sha256 | length == 64
+              - idm_acm_private_key_public_key_sha256 | length == 64
               - >-
-                idm_acm_certificate_public_key_hash.stdout | trim
+                idm_acm_certificate_public_key_sha256
                 ==
-                idm_acm_private_key_public_key_hash.stdout | trim
+                idm_acm_private_key_public_key_sha256
             fail_msg: >-
-              The exported ACM certificate and private key do not match.
-          no_log: true
+              The exported ACM certificate and decrypted private key do not
+              contain the same public key.
           when: idm_public_tls_install_required
+          no_log: true
 
         - name: Restore SELinux contexts on IdM TLS directory
           ansible.builtin.command:
