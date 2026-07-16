@@ -1044,7 +1044,6 @@
                     hostvars[item].role
                     | default('image-builder', true)
                   ),
-
                   'public_tls_fqdn': (
                     hostvars[item].public_tls_fqdn
                     | default(
@@ -1055,20 +1054,14 @@
                     | string
                     | trim
                   ),
-
                   'acm_certificate_arn': (
                     hostvars[item].acm_certificate_arn
                     | default('', true)
                     | string
                     | trim
                   ),
-
                   'aws_region': resolved_aws_region,
-
-                  # Usually omit this for Controller jobs unless the
-                  # execution environment really contains this AWS profile.
                   'aws_profile': '',
-
                   'secret_prefix': secret_prefix,
                   'image_mode_base_image': image_mode_base_image,
                   'image_mode_registry_image': image_mode_registry_image,
