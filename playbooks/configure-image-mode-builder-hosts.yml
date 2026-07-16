@@ -4,13 +4,21 @@
 #
 # Expected inventory group:
 #
-# [image-builder]
+# [image_builder]
 # image-builder-0.lab.sandbox3491.opentlc.com
 # image-builder-1.lab.sandbox3491.opentlc.com
 #
 # Recommended AAP job template limit:
 #
-# image-builder
+# image_builder
+#
+# TLS prerequisite:
+#
+# An upstream playbook must stage:
+#
+# - /opt/image-builder/certs/cockpit-leaf.crt
+# - /opt/image-builder/certs/cockpit-chain.crt
+# - /opt/image-builder/certs/cockpit.key
 #
 # Required collections:
 #
@@ -200,7 +208,10 @@
       - "{{ cockpit_port }}/tcp"
 
     ###########################################################################
-    # Public Cockpit TLS certificate from AWS ACM
+    # Staged Cockpit TLS certificate
+    #
+    # The certificate staging playbook must populate these files before this
+    # AAP-managed configuration playbook runs.
     ###########################################################################
 
     cockpit_public_tls_fqdn: >-
@@ -209,22 +220,29 @@
         | default(inventory_hostname, true)
       }}
 
-    cockpit_acm_certificate_arn: >-
-      {{
-        acm_certificate_arn
-        | default('', true)
-      }}
-
     cockpit_tls_root: /opt/image-builder
     cockpit_tls_directory: "{{ cockpit_tls_root }}/certs"
-    cockpit_tls_leaf_certificate_path: "{{ cockpit_tls_directory }}/cockpit-leaf.crt"
-    cockpit_tls_chain_path: "{{ cockpit_tls_directory }}/cockpit-chain.crt"
-    cockpit_tls_private_key_path: "{{ cockpit_tls_directory }}/cockpit.key"
-    cockpit_tls_fullchain_path: "{{ cockpit_tls_directory }}/cockpit-fullchain.crt"
+
+    cockpit_tls_leaf_certificate_path: >-
+      {{ cockpit_tls_directory }}/cockpit-leaf.crt
+
+    cockpit_tls_chain_path: >-
+      {{ cockpit_tls_directory }}/cockpit-chain.crt
+
+    cockpit_tls_private_key_path: >-
+      {{ cockpit_tls_directory }}/cockpit.key
+
+    cockpit_tls_fullchain_path: >-
+      {{ cockpit_tls_directory }}/cockpit-fullchain.crt
+
+    cockpit_tls_metadata_path: >-
+      {{ cockpit_tls_directory }}/certificate-metadata.json
 
     cockpit_ws_certificate_directory: /etc/cockpit/ws-certs.d
-    cockpit_ws_certificate_path: "{{ cockpit_ws_certificate_directory }}/99-image-builder-acm.cert"
-    cockpit_tls_local_staging_prefix: image-builder-cockpit-acm-tls-
+
+    cockpit_ws_certificate_path: >-
+      {{ cockpit_ws_certificate_directory }}/99-image-builder-acm.cert
+
     cockpit_tls_minimum_validity_seconds: 1209600
 
     ###########################################################################
@@ -301,6 +319,7 @@
       - xz
       - squashfs-tools
       - policycoreutils-python-utils
+      - openssl
 
       # Networking and diagnostics
       - firewalld
@@ -380,42 +399,18 @@
       when: image_mode_require_redhat_registry_login | bool
       no_log: true
 
-    - name: Validate Cockpit ACM TLS inputs
+    - name: Validate staged Cockpit TLS configuration
       ansible.builtin.assert:
         that:
-          - aws_region is defined
-          - aws_region | string | trim | length > 0
           - cockpit_public_tls_fqdn | string | trim | length > 0
-          - cockpit_acm_certificate_arn | string | trim | length > 0
+          - cockpit_tls_directory | string | trim | length > 0
+          - cockpit_tls_leaf_certificate_path | string | trim | length > 0
+          - cockpit_tls_chain_path | string | trim | length > 0
+          - cockpit_tls_private_key_path | string | trim | length > 0
+          - cockpit_ws_certificate_path | string | trim | length > 0
         fail_msg: >-
-          aws_region, public_tls_fqdn/acm_certificate_arn, and an exportable
-          ACM certificate must be supplied for every Image Builder host.
-
-    - name: Verify Cockpit ACM certificate is issued
-      ansible.builtin.command:
-        argv: >-
-          {{
-            [
-              'aws', 'acm', 'describe-certificate',
-              '--certificate-arn', cockpit_acm_certificate_arn,
-              '--region', aws_region,
-              '--query', 'Certificate.Status',
-              '--output', 'text'
-            ]
-            +
-            (
-              ['--profile', aws_profile]
-              if aws_profile | default('') | trim | length > 0
-              else []
-            )
-          }}
-      delegate_to: localhost
-      become: false
-      register: cockpit_acm_certificate_status
-      changed_when: false
-      failed_when: >-
-        cockpit_acm_certificate_status.rc != 0
-        or cockpit_acm_certificate_status.stdout | trim != 'ISSUED'
+          The staged Cockpit TLS path configuration is incomplete for
+          {{ inventory_hostname }}.
 
     - name: Display Image Mode builder configuration
       ansible.builtin.debug:
@@ -1697,273 +1692,202 @@
       failed_when: false
 
     ###########################################################################
-    # Public ACM TLS certificate for Cockpit
+    # Install staged public TLS certificate for Cockpit
     ###########################################################################
 
-    - name: Create persistent Cockpit TLS directories
+    - name: Inspect staged Cockpit TLS files
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+        get_checksum: true
+        checksum_algorithm: sha256
+      loop:
+        - path: "{{ cockpit_tls_leaf_certificate_path }}"
+        - path: "{{ cockpit_tls_chain_path }}"
+        - path: "{{ cockpit_tls_private_key_path }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: cockpit_staged_tls_files
+
+    - name: Validate staged Cockpit TLS files
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - item.stat.size | int > 0
+        fail_msg: |
+          Required staged Cockpit TLS file is missing or empty:
+
+          {{ item.item.path }}
+
+          Host: {{ inventory_hostname }}
+
+          Run the upstream certificate staging playbook before launching the
+          AAP Image Builder configuration job.
+      loop: "{{ cockpit_staged_tls_files.results }}"
+      loop_control:
+        label: "{{ item.item.path }}"
+
+    - name: Enforce staged Cockpit TLS ownership and permissions
       ansible.builtin.file:
         path: "{{ item.path }}"
-        state: directory
+        state: file
         owner: root
         group: root
         mode: "{{ item.mode }}"
       loop:
-        - { path: "{{ cockpit_tls_root }}", mode: "0755" }
-        - { path: "{{ cockpit_tls_directory }}", mode: "0700" }
-        - { path: "{{ cockpit_ws_certificate_directory }}", mode: "0755" }
+        - path: "{{ cockpit_tls_leaf_certificate_path }}"
+          mode: "0644"
+        - path: "{{ cockpit_tls_chain_path }}"
+          mode: "0644"
+        - path: "{{ cockpit_tls_private_key_path }}"
+          mode: "0600"
+      loop_control:
+        label: "{{ item.path }}"
 
-    - name: Create local Cockpit ACM TLS staging directory
-      ansible.builtin.tempfile:
-        state: directory
-        prefix: "{{ cockpit_tls_local_staging_prefix }}"
-      delegate_to: localhost
-      become: false
-      register: cockpit_tls_local_staging
+    - name: Validate staged Cockpit certificate hostname
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ cockpit_tls_leaf_certificate_path }}"
+          - -noout
+          - -checkhost
+          - "{{ cockpit_public_tls_fqdn }}"
+      register: cockpit_staged_hostname_check
+      changed_when: false
+      failed_when: cockpit_staged_hostname_check.rc != 0
+
+    - name: Validate staged Cockpit certificate remaining lifetime
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ cockpit_tls_leaf_certificate_path }}"
+          - -noout
+          - -checkend
+          - "{{ cockpit_tls_minimum_validity_seconds | string }}"
+      register: cockpit_staged_validity_check
+      changed_when: false
+      failed_when: cockpit_staged_validity_check.rc != 0
+
+    - name: Validate staged Cockpit private key
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -in
+          - "{{ cockpit_tls_private_key_path }}"
+          - -noout
+          - -check
+      register: cockpit_staged_private_key_check
+      changed_when: false
+      failed_when: cockpit_staged_private_key_check.rc != 0
       no_log: true
 
-    - name: Export and install Cockpit ACM certificate
-      block:
-        - name: Generate Cockpit ACM export passphrase
-          ansible.builtin.set_fact:
-            cockpit_acm_export_passphrase: >-
-              {{
-                lookup(
-                  'ansible.builtin.password',
-                  '/dev/null',
-                  length=64,
-                  chars=['ascii_letters', 'digits']
-                )
-              }}
-          no_log: true
+    - name: Verify staged Cockpit certificate and private key match
+      ansible.builtin.shell: |
+        set -euo pipefail
+        certificate_hash="$(
+          openssl x509 -in "{{ cockpit_tls_leaf_certificate_path }}" -noout -pubkey |
+          openssl pkey -pubin -outform DER |
+          openssl dgst -sha256
+        )"
+        private_key_hash="$(
+          openssl pkey -in "{{ cockpit_tls_private_key_path }}" -pubout -outform DER |
+          openssl dgst -sha256
+        )"
+        test "${certificate_hash}" = "${private_key_hash}"
+      args:
+        executable: /bin/bash
+      register: cockpit_staged_key_pair_check
+      changed_when: false
+      failed_when: cockpit_staged_key_pair_check.rc != 0
+      no_log: true
 
-        - name: Write local Cockpit ACM export passphrase
-          ansible.builtin.copy:
-            content: "{{ cockpit_acm_export_passphrase }}"
-            dest: "{{ cockpit_tls_local_staging.path }}/passphrase"
-            mode: "0600"
-          delegate_to: localhost
-          become: false
-          no_log: true
+    - name: Build staged Cockpit full chain
+      ansible.builtin.shell: |
+        set -euo pipefail
+        temporary_file="$(mktemp "{{ cockpit_tls_directory }}/.fullchain.XXXXXX")"
+        cat "{{ cockpit_tls_leaf_certificate_path }}" "{{ cockpit_tls_chain_path }}" > "${temporary_file}"
+        chown root:root "${temporary_file}"
+        chmod 0644 "${temporary_file}"
+        if [[ -f "{{ cockpit_tls_fullchain_path }}" ]] && cmp -s "${temporary_file}" "{{ cockpit_tls_fullchain_path }}"; then
+          rm -f "${temporary_file}"
+          printf 'unchanged\n'
+        else
+          mv -f "${temporary_file}" "{{ cockpit_tls_fullchain_path }}"
+          printf 'updated\n'
+        fi
+      args:
+        executable: /bin/bash
+      register: cockpit_fullchain_install
+      changed_when: "'updated' in cockpit_fullchain_install.stdout"
 
-        - name: Export Cockpit certificate from AWS ACM
-          ansible.builtin.command:
-            argv: >-
-              {{
-                [
-                  'aws', 'acm', 'export-certificate',
-                  '--certificate-arn', cockpit_acm_certificate_arn,
-                  '--passphrase',
-                  'fileb://' ~ cockpit_tls_local_staging.path ~ '/passphrase',
-                  '--region', aws_region,
-                  '--output', 'json',
-                  '--no-cli-pager'
-                ]
-                +
-                (
-                  ['--profile', aws_profile]
-                  if aws_profile | default('') | trim | length > 0
-                  else []
-                )
-              }}
-          delegate_to: localhost
-          become: false
-          register: cockpit_acm_export_result
-          changed_when: false
-          no_log: true
+    - name: Ensure Cockpit certificate directory exists
+      ansible.builtin.file:
+        path: "{{ cockpit_ws_certificate_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
-        - name: Parse and validate exported Cockpit ACM material
-          ansible.builtin.set_fact:
-            cockpit_acm_exported_certificate: "{{ cockpit_acm_export_result.stdout | from_json }}"
-          no_log: true
+    - name: Build Cockpit combined certificate PEM
+      ansible.builtin.shell: |
+        set -euo pipefail
+        temporary_file="$(mktemp "{{ cockpit_ws_certificate_directory }}/.cockpit-acm.XXXXXX")"
+        cat "{{ cockpit_tls_leaf_certificate_path }}" "{{ cockpit_tls_chain_path }}" "{{ cockpit_tls_private_key_path }}" > "${temporary_file}"
+        chown root:root "${temporary_file}"
+        chmod 0600 "${temporary_file}"
+        if [[ -f "{{ cockpit_ws_certificate_path }}" ]] && cmp -s "${temporary_file}" "{{ cockpit_ws_certificate_path }}"; then
+          rm -f "${temporary_file}"
+          printf 'unchanged\n'
+        else
+          mv -f "${temporary_file}" "{{ cockpit_ws_certificate_path }}"
+          printf 'updated\n'
+        fi
+      args:
+        executable: /bin/bash
+      register: cockpit_combined_certificate_install
+      changed_when: "'updated' in cockpit_combined_certificate_install.stdout"
+      no_log: true
 
-        - name: Assert Cockpit ACM export contains all required values
-          ansible.builtin.assert:
-            that:
-              - cockpit_acm_exported_certificate.Certificate | default('') | length > 0
-              - cockpit_acm_exported_certificate.CertificateChain | default('') | length > 0
-              - cockpit_acm_exported_certificate.PrivateKey | default('') | length > 0
-            fail_msg: >-
-              ACM did not return a certificate, chain, and encrypted private
-              key. Verify that the ACM certificate is exportable.
-          no_log: true
+    - name: Restore SELinux contexts on Cockpit TLS files
+      ansible.builtin.command:
+        argv:
+          - restorecon
+          - -RFv
+          - "{{ cockpit_tls_directory }}"
+          - "{{ cockpit_ws_certificate_directory }}"
+      register: cockpit_tls_restorecon
+      changed_when: cockpit_tls_restorecon.stdout | length > 0
 
-        - name: Write exported Cockpit ACM files locally
-          ansible.builtin.copy:
-            content: "{{ item.content | trim }}"
-            dest: "{{ cockpit_tls_local_staging.path }}/{{ item.filename }}"
-            mode: "0600"
-          loop:
-            - filename: cockpit-leaf.crt
-              content: "{{ cockpit_acm_exported_certificate.Certificate }}"
-            - filename: cockpit-chain.crt
-              content: "{{ cockpit_acm_exported_certificate.CertificateChain }}"
-            - filename: cockpit-encrypted.key
-              content: "{{ cockpit_acm_exported_certificate.PrivateKey }}"
-          loop_control:
-            label: "{{ item.filename }}"
-          delegate_to: localhost
-          become: false
-          no_log: true
+    - name: Validate Cockpit certificate configuration
+      ansible.builtin.command:
+        argv:
+          - cockpit-certificate-ensure
+          - --check
+      register: cockpit_certificate_configuration_check
+      changed_when: false
+      failed_when: cockpit_certificate_configuration_check.rc != 0
 
-        - name: Validate Cockpit ACM certificate hostname
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - x509
-              - -in
-              - "{{ cockpit_tls_local_staging.path }}/cockpit-leaf.crt"
-              - -noout
-              - -checkhost
-              - "{{ cockpit_public_tls_fqdn }}"
-          delegate_to: localhost
-          become: false
-          changed_when: false
-
-        - name: Validate Cockpit ACM certificate lifetime
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - x509
-              - -in
-              - "{{ cockpit_tls_local_staging.path }}/cockpit-leaf.crt"
-              - -noout
-              - -checkend
-              - "{{ cockpit_tls_minimum_validity_seconds | string }}"
-          delegate_to: localhost
-          become: false
-          changed_when: false
-
-        - name: Install encrypted Cockpit ACM key and passphrase temporarily
-          ansible.builtin.copy:
-            src: "{{ item.src | default(omit) }}"
-            content: "{{ item.content | default(omit) }}"
-            dest: "{{ item.dest }}"
-            owner: root
-            group: root
-            mode: "0600"
-          loop:
-            - src: "{{ cockpit_tls_local_staging.path }}/cockpit-encrypted.key"
-              dest: "{{ cockpit_tls_private_key_path }}.encrypted"
-            - content: "{{ cockpit_acm_export_passphrase }}"
-              dest: "{{ cockpit_tls_directory }}/.acm-passphrase"
-          no_log: true
-
-        - name: Decrypt Cockpit ACM private key
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - pkey
-              - -in
-              - "{{ cockpit_tls_private_key_path }}.encrypted"
-              - -out
-              - "{{ cockpit_tls_private_key_path }}"
-              - -passin
-              - "file:{{ cockpit_tls_directory }}/.acm-passphrase"
-          no_log: true
-
-        - name: Install Cockpit leaf certificate and chain
-          ansible.builtin.copy:
-            src: "{{ cockpit_tls_local_staging.path }}/{{ item.src }}"
-            dest: "{{ item.dest }}"
-            owner: root
-            group: root
-            mode: "0644"
-          loop:
-            - { src: cockpit-leaf.crt, dest: "{{ cockpit_tls_leaf_certificate_path }}" }
-            - { src: cockpit-chain.crt, dest: "{{ cockpit_tls_chain_path }}" }
-
-        - name: Secure Cockpit private key
-          ansible.builtin.file:
-            path: "{{ cockpit_tls_private_key_path }}"
-            state: file
-            owner: root
-            group: root
-            mode: "0600"
-
-        - name: Build Cockpit full chain
-          ansible.builtin.shell: |
-            set -euo pipefail
-            cat \
-              "{{ cockpit_tls_leaf_certificate_path }}" \
-              "{{ cockpit_tls_chain_path }}" \
-              > "{{ cockpit_tls_fullchain_path }}"
-            chmod 0644 "{{ cockpit_tls_fullchain_path }}"
-          args:
-            executable: /bin/bash
-          changed_when: true
-
-        - name: Verify Cockpit certificate and private key match
-          ansible.builtin.shell: |
-            set -euo pipefail
-            cert_hash="$(
-              openssl x509 -in "{{ cockpit_tls_leaf_certificate_path }}" -noout -pubkey |
-              openssl pkey -pubin -outform DER |
-              openssl dgst -sha256
-            )"
-            key_hash="$(
-              openssl pkey -in "{{ cockpit_tls_private_key_path }}" -pubout -outform DER |
-              openssl dgst -sha256
-            )"
-            test "${cert_hash}" = "${key_hash}"
-          args:
-            executable: /bin/bash
-          changed_when: false
-          no_log: true
-
-        - name: Build Cockpit combined certificate PEM
-          ansible.builtin.shell: |
-            set -euo pipefail
-            temp_file="$(mktemp               "{{ cockpit_ws_certificate_directory }}/.cockpit-acm.XXXXXX")"
-            cat \
-              "{{ cockpit_tls_leaf_certificate_path }}" \
-              "{{ cockpit_tls_chain_path }}" \
-              "{{ cockpit_tls_private_key_path }}" \
-              > "${temp_file}"
-            chown root:root "${temp_file}"
-            chmod 0600 "${temp_file}"
-            mv -f "${temp_file}" "{{ cockpit_ws_certificate_path }}"
-          args:
-            executable: /bin/bash
-          changed_when: true
-          no_log: true
-
-        - name: Restore SELinux contexts on Cockpit TLS files
-          ansible.builtin.command:
-            argv:
-              - restorecon
-              - -RFv
-              - "{{ cockpit_ws_certificate_directory }}"
-              - "{{ cockpit_tls_directory }}"
-          register: cockpit_tls_restorecon
-          changed_when: cockpit_tls_restorecon.stdout | length > 0
-
-        - name: Check Cockpit certificate configuration
-          ansible.builtin.command:
-            argv:
-              - cockpit-certificate-ensure
-              - --check
-          changed_when: false
-
-      always:
-        - name: Remove temporary Cockpit ACM material from builder
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "{{ cockpit_tls_private_key_path }}.encrypted"
-            - "{{ cockpit_tls_directory }}/.acm-passphrase"
-          no_log: true
-
-        - name: Remove local Cockpit ACM staging directory
-          ansible.builtin.file:
-            path: "{{ cockpit_tls_local_staging.path }}"
-            state: absent
-          delegate_to: localhost
-          become: false
-          when:
-            - cockpit_tls_local_staging is defined
-            - cockpit_tls_local_staging.path is defined
-          no_log: true
+    - name: Read staged Cockpit certificate metadata
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ cockpit_tls_leaf_certificate_path }}"
+          - -noout
+          - -subject
+          - -issuer
+          - -serial
+          - -dates
+          - -fingerprint
+          - -sha256
+      register: cockpit_staged_certificate_metadata
+      changed_when: false
 
     ###########################################################################
     # Firewall and Cockpit
@@ -2008,12 +1932,20 @@
         immediate: true
         state: enabled
 
-    - name: Restart Cockpit socket after configuring Image Builder
+    - name: Enable and start Cockpit socket
       ansible.builtin.systemd_service:
         name: cockpit.socket
         enabled: true
-        state: restarted
+        state: started
         daemon_reload: true
+
+    - name: Restart Cockpit socket after TLS certificate update
+      ansible.builtin.systemd_service:
+        name: cockpit.socket
+        state: restarted
+      when:
+        - cockpit_combined_certificate_install is defined
+        - cockpit_combined_certificate_install.changed
 
     - name: Wait for Cockpit port
       ansible.builtin.wait_for:
