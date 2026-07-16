@@ -1053,13 +1053,34 @@
                 dnf repoquery --available openssl openssl-libs
           when: satellite_openssl_remediation_required | bool
 
-        - name: PHASE 6B | Install compatible OpenSSL packages
-          ansible.builtin.dnf:
-            name: "{{ satellite_openssl_expected_packages }}"
-            state: present
-            allow_downgrade: true
-            update_cache: false
+        - name: PHASE 6B | Downgrade OpenSSL to compatible packages
+          ansible.builtin.command:
+            argv:
+              - dnf
+              - install
+              - --assumeyes
+              - --allowerasing
+              - --disableexcludes=all
+              - "{{ satellite_openssl_expected_packages[0] }}"
+              - "{{ satellite_openssl_expected_packages[1] }}"
           register: satellite_openssl_package_change
+          changed_when: >-
+            satellite_openssl_package_change.rc == 0
+            and
+            (
+              'Downgraded:' in
+              (
+                satellite_openssl_package_change.stdout
+                | default('')
+              )
+              or
+              'Installed:' in
+              (
+                satellite_openssl_package_change.stdout
+                | default('')
+              )
+            )
+          failed_when: satellite_openssl_package_change.rc != 0
           when: satellite_openssl_remediation_required | bool
 
         - name: PHASE 6B | Reboot after replacing OpenSSL libraries
@@ -2053,7 +2074,7 @@
         #######################################################################
         # Validate and deploy through supported Satellite tooling
         #######################################################################
-        
+
         - name: PHASE 8B | Wait for Satellite HTTPS after TLS update
           ansible.builtin.uri:
             url: "https://{{ satellite_public_tls_fqdn }}/users/login"
