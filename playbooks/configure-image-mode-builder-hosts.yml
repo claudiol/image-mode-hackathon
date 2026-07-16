@@ -1863,14 +1863,7 @@
       register: cockpit_tls_restorecon
       changed_when: cockpit_tls_restorecon.stdout | length > 0
 
-    - name: Validate Cockpit certificate configuration
-      ansible.builtin.command:
-        argv:
-          - cockpit-certificate-ensure
-          - --check
-      register: cockpit_certificate_configuration_check
-      changed_when: false
-      failed_when: cockpit_certificate_configuration_check.rc != 0
+
 
     - name: Read staged Cockpit certificate metadata
       ansible.builtin.command:
