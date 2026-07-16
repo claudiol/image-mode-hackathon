@@ -1381,13 +1381,17 @@
       when:
         - idm_current_http_certificate_pem.stdout | default('') | length > 0
 
-    - name: Normalize current IdM HTTP certificate fingerprint
+
+    - name: Determine whether IdM HTTP certificate replacement is required
       ansible.builtin.set_fact:
-        idm_current_http_certificate_sha256: >-
+        idm_public_tls_install_required: >-
           {{
-            idm_current_http_certificate_fingerprint.stdout
-            | default('')
-            | trim
+            idm_force_public_tls_install | bool
+            or
+            idm_current_http_certificate_sha256
+                default('')
+            !=
+            idm_acm_certificate_sha256
           }}
 
     - name: Create local ACM TLS staging directory
@@ -1580,7 +1584,24 @@
               {{
                 idm_acm_certificate_fingerprint.stdout
                 | default('')
+                | regex_replace('^.*=', '')
+                | regex_replace(':', '')
                 | trim
+                | upper
+              }}
+
+        - name: Validate exported ACM certificate fingerprint
+          ansible.builtin.assert:
+            that:
+              - idm_acm_certificate_fingerprint.rc == 0
+              - idm_acm_certificate_sha256 | length == 64
+              - idm_acm_certificate_sha256 is match('^[0-9A-F]{64}$')
+            fail_msg: >-
+              Could not determine a valid SHA-256 fingerprint from the
+              certificate exported from AWS ACM. OpenSSL output was:
+              {{
+                idm_acm_certificate_fingerprint.stdout
+                | default('no output')
               }}
 
         - name: Validate exported ACM certificate fingerprint
