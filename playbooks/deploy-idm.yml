@@ -1883,13 +1883,9 @@
         # Install only the Apache/httpd certificate in IdM
         #######################################################################
 
-        #######################################################################
-        # Trust the public CA chain inside IdM
-        #######################################################################
-
-        - name: Remove old split ACM CA chain files
+        - name: Find old split ACM CA chain files
           ansible.builtin.find:
-            paths: "{{ idm_tls_chain_parts_directory | trim }}"
+            paths: "{{ idm_tls_chain_parts_directory }}"
             patterns: "ca-*.crt"
             file_type: file
           register: idm_old_acm_chain_parts
@@ -1904,51 +1900,63 @@
             label: "{{ item.path }}"
           when: idm_public_tls_install_required
 
+        - name: Verify ACM CA chain file exists
+          ansible.builtin.stat:
+            path: "{{ idm_tls_chain_path }}"
+          register: idm_acm_chain_file
+          when: idm_public_tls_install_required
+
+        - name: Validate ACM CA chain file
+          ansible.builtin.assert:
+            that:
+              - idm_acm_chain_file.stat.exists
+              - idm_acm_chain_file.stat.isreg
+              - idm_acm_chain_file.stat.size | int > 0
+            fail_msg: >-
+              The ACM CA chain file {{ idm_tls_chain_path }} is missing,
+              is not a regular file, or is empty.
+          when: idm_public_tls_install_required
+
         - name: Split ACM CA chain into individual certificates
-          ansible.builtin.shell: |
-            set -euo pipefail
-
-            chain_file="{{ idm_tls_chain_path | trim }}"
-            output_directory="{{ idm_tls_chain_parts_directory | trim }}"
-
-            test -s "${chain_file}"
-            install -d -m 0700 "${output_directory}"
-
-            awk \
-              -v output_directory="${output_directory}" \
-              '
-              /-----BEGIN CERTIFICATE-----/ {
-                certificate_number++
-                output_file = sprintf(
-                  "%s/ca-%02d.crt",
-                  output_directory,
-                  certificate_number
-                )
-                capture = 1
-              }
-
-              capture {
-                print > output_file
-              }
-
-              /-----END CERTIFICATE-----/ {
-                close(output_file)
-                output_file = ""
-                capture = 0
-              }
-              ' "${chain_file}"
-          args:
-            executable: /bin/bash
+          ansible.builtin.command:
+            argv:
+              - csplit
+              - --silent
+              - --prefix={{ idm_tls_chain_parts_directory }}/ca-
+              - --suffix-format=%02d.crt
+              - "{{ idm_tls_chain_path }}"
+              - /-----BEGIN CERTIFICATE-----/
+              - "{*}"
           register: idm_acm_chain_split
           changed_when: idm_acm_chain_split.rc == 0
           failed_when: idm_acm_chain_split.rc != 0
           when: idm_public_tls_install_required
 
-        - name: Find individual ACM CA certificates
+        - name: Find files created while splitting ACM CA chain
           ansible.builtin.find:
-            paths: "{{ idm_tls_chain_parts_directory | trim }}"
+            paths: "{{ idm_tls_chain_parts_directory }}"
             patterns: "ca-*.crt"
             file_type: file
+          register: idm_acm_chain_split_files
+          when: idm_public_tls_install_required
+
+        - name: Remove empty files created by csplit
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ idm_acm_chain_split_files.files | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+          when:
+            - idm_public_tls_install_required
+            - item.size | int == 0
+
+        - name: Find individual ACM CA certificates
+          ansible.builtin.find:
+            paths: "{{ idm_tls_chain_parts_directory }}"
+            patterns: "ca-*.crt"
+            file_type: file
+            size: "1"
           register: idm_acm_chain_parts
           when: idm_public_tls_install_required
 
@@ -1958,7 +1966,7 @@
               - idm_acm_chain_parts.files | default([]) | length > 0
             fail_msg: >-
               No individual CA certificates were created from
-              {{ idm_tls_chain_path | trim }}.
+              {{ idm_tls_chain_path }}.
           when: idm_public_tls_install_required
 
         - name: Validate each split ACM CA certificate
