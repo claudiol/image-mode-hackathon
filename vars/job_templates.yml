@@ -1,17 +1,17 @@
 ---
 controller_templates:
 
-  - name: Configure Image Mode Builder Hosts
-    organization: "Image Mode Lab"
-    project: "Image Mode CI/CD"
-    inventory: "Image Builders"
-    playbook: "playbooks/configure-image-mode-builder-hosts.yml"
-    execution_environment: "Image Mode EE"
-    credentials:
-      - "Image Mode Machine Credential"
-      - "Image Mode Red Hat Registry Credential"
-      - "Image Mode Quay Registry Credential"
-      - "Image Mode IdM Administrator Credential"
+  # - name: Configure Image Mode Builder Hosts
+  #   organization: "Image Mode Lab"
+  #   project: "Image Mode CI/CD"
+  #   inventory: "Image Builders"
+  #   playbook: "playbooks/configure-image-mode-builder-hosts.yml"
+  #   execution_environment: "Image Mode EE"
+  #   credentials:
+  #     - "Image Mode Machine Credential"
+  #     - "Image Mode Red Hat Registry Credential"
+  #     - "Image Mode Quay Registry Credential"
+  #     - "Image Mode IdM Administrator Credential"
 
 
   # - name: Build Image
