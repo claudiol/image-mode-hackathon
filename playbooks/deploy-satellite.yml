@@ -2444,7 +2444,7 @@
           - "{{ satellite_idm_auth_source_id }}"
       register: satellite_external_admin_group_create
       changed_when: satellite_external_admin_group_create.rc == 0
-      no_log: true
+      no_log: false
       when: not satellite_idm_admin_group_is_mapped
 
     - name: PHASE 9C | Refresh LDAP external user groups
