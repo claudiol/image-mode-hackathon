@@ -1173,7 +1173,9 @@
               automationmetrics_pg_password={{ automationmetrics_pg_password }}
               automationmetrics_controller_read_pg_password={{ automationmetrics_controller_read_pg_password }}
 
-              
+              web_server_ssl_cert={{ aap_tls_certificate_path }}
+              web_server_ssl_key={{ aap_tls_private_key_path }}
+
               gateway_tls_cert={{ aap_tls_certificate_path }}
               gateway_tls_key={{ aap_tls_private_key_path }}
               gateway_tls_remote=true
