@@ -29,7 +29,7 @@
 ###############################################################################
 
 - name: Configure all hosts for Image Mode development
-  hosts: image_builder
+  hosts: all
   become: true
   gather_facts: true
 
