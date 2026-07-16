@@ -2385,7 +2385,7 @@
           changed_when: idm_http_certificate_install.rc == 0
           failed_when: idm_http_certificate_install.rc != 0
           when: idm_public_tls_install_required
-          no_log: false
+          no_log: true
 
         - name: Remove encrypted ACM private key
           ansible.builtin.file:
