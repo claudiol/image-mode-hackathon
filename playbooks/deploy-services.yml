@@ -5,8 +5,8 @@
 - name: Enroll hosts into IdM
   ansible.builtin.import_playbook: enroll-idm-clients.yml
 
-# - name: Deploy Satellite
-#   ansible.builtin.import_playbook: deploy-satellite.yml
+- name: Deploy Satellite
+  ansible.builtin.import_playbook: deploy-satellite.yml
 
 # - name: Deploy Ansible Automation Platform
 #   ansible.builtin.import_playbook: deploy-aap.yml
