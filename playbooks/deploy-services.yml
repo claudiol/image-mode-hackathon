@@ -5,17 +5,17 @@
 - name: Enroll hosts into IdM
   ansible.builtin.import_playbook: enroll-idm-clients.yml
 
-- name: Deploy Satellite
-  ansible.builtin.import_playbook: deploy-satellite.yml
+# - name: Deploy Satellite
+#   ansible.builtin.import_playbook: deploy-satellite.yml
 
-- name: Deploy Ansible Automation Platform
-  ansible.builtin.import_playbook: deploy-aap.yml
+# - name: Deploy Ansible Automation Platform
+#   ansible.builtin.import_playbook: deploy-aap.yml
 
-- name: Configure Ansible Automation Platform For SSO
-  ansible.builtin.import_playbook: configure-aap-idm-sso.yml
+# - name: Configure Ansible Automation Platform For SSO
+#   ansible.builtin.import_playbook: configure-aap-idm-sso.yml
 
-- name: Deploy Quay
-  ansible.builtin.import_playbook: deploy-quay.yml
+# - name: Deploy Quay
+#   ansible.builtin.import_playbook: deploy-quay.yml
 
-- name: Configure Ansible Automation Platform For Image Mode Lab
-  ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
+# - name: Configure Ansible Automation Platform For Image Mode Lab
+#   ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
