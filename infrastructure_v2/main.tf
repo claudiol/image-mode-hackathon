@@ -913,6 +913,44 @@ resource "aws_route53_record" "public_dns" {
   ]
 }
 
+
+############################################################
+# Publicly Trusted TLS Certificates
+############################################################
+
+resource "aws_acm_certificate" "server" {
+  for_each = var.create_public_dns_records ? local.flattened_servers : {}
+
+  domain_name       = each.value.hostname
+  validation_method = "DNS"
+
+  key_algorithm = "RSA_2048"
+
+  options {
+    certificate_transparency_logging_preference = "ENABLED"
+
+    # Allows the certificate and encrypted private key to be
+    # exported and installed directly on the EC2 instance.
+    export = "ENABLED"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name        = "${each.value.hostname}-public-tls"
+    Hostname    = each.value.hostname
+    Role        = each.value.role
+    Environment = var.environment_name
+  }
+
+  depends_on = [
+    aws_route53_record.public_dns,
+    terraform_data.validate_dns_discovery
+  ]
+}
+
 ############################################################
 # Route53 Resolver Forwarding To IdM DNS
 ############################################################
