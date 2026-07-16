@@ -38,6 +38,56 @@
     idm_default_user_password_secret_name: >-
       {{ secret_prefix }}/idm/default_user_password
 
+
+    ###########################################################################
+    # Public TLS certificate settings
+    ###########################################################################
+
+    idm_public_tls_fqdn: >-
+      {{
+        public_tls_fqdn
+        | default(idm_fqdn, true)
+      }}
+
+    idm_acm_certificate_arn: >-
+      {{
+        acm_certificate_arn
+        | default('', true)
+      }}
+
+    idm_tls_root: /opt/certs
+    idm_tls_directory: "{{ idm_tls_root }}/idm"
+
+    idm_tls_certificate_path: >-
+      {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}.crt
+
+    idm_tls_chain_path: >-
+      {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}-chain.crt
+
+    idm_tls_fullchain_path: >-
+      {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}-fullchain.crt
+
+    idm_tls_private_key_path: >-
+      {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}.key
+
+    idm_tls_backup_directory: >-
+      {{ idm_tls_directory }}/backup
+
+    idm_tls_local_staging_prefix: idm-acm-tls-
+
+    # Regenerate and reinstall the certificate even when the currently
+    # installed Apache certificate already matches the ACM certificate.
+    idm_force_public_tls_install: false
+    idm_tls_chain_parts_directory: >-
+
+      {{ idm_tls_directory }}/chain-parts
+
+    idm_current_http_certificate_path: >-
+
+      {{ idm_tls_directory }}/current-http.crt
+
+    idm_acm_certificate_minimum_validity_seconds: 1209600
+
     ###########################################################################
     # IdM installer controls
     ###########################################################################
@@ -209,6 +259,10 @@
           - idm_server_fqdn | length > 0
           - aws_dns_resolver is defined
           - aws_dns_resolver | length > 0
+          - public_tls_fqdn is defined
+          - public_tls_fqdn | length > 0
+          - acm_certificate_arn is defined
+          - acm_certificate_arn | length > 0
         fail_msg: >-
           Missing Terraform DNS inventory variables. Check inventory.tpl and
           the variables passed to Terraform templatefile().
@@ -287,6 +341,41 @@
           idm_users is missing. Check variables.tf, terraform.tfvars, and
           inventory.tpl.
 
+
+    - name: Verify the local AWS CLI is available
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --version
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Verify the IdM ACM certificate is issued
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - describe-certificate
+          - --certificate-arn
+          - "{{ idm_acm_certificate_arn }}"
+          - --region
+          - "{{ aws_region }}"
+          - --profile
+          - "{{ aws_profile }}"
+          - --query
+          - Certificate.Status
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: idm_acm_certificate_status
+      changed_when: false
+      failed_when: >-
+        idm_acm_certificate_status.rc != 0
+        or idm_acm_certificate_status.stdout | trim != 'ISSUED'
+
+
   tasks:
     ###########################################################################
     # Install operating-system prerequisites
@@ -296,11 +385,13 @@
       ansible.builtin.dnf:
         name:
           - bind-utils
+          - ca-certificates
           - chrony
           - firewalld
           - ipa-server
           - ipa-server-dns
           - NetworkManager
+          - openssl
           - python3-libselinux
         state: present
 
@@ -1209,6 +1300,725 @@
           'This entry is already a member'
           not in (idm_sudo_group_add.stdout | default(''))
 
+    ###########################################################################
+    # Install publicly trusted TLS certificate for the IdM Web UI
+    #
+    # This replaces only the Apache/httpd certificate. The Directory Server
+    # LDAP certificate and the integrated IdM CA remain unchanged.
+    ###########################################################################
+
+    - name: Create IdM public TLS directory
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ idm_tls_root }}"
+          mode: "0755"
+        - path: "{{ idm_tls_directory }}"
+          mode: "0700"
+        - path: "{{ idm_tls_backup_directory }}"
+          mode: "0700"
+        - path: "{{ idm_tls_chain_parts_directory }}"
+          mode: "0700"
+      loop_control:
+        label: "{{ item.path }}"
+    - name: Read currently installed IdM HTTP certificate
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl s_client \
+          -connect 127.0.0.1:443 \
+          -servername "{{ idm_public_tls_fqdn }}" \
+          -showcerts \
+          </dev/null 2>/dev/null |
+          awk '
+            /-----BEGIN CERTIFICATE-----/ {
+              capture = 1
+            }
+
+            capture {
+              print
+            }
+
+            /-----END CERTIFICATE-----/ {
+              exit
+            }
+          '
+      args:
+        executable: /bin/bash
+      register: idm_current_http_certificate_pem
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Write currently installed IdM HTTP certificate
+      ansible.builtin.copy:
+        content: |
+          {{ idm_current_http_certificate_pem.stdout | trim }}
+        dest: "{{ idm_current_http_certificate_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - idm_current_http_certificate_pem.stdout | default('') | length > 0
+
+    - name: Read currently installed IdM HTTP certificate fingerprint
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ idm_current_http_certificate_path }}"
+          - -noout
+          - -fingerprint
+          - -sha256
+      register: idm_current_http_certificate_fingerprint
+      changed_when: false
+      failed_when: false
+      when:
+        - idm_current_http_certificate_pem.stdout | default('') | length > 0
+
+    - name: Normalize current IdM HTTP certificate fingerprint
+      ansible.builtin.set_fact:
+        idm_current_http_certificate_sha256: >-
+          {{
+            idm_current_http_certificate_fingerprint.stdout
+            | default('')
+            | trim
+          }}
+
+    - name: Create local ACM TLS staging directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "{{ idm_tls_local_staging_prefix }}"
+      delegate_to: localhost
+      become: false
+      register: idm_tls_local_staging
+      no_log: true
+
+    - name: Deploy ACM certificate to IdM
+      block:
+        #######################################################################
+        # Export certificate from ACM on the Ansible control machine
+        #######################################################################
+
+        - name: Generate temporary ACM export passphrase
+          ansible.builtin.set_fact:
+            idm_acm_export_passphrase: >-
+              {{
+                lookup(
+                  'ansible.builtin.password',
+                  '/dev/null',
+                  length=64,
+                  chars=['ascii_letters', 'digits']
+                )
+              }}
+          no_log: true
+
+        - name: Write ACM export passphrase without trailing newline
+          ansible.builtin.copy:
+            content: "{{ idm_acm_export_passphrase }}"
+            dest: "{{ idm_tls_local_staging.path }}/passphrase"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Export IdM certificate from AWS ACM
+          ansible.builtin.command:
+            argv:
+              - aws
+              - acm
+              - export-certificate
+              - --certificate-arn
+              - "{{ idm_acm_certificate_arn }}"
+              - --passphrase
+              - "fileb://{{ idm_tls_local_staging.path }}/passphrase"
+              - --region
+              - "{{ aws_region }}"
+              - --profile
+              - "{{ aws_profile }}"
+              - --output
+              - json
+              - --no-cli-pager
+          delegate_to: localhost
+          become: false
+          register: idm_acm_export_result
+          changed_when: false
+          no_log: true
+
+        - name: Parse exported ACM certificate data
+          ansible.builtin.set_fact:
+            idm_acm_exported_certificate: >-
+              {{
+                idm_acm_export_result.stdout
+                | from_json
+              }}
+          no_log: true
+
+        - name: Validate exported ACM certificate data
+          ansible.builtin.assert:
+            that:
+              - >-
+                idm_acm_exported_certificate.Certificate
+                | default('')
+                | length > 0
+              - >-
+                idm_acm_exported_certificate.CertificateChain
+                | default('')
+                | length > 0
+              - >-
+                idm_acm_exported_certificate.PrivateKey
+                | default('')
+                | length > 0
+            fail_msg: >-
+              ACM export did not return the certificate, certificate chain,
+              and encrypted private key.
+          no_log: true
+
+        - name: Write exported ACM leaf certificate locally
+          ansible.builtin.copy:
+            content: |
+              {{ idm_acm_exported_certificate.Certificate | trim }}
+            dest: "{{ idm_tls_local_staging.path }}/server.crt"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Write exported ACM certificate chain locally
+          ansible.builtin.copy:
+            content: |
+              {{ idm_acm_exported_certificate.CertificateChain | trim }}
+            dest: "{{ idm_tls_local_staging.path }}/chain.crt"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Write exported encrypted ACM private key locally
+          ansible.builtin.copy:
+            content: |
+              {{ idm_acm_exported_certificate.PrivateKey | trim }}
+            dest: "{{ idm_tls_local_staging.path }}/server-encrypted.key"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Determine whether IdM HTTP certificate replacement is required
+          ansible.builtin.set_fact:
+            idm_public_tls_install_required: >-
+              {{
+                idm_force_public_tls_install | bool
+                or
+                idm_current_http_certificate_sha256
+                !=
+                (
+                  idm_acm_certificate_fingerprint.stdout
+                  | trim
+                )
+              }}
+
+        - name: Report current IdM TLS certificate state
+          ansible.builtin.debug:
+            msg:
+              - >-
+                Public TLS FQDN:
+                {{ idm_public_tls_fqdn }}
+              - >-
+                ACM certificate:
+                {{ idm_acm_certificate_arn }}
+              - >-
+                Certificate replacement required:
+                {{ idm_public_tls_install_required }}
+
+        #######################################################################
+        # Back up current IdM HTTP certificate configuration
+        #######################################################################
+
+        - name: Create timestamp for IdM TLS backup
+          ansible.builtin.set_fact:
+            idm_tls_backup_timestamp: >-
+              {{ ansible_date_time.iso8601_basic_short }}
+          when: idm_public_tls_install_required
+
+        - name: Back up current IdM TLS files
+          community.general.archive:
+            path:
+              - /var/lib/ipa/private
+              - /var/lib/ipa/certs
+              - /etc/httpd/alias
+              - /var/lib/certmonger
+            dest: >-
+              {{
+                idm_tls_backup_directory
+              }}/idm-http-tls-{{
+                idm_tls_backup_timestamp
+              }}.tar.gz
+            format: gz
+            owner: root
+            group: root
+            mode: "0600"
+          when: idm_public_tls_install_required
+
+        #######################################################################
+        # Copy certificate material to /opt/certs/idm
+        #######################################################################
+
+        - name: Install ACM leaf certificate in IdM TLS directory
+          ansible.builtin.copy:
+            src: "{{ idm_tls_local_staging.path }}/server.crt"
+            dest: "{{ idm_tls_certificate_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: idm_public_tls_install_required
+
+        - name: Install ACM certificate chain in IdM TLS directory
+          ansible.builtin.copy:
+            src: "{{ idm_tls_local_staging.path }}/chain.crt"
+            dest: "{{ idm_tls_chain_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: idm_public_tls_install_required
+
+        - name: Install ACM full certificate chain in IdM TLS directory
+          ansible.builtin.copy:
+            src: "{{ idm_tls_local_staging.path }}/fullchain.crt"
+            dest: "{{ idm_tls_fullchain_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: idm_public_tls_install_required
+
+        - name: Install encrypted ACM private key temporarily
+          ansible.builtin.copy:
+            src: "{{ idm_tls_local_staging.path }}/server-encrypted.key"
+            dest: "{{ idm_tls_private_key_path }}.encrypted"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Install temporary ACM key passphrase
+          ansible.builtin.copy:
+            content: "{{ idm_acm_export_passphrase }}"
+            dest: "{{ idm_tls_directory }}/.acm-passphrase"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Decrypt ACM private key on the IdM server
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - "{{ idm_tls_private_key_path }}.encrypted"
+              - -out
+              - "{{ idm_tls_private_key_path }}"
+              - -passin
+              - "file:{{ idm_tls_directory }}/.acm-passphrase"
+          register: idm_acm_private_key_decrypt
+          changed_when: true
+          no_log: true
+
+        - name: Decrypt ACM private key on the IdM server
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - "{{ idm_tls_private_key_path }}.encrypted"
+              - -out
+              - "{{ idm_tls_private_key_path }}"
+              - -passin
+              - "file:{{ idm_tls_directory }}/.acm-passphrase"
+          register: idm_acm_private_key_decrypt
+          changed_when: true
+          no_log: true
+
+        - name: Secure decrypted ACM private key
+          ansible.builtin.file:
+            path: "{{ idm_tls_private_key_path }}"
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Secure decrypted ACM private key
+          ansible.builtin.file:
+            path: "{{ idm_tls_private_key_path }}"
+            owner: root
+            group: root
+            mode: "0600"
+        - name: Validate ACM certificate hostname
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_certificate_path }}"
+              - -noout
+              - -checkhost
+              - "{{ idm_public_tls_fqdn }}"
+          changed_when: false
+
+        - name: Verify ACM certificate remains valid for at least 14 days
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_certificate_path }}"
+              - -noout
+              - -checkend
+              - "{{ idm_acm_certificate_minimum_validity_seconds | string }}"
+          changed_when: false
+
+        - name: Read exported ACM certificate fingerprint
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_certificate_path }}"
+              - -noout
+              - -fingerprint
+              - -sha256
+          register: idm_acm_certificate_fingerprint
+          changed_when: false
+
+        - name: Read ACM certificate public key hash
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl x509 \
+              -in "{{ idm_tls_certificate_path }}" \
+              -noout \
+              -pubkey |
+              openssl pkey \
+                -pubin \
+                -outform DER |
+              openssl sha256
+          args:
+            executable: /bin/bash
+          register: idm_acm_certificate_public_key_hash
+          changed_when: false
+
+        - name: Read ACM private key public key hash
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl pkey \
+              -in "{{ idm_tls_private_key_path }}" \
+              -pubout \
+              -outform DER |
+              openssl sha256
+          args:
+            executable: /bin/bash
+          register: idm_acm_private_key_public_key_hash
+          changed_when: false
+          no_log: true
+
+        - name: Verify ACM certificate and private key match
+          ansible.builtin.assert:
+            that:
+              - >-
+                idm_acm_certificate_public_key_hash.stdout | trim
+                ==
+                idm_acm_private_key_public_key_hash.stdout | trim
+            fail_msg: >-
+              The exported ACM certificate and private key do not match.
+          no_log: true
+
+        - name: Restore SELinux contexts on IdM TLS directory
+          ansible.builtin.command:
+            argv:
+              - restorecon
+              - -RFv
+              - "{{ idm_tls_directory }}"
+          register: idm_tls_restorecon
+          changed_when: >-
+            idm_tls_restorecon.stdout | default('') | length > 0
+          when: idm_public_tls_install_required
+
+
+        #######################################################################
+        # Install only the Apache/httpd certificate in IdM
+        #######################################################################
+
+        #######################################################################
+        # Trust the public CA chain inside IdM
+        #######################################################################
+
+        - name: Remove old split ACM CA chain files
+          ansible.builtin.find:
+            paths: "{{ idm_tls_chain_parts_directory }}"
+            patterns: "ca-*.crt"
+            file_type: file
+          register: idm_old_acm_chain_parts
+          when: idm_public_tls_install_required
+
+        - name: Delete old split ACM CA chain files
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ idm_old_acm_chain_parts.files | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+          when: idm_public_tls_install_required
+
+        - name: Split ACM CA chain into individual certificates
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            awk '
+              /-----BEGIN CERTIFICATE-----/ {
+                certificate_number++
+                output_file = sprintf(
+                  "{{ idm_tls_chain_parts_directory }}/ca-%02d.crt",
+                  certificate_number
+                )
+              }
+
+              output_file != "" {
+                print > output_file
+              }
+
+              /-----END CERTIFICATE-----/ {
+                close(output_file)
+                output_file = ""
+              }
+            ' "{{ idm_tls_chain_path }}"
+          args:
+            executable: /bin/bash
+          changed_when: true
+          when: idm_public_tls_install_required
+
+        - name: Find individual ACM CA certificates
+          ansible.builtin.find:
+            paths: "{{ idm_tls_chain_parts_directory }}"
+            patterns: "ca-*.crt"
+            file_type: file
+          register: idm_acm_chain_parts
+          when: idm_public_tls_install_required
+
+        - name: Validate split ACM CA chain
+          ansible.builtin.assert:
+            that:
+              - idm_acm_chain_parts.files | default([]) | length > 0
+            fail_msg: >-
+              ACM certificate chain did not contain any usable CA
+              certificates.
+          when: idm_public_tls_install_required
+
+        - name: Install ACM CA chain certificates into IdM
+          ansible.builtin.command:
+            argv:
+              - ipa-cacert-manage
+              - install
+              - "{{ item.path }}"
+          register: idm_acm_ca_install
+          changed_when: idm_acm_ca_install.rc == 0
+          failed_when:
+            - idm_acm_ca_install.rc != 0
+            - >-
+              'already exists'
+              not in (
+                (
+                  idm_acm_ca_install.stdout | default('')
+                )
+                ~
+                (
+                  idm_acm_ca_install.stderr | default('')
+                )
+              ) | lower
+          loop: >-
+            {{
+              idm_acm_chain_parts.files
+              | default([])
+              | sort(attribute='path')
+            }}
+          loop_control:
+            label: "{{ item.path }}"
+          when: idm_public_tls_install_required
+
+        - name: Update IdM certificate databases
+          ansible.builtin.command:
+            argv:
+              - ipa-certupdate
+          register: idm_ipa_certupdate
+          changed_when: true
+          when: idm_public_tls_install_required
+
+        - name: Install public ACM certificate for IdM Web UI
+          ansible.builtin.command:
+            argv:
+              - ipa-server-certinstall
+              - --http
+              - "{{ idm_tls_private_key_path }}"
+              - "{{ idm_tls_fullchain_path }}"
+          args:
+            stdin: "{{ idm_vault_dm_password }}"
+            stdin_add_newline: true
+          register: idm_http_certificate_install
+          changed_when: idm_http_certificate_install.rc == 0
+          no_log: true
+          when: idm_public_tls_install_required
+
+
+        - name: Remove encrypted ACM private key
+          ansible.builtin.file:
+            path: "{{ idm_tls_private_key_path }}.encrypted"
+            state: absent
+          no_log: true
+
+        - name: Remove temporary ACM passphrase file
+          ansible.builtin.file:
+            path: "{{ idm_tls_directory }}/.acm-passphrase"
+            state: absent
+          no_log: true
+
+        - name: Restart Apache after IdM Web UI certificate replacement
+          ansible.builtin.service:
+            name: httpd
+            state: restarted
+          when: idm_public_tls_install_required
+
+        - name: Wait for IdM HTTPS service
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: 443
+            state: started
+            timeout: 120
+
+        #######################################################################
+        # Validate installed certificate
+        #######################################################################
+
+        - name: Read installed IdM Web UI certificate
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl s_client \
+              -connect 127.0.0.1:443 \
+              -servername "{{ idm_public_tls_fqdn }}" \
+              -showcerts \
+              </dev/null 2>/dev/null |
+              openssl x509 \
+                -noout \
+                -subject \
+                -issuer \
+                -serial \
+                -dates \
+                -fingerprint \
+                -sha256 \
+                -ext subjectAltName
+          args:
+            executable: /bin/bash
+          register: idm_installed_http_certificate
+          changed_when: false
+
+        - name: Verify installed IdM certificate hostname
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl s_client \
+              -connect 127.0.0.1:443 \
+              -servername "{{ idm_public_tls_fqdn }}" \
+              </dev/null 2>/dev/null |
+              openssl x509 \
+                -noout \
+                -checkhost "{{ idm_public_tls_fqdn }}"
+          args:
+            executable: /bin/bash
+          register: idm_installed_certificate_hostname_check
+          changed_when: false
+
+        - name: Read installed IdM certificate fingerprint
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl s_client \
+              -connect 127.0.0.1:443 \
+              -servername "{{ idm_public_tls_fqdn }}" \
+              </dev/null 2>/dev/null |
+              openssl x509 \
+                -noout \
+                -fingerprint \
+                -sha256
+          args:
+            executable: /bin/bash
+          register: idm_installed_certificate_fingerprint
+          changed_when: false
+
+        - name: Verify installed certificate matches ACM certificate
+          ansible.builtin.assert:
+            that:
+              - >-
+                idm_installed_certificate_fingerprint.stdout | trim
+                ==
+                idm_acm_certificate_fingerprint.stdout | trim
+            fail_msg: >-
+              The certificate currently served by IdM Apache does not match
+              the certificate exported from ACM.
+
+        - name: Verify all IdM services remain operational
+          ansible.builtin.command:
+            argv:
+              - ipactl
+              - status
+          register: idm_post_tls_ipactl_status
+          changed_when: false
+          failed_when: idm_post_tls_ipactl_status.rc != 0
+
+        - name: Show installed IdM public TLS certificate
+          ansible.builtin.debug:
+            msg:
+              - "IdM Web UI public certificate installed successfully."
+              - "URL: https://{{ idm_public_tls_fqdn }}"
+              - "Certificate: {{ idm_tls_certificate_path }}"
+              - "Certificate chain: {{ idm_tls_chain_path }}"
+              - "Full chain: {{ idm_tls_fullchain_path }}"
+              - "Private key: {{ idm_tls_private_key_path }}"
+              - "{{ idm_installed_http_certificate.stdout_lines }}"
+
+      always:
+        - name: Remove local ACM TLS staging directory
+          ansible.builtin.file:
+            path: >-
+              {{
+                idm_tls_local_staging.path
+                | default('/nonexistent')
+              }}
+            state: absent
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Clear ACM export facts
+          ansible.builtin.set_fact:
+            idm_acm_export_passphrase: ""
+            idm_acm_exported_certificate: {}
+          no_log: true
+
+        - name: Remove encrypted ACM private key
+          ansible.builtin.file:
+            path: "{{ idm_tls_private_key_path }}.encrypted"
+            state: absent
+          no_log: true
+
+        - name: Remove temporary ACM passphrase file
+          ansible.builtin.file:
+            path: "{{ idm_tls_directory }}/.acm-passphrase"
+            state: absent
+          no_log: true
     ###########################################################################
     # Final validation
     ###########################################################################
