@@ -1913,10 +1913,7 @@
             awk '
               /-----BEGIN CERTIFICATE-----/ {
                 certificate_number++
-                output_file = sprintf(
-                  "{{ idm_tls_chain_parts_directory }}/ca-%02d.crt",
-                  certificate_number
-                )
+                output_file = sprintf("{{ idm_tls_chain_parts_directory }}/ca-%02d.crt", certificate_number)
               }
 
               output_file != "" {
@@ -1930,7 +1927,9 @@
             ' "{{ idm_tls_chain_path }}"
           args:
             executable: /bin/bash
-          changed_when: true
+          register: idm_acm_chain_split
+          changed_when: idm_acm_chain_split.rc == 0
+          failed_when: idm_acm_chain_split.rc != 0
           when: idm_public_tls_install_required
 
         - name: Find individual ACM CA certificates
