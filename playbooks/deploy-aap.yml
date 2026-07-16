@@ -1117,7 +1117,7 @@
             mode: "0600"
             content: |
               [automationgateway]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [automationcontroller]
               {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
@@ -1139,7 +1139,6 @@
 
               [all:vars]
               redis_mode=standalone
-              routable_hostname={{ ansible_default_ipv4.address }}
 
               automationgateway_main_url=https://{{ aap_fqdn }}
               gateway_hostname={{ aap_fqdn }}
