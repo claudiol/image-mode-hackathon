@@ -78,13 +78,11 @@
     # Regenerate and reinstall the certificate even when the currently
     # installed Apache certificate already matches the ACM certificate.
     idm_force_public_tls_install: false
-    idm_tls_chain_parts_directory: >-
+  
 
-      {{ idm_tls_directory }}/chain-parts
+    idm_tls_chain_parts_directory: "{{ idm_tls_directory }}/chain-parts"
 
-    idm_current_http_certificate_path: >-
-
-      {{ idm_tls_directory }}/current-http.crt
+    idm_current_http_certificate_path: "{{ idm_tls_directory }}/current-http.crt"
 
     idm_acm_certificate_minimum_validity_seconds: 1209600
 
