@@ -1984,6 +1984,251 @@
         in [200, 301, 302, 401, 403, 422]
 
 
+    ###########################################################################
+    # PHASE 8C | Restore IdM CA trust after public TLS update
+    #
+    # The Satellite public certificate uses the ACM public CA chain, while
+    # IdM LDAPS uses the private IdM CA. Both trust chains must remain present.
+    ###########################################################################
+
+    - name: PHASE 8C | Restore IdM LDAP CA trust
+      block:
+        - name: PHASE 8C | Validate IdM inventory host availability
+          ansible.builtin.assert:
+            that:
+              - groups['idm'] is defined
+              - groups['idm'] | length > 0
+            fail_msg: >-
+              The idm inventory group is required to retrieve the IdM CA
+              certificate for Satellite LDAPS trust.
+
+        - name: PHASE 8C | Read IdM CA certificate from IdM server
+          ansible.builtin.slurp:
+            src: "{{ satellite_idm_ca_source }}"
+          delegate_to: "{{ groups['idm'][0] }}"
+          become: true
+          register: satellite_idm_ca_slurp
+          no_log: true
+
+        - name: PHASE 8C | Validate retrieved IdM CA certificate
+          ansible.builtin.assert:
+            that:
+              - satellite_idm_ca_slurp.content is defined
+              - satellite_idm_ca_slurp.content | length > 0
+              - >-
+                '-----BEGIN CERTIFICATE-----'
+                in
+                (
+                  satellite_idm_ca_slurp.content
+                  | b64decode
+                )
+              - >-
+                '-----END CERTIFICATE-----'
+                in
+                (
+                  satellite_idm_ca_slurp.content
+                  | b64decode
+                )
+            fail_msg: >-
+              Could not retrieve a valid IdM CA certificate from
+              {{ groups['idm'][0] }}:{{ satellite_idm_ca_source }}.
+          no_log: true
+
+        - name: PHASE 8C | Install IdM CA into Satellite system trust anchors
+          ansible.builtin.copy:
+            content: >-
+              {{
+                satellite_idm_ca_slurp.content
+                | b64decode
+                | trim
+              }}
+            dest: "{{ satellite_idm_ca_trust_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+          register: satellite_idm_ca_anchor_install
+          no_log: true
+
+        - name: PHASE 8C | Validate installed IdM CA certificate
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ satellite_idm_ca_trust_path }}"
+              - -noout
+              - -subject
+              - -issuer
+              - -fingerprint
+              - -sha256
+          register: satellite_idm_ca_validation
+          changed_when: false
+          failed_when: satellite_idm_ca_validation.rc != 0
+
+        - name: PHASE 8C | Refresh Satellite operating-system CA trust
+          ansible.builtin.command:
+            argv:
+              - update-ca-trust
+              - extract
+          register: satellite_ca_trust_update
+          changed_when: true
+          failed_when: satellite_ca_trust_update.rc != 0
+
+        - name: PHASE 8C | Verify IdM CA exists in extracted trust bundle
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            idm_ca_fingerprint="$(
+              openssl x509 \
+                -in "{{ satellite_idm_ca_trust_path }}" \
+                -noout \
+                -fingerprint \
+                -sha256 |
+              sed 's/^.*=//' |
+              tr -d ':' |
+              tr '[:lower:]' '[:upper:]'
+            )"
+
+            found=0
+            certificate_number=0
+            temporary_directory="$(mktemp -d)"
+
+            cleanup() {
+              rm -rf "${temporary_directory}"
+            }
+
+            trap cleanup EXIT
+
+            awk \
+              -v output_directory="${temporary_directory}" \
+              '
+              /-----BEGIN CERTIFICATE-----/ {
+                certificate_number++
+                output_file = output_directory "/ca-" certificate_number ".pem"
+                capture = 1
+              }
+
+              capture {
+                print > output_file
+              }
+
+              /-----END CERTIFICATE-----/ {
+                close(output_file)
+                output_file = ""
+                capture = 0
+              }
+              ' /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+
+            for certificate_file in "${temporary_directory}"/ca-*.pem; do
+              test -f "${certificate_file}" || continue
+
+              candidate_fingerprint="$(
+                openssl x509 \
+                  -in "${certificate_file}" \
+                  -noout \
+                  -fingerprint \
+                  -sha256 2>/dev/null |
+                sed 's/^.*=//' |
+                tr -d ':' |
+                tr '[:lower:]' '[:upper:]'
+              )"
+
+              if test "${candidate_fingerprint}" = "${idm_ca_fingerprint}"; then
+                found=1
+                break
+              fi
+            done
+
+            test "${found}" -eq 1
+          args:
+            executable: /bin/bash
+          register: satellite_idm_ca_bundle_check
+          changed_when: false
+          failed_when: satellite_idm_ca_bundle_check.rc != 0
+
+        - name: PHASE 8C | Verify IdM LDAPS certificate chain
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            openssl s_client \
+              -connect "{{ satellite_idm_host }}:636" \
+              -servername "{{ satellite_idm_host }}" \
+              -CAfile /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+              -verify_return_error \
+              </dev/null 2>&1 |
+              tee /var/tmp/satellite-idm-ldaps-validation.log
+
+            grep -q 'Verify return code: 0 (ok)' \
+              /var/tmp/satellite-idm-ldaps-validation.log
+          args:
+            executable: /bin/bash
+          register: satellite_idm_ldaps_chain_check
+          changed_when: false
+          failed_when: satellite_idm_ldaps_chain_check.rc != 0
+
+        - name: PHASE 8C | Restart Satellite services after CA trust update
+          ansible.builtin.command:
+            argv:
+              - satellite-maintain
+              - service
+              - restart
+          register: satellite_service_restart_after_ca_update
+          changed_when: true
+          failed_when: satellite_service_restart_after_ca_update.rc != 0
+          when:
+            - satellite_idm_ca_anchor_install.changed
+
+        - name: PHASE 8C | Wait for Satellite HTTPS TCP port
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: 443
+            state: started
+            timeout: 600
+            delay: 5
+
+        - name: PHASE 8C | Verify Satellite HTTPS using curl
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --silent
+              - --show-error
+              - --location
+              - --output
+              - /dev/null
+              - --write-out
+              - "%{http_code}"
+              - --connect-timeout
+              - "10"
+              - --max-time
+              - "60"
+              - "https://{{ satellite_public_tls_fqdn }}/users/login"
+          register: satellite_https_after_idm_ca_restore
+          changed_when: false
+          retries: 30
+          delay: 20
+          until:
+            - satellite_https_after_idm_ca_restore.rc == 0
+            - >-
+              satellite_https_after_idm_ca_restore.stdout
+              | trim
+              | int
+              in [200, 301, 302, 401, 403, 422]
+
+        - name: PHASE 8C | Report restored IdM trust
+          ansible.builtin.debug:
+            msg:
+              - >-
+                IdM CA trust restored at
+                {{ satellite_idm_ca_trust_path }}.
+              - >-
+                LDAPS verification succeeded for
+                {{ satellite_idm_host }}:636.
+              - >-
+                IdM CA:
+                {{
+                  satellite_idm_ca_validation.stdout_lines
+                  | default([])
+                }}
 
     ###########################################################################
     # PHASE 9 | Validate Satellite services
