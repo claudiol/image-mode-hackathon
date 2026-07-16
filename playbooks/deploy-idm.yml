@@ -1889,7 +1889,7 @@
 
         - name: Remove old split ACM CA chain files
           ansible.builtin.find:
-            paths: "{{ idm_tls_chain_parts_directory }}"
+            paths: "{{ idm_tls_chain_parts_directory | trim }}"
             patterns: "ca-*.crt"
             file_type: file
           register: idm_old_acm_chain_parts
@@ -1908,21 +1908,35 @@
           ansible.builtin.shell: |
             set -euo pipefail
 
-            awk '
+            chain_file="{{ idm_tls_chain_path | trim }}"
+            output_directory="{{ idm_tls_chain_parts_directory | trim }}"
+
+            test -s "${chain_file}"
+            install -d -m 0700 "${output_directory}"
+
+            awk \
+              -v output_directory="${output_directory}" \
+              '
               /-----BEGIN CERTIFICATE-----/ {
                 certificate_number++
-                output_file = sprintf("{{ idm_tls_chain_parts_directory }}/ca-%02d.crt", certificate_number)
+                output_file = sprintf(
+                  "%s/ca-%02d.crt",
+                  output_directory,
+                  certificate_number
+                )
+                capture = 1
               }
 
-              output_file != "" {
+              capture {
                 print > output_file
               }
 
               /-----END CERTIFICATE-----/ {
                 close(output_file)
                 output_file = ""
+                capture = 0
               }
-            ' "{{ idm_tls_chain_path }}"
+              ' "${chain_file}"
           args:
             executable: /bin/bash
           register: idm_acm_chain_split
@@ -1932,7 +1946,7 @@
 
         - name: Find individual ACM CA certificates
           ansible.builtin.find:
-            paths: "{{ idm_tls_chain_parts_directory }}"
+            paths: "{{ idm_tls_chain_parts_directory | trim }}"
             patterns: "ca-*.crt"
             file_type: file
           register: idm_acm_chain_parts
@@ -1943,8 +1957,31 @@
             that:
               - idm_acm_chain_parts.files | default([]) | length > 0
             fail_msg: >-
-              ACM certificate chain did not contain any usable CA
-              certificates.
+              No individual CA certificates were created from
+              {{ idm_tls_chain_path | trim }}.
+          when: idm_public_tls_install_required
+
+        - name: Validate each split ACM CA certificate
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ item.path }}"
+              - -noout
+              - -subject
+              - -issuer
+          register: idm_acm_chain_certificate_validation
+          changed_when: false
+          failed_when: idm_acm_chain_certificate_validation.rc != 0
+          loop: >-
+            {{
+              idm_acm_chain_parts.files
+              | default([])
+              | sort(attribute='path')
+            }}
+          loop_control:
+            label: "{{ item.path }}"
           when: idm_public_tls_install_required
 
         - name: Install ACM CA chain certificates into IdM
