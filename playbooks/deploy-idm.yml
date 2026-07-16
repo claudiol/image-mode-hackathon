@@ -2013,11 +2013,22 @@
                   idm_acm_ca_install.stderr | default('')
                 )
               ) | lower
+            - >-
+              'no modifications to be performed'
+              not in (
+                (
+                  idm_acm_ca_install.stdout | default('')
+                )
+                ~
+                (
+                  idm_acm_ca_install.stderr | default('')
+                )
+              ) | lower
           loop: >-
             {{
               idm_acm_chain_parts.files
               | default([])
-              | sort(attribute='path')
+              | sort(attribute='path', reverse=true)
             }}
           loop_control:
             label: "{{ item.path }}"
