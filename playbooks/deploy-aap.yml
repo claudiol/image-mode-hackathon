@@ -1176,7 +1176,7 @@
 
               
               gateway_tls_cert={{ aap_tls_certificate_path }}
-              gateway_tls_key={{ aap_tls_private_key_path }}={{ aap_tls_private_key_path }}
+              gateway_tls_key={{ aap_tls_private_key_path }}
 
               custom_ca_cert={{ idm_ca_dest }}
 
