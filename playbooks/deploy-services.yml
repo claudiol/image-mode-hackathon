@@ -17,5 +17,5 @@
 - name: Deploy Quay
   ansible.builtin.import_playbook: deploy-quay.yml
 
-# - name: Configure Ansible Automation Platform For Image Mode Lab
-#   ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
+- name: Configure Ansible Automation Platform For Image Mode Lab
+  ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
