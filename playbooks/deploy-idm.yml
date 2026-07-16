@@ -1479,6 +1479,7 @@
               and encrypted private key.
           no_log: true
 
+
         - name: Write exported ACM leaf certificate locally
           ansible.builtin.copy:
             content: |
@@ -1509,16 +1510,103 @@
           become: false
           no_log: true
 
+        #######################################################################
+        # Validate and compare the exported certificate before installation
+        #######################################################################
+
+        - name: Build exported ACM full certificate chain locally
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            cat \
+              "{{ idm_tls_local_staging.path }}/server.crt" \
+              "{{ idm_tls_local_staging.path }}/chain.crt" \
+              > "{{ idm_tls_local_staging.path }}/fullchain.crt"
+
+            chmod 0600 "{{ idm_tls_local_staging.path }}/fullchain.crt"
+          args:
+            executable: /bin/bash
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          no_log: true
+
+        - name: Validate exported ACM certificate hostname locally
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_local_staging.path }}/server.crt"
+              - -noout
+              - -checkhost
+              - "{{ idm_public_tls_fqdn }}"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+
+        - name: Verify exported ACM certificate remains valid for at least 14 days
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_local_staging.path }}/server.crt"
+              - -noout
+              - -checkend
+              - "{{ idm_acm_certificate_minimum_validity_seconds | string }}"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+
+        - name: Read exported ACM certificate fingerprint
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ idm_tls_local_staging.path }}/server.crt"
+              - -noout
+              - -fingerprint
+              - -sha256
+          delegate_to: localhost
+          become: false
+          register: idm_acm_certificate_fingerprint
+          changed_when: false
+
+        - name: Normalize exported ACM certificate fingerprint
+          ansible.builtin.set_fact:
+            idm_acm_certificate_sha256: >-
+              {{
+                idm_acm_certificate_fingerprint.stdout
+                | default('')
+                | trim
+              }}
+
+        - name: Validate exported ACM certificate fingerprint
+          ansible.builtin.assert:
+            that:
+              - idm_acm_certificate_sha256 | length > 0
+              - "'SHA256 Fingerprint=' in idm_acm_certificate_sha256"
+            fail_msg: >-
+              Could not determine the SHA-256 fingerprint of the certificate
+              exported from AWS ACM.
+
         - name: Determine whether IdM HTTP certificate replacement is required
           ansible.builtin.set_fact:
             idm_public_tls_install_required: >-
               {{
                 idm_force_public_tls_install | bool
                 or
-                idm_current_http_certificate_sha256
+                (
+                  idm_current_http_certificate_sha256
+                  | default('')
+                  | trim
+                )
                 !=
                 (
-                  idm_acm_certificate_fingerprint.stdout
+                  idm_acm_certificate_sha256
+                  | default('')
                   | trim
                 )
               }}
@@ -1526,12 +1614,17 @@
         - name: Report current IdM TLS certificate state
           ansible.builtin.debug:
             msg:
+              - "Public TLS FQDN: {{ idm_public_tls_fqdn }}"
+              - "ACM certificate: {{ idm_acm_certificate_arn }}"
               - >-
-                Public TLS FQDN:
-                {{ idm_public_tls_fqdn }}
+                Current certificate fingerprint:
+                {{
+                  idm_current_http_certificate_sha256
+                  | default('not detected')
+                }}
               - >-
-                ACM certificate:
-                {{ idm_acm_certificate_arn }}
+                ACM certificate fingerprint:
+                {{ idm_acm_certificate_sha256 }}
               - >-
                 Certificate replacement required:
                 {{ idm_public_tls_install_required }}
@@ -1564,6 +1657,10 @@
             group: root
             mode: "0600"
           when: idm_public_tls_install_required
+
+        #######################################################################
+        # Copy certificate material to /opt/certs/idm
+        #######################################################################
 
         #######################################################################
         # Copy certificate material to /opt/certs/idm
@@ -1603,6 +1700,7 @@
             owner: root
             group: root
             mode: "0600"
+          when: idm_public_tls_install_required
           no_log: true
 
         - name: Install temporary ACM key passphrase
@@ -1612,51 +1710,10 @@
             owner: root
             group: root
             mode: "0600"
+          when: idm_public_tls_install_required
           no_log: true
 
-        - name: Decrypt ACM private key on the IdM server
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - pkey
-              - -in
-              - "{{ idm_tls_private_key_path }}.encrypted"
-              - -out
-              - "{{ idm_tls_private_key_path }}"
-              - -passin
-              - "file:{{ idm_tls_directory }}/.acm-passphrase"
-          register: idm_acm_private_key_decrypt
-          changed_when: true
-          no_log: true
-
-        - name: Decrypt ACM private key on the IdM server
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - pkey
-              - -in
-              - "{{ idm_tls_private_key_path }}.encrypted"
-              - -out
-              - "{{ idm_tls_private_key_path }}"
-              - -passin
-              - "file:{{ idm_tls_directory }}/.acm-passphrase"
-          register: idm_acm_private_key_decrypt
-          changed_when: true
-          no_log: true
-
-        - name: Secure decrypted ACM private key
-          ansible.builtin.file:
-            path: "{{ idm_tls_private_key_path }}"
-            owner: root
-            group: root
-            mode: "0600"
-
-        - name: Secure decrypted ACM private key
-          ansible.builtin.file:
-            path: "{{ idm_tls_private_key_path }}"
-            owner: root
-            group: root
-            mode: "0600"
+ 
         - name: Validate ACM certificate hostname
           ansible.builtin.command:
             argv:
@@ -1679,19 +1736,6 @@
               - -noout
               - -checkend
               - "{{ idm_acm_certificate_minimum_validity_seconds | string }}"
-          changed_when: false
-
-        - name: Read exported ACM certificate fingerprint
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - x509
-              - -in
-              - "{{ idm_tls_certificate_path }}"
-              - -noout
-              - -fingerprint
-              - -sha256
-          register: idm_acm_certificate_fingerprint
           changed_when: false
 
         - name: Read ACM certificate public key hash
