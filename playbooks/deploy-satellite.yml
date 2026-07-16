@@ -227,21 +227,6 @@
 
 
     ###########################################################################
-    # Temporary OpenSSL compatibility workaround
-    ###########################################################################
-
-    satellite_openssl_workaround_enabled: true
-    satellite_openssl_compatible_version: "3.5.5-4.el9_8"
-    satellite_openssl_arch: "x86_64"
-    satellite_openssl_expected_packages:
-
-      - >-
-        openssl-{{ satellite_openssl_compatible_version }}.{{ satellite_openssl_arch }}
-
-      - >-
-        openssl-libs-{{ satellite_openssl_compatible_version }}.{{ satellite_openssl_arch }}
-
-    ###########################################################################
     # Packages
     ###########################################################################
 
@@ -259,6 +244,7 @@
       - unzip
       - openssl
       - openssl-libs
+      - curl
 
     ###########################################################################
     # Host firewall
@@ -939,290 +925,6 @@
           satellite-installer is available and the Satellite scenario is
           present or already installed.
 
-
-    ###########################################################################
-    # PHASE 6B | Apply temporary OpenSSL compatibility workaround
-    ###########################################################################
-
-    - name: PHASE 6B | Apply Satellite OpenSSL compatibility workaround
-      when: satellite_openssl_workaround_enabled | bool
-      block:
-        - name: PHASE 6B | Read currently installed OpenSSL packages
-          ansible.builtin.command:
-            argv:
-              - rpm
-              - -q
-              - --qf
-              - "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n"
-              - openssl
-              - openssl-libs
-          register: current_satellite_openssl_packages
-          changed_when: false
-          failed_when: false
-
-        - name: PHASE 6B | Determine whether OpenSSL remediation is required
-          ansible.builtin.set_fact:
-            satellite_openssl_remediation_required: >-
-              {{
-                (
-                  'openssl-'
-                  ~ satellite_openssl_compatible_version
-                  ~ '.'
-                  ~ satellite_openssl_arch
-                )
-                not in
-                (
-                  current_satellite_openssl_packages.stdout_lines
-                  | default([])
-                )
-                or
-                (
-                  'openssl-libs-'
-                  ~ satellite_openssl_compatible_version
-                  ~ '.'
-                  ~ satellite_openssl_arch
-                )
-                not in
-                (
-                  current_satellite_openssl_packages.stdout_lines
-                  | default([])
-                )
-              }}
-
-        - name: PHASE 6B | Query compatible OpenSSL packages
-          ansible.builtin.command:
-            argv:
-              - dnf
-              - repoquery
-              - --available
-              - --qf
-              - "%{name}-%{version}-%{release}.%{arch}"
-              - >-
-                openssl-{{ satellite_openssl_compatible_version }}.{{ satellite_openssl_arch }}
-              - >-
-                openssl-libs-{{ satellite_openssl_compatible_version }}.{{ satellite_openssl_arch }}
-          register: available_satellite_openssl_packages
-          changed_when: false
-          failed_when: false
-          when: satellite_openssl_remediation_required | bool
-
-        - name: PHASE 6B | Validate compatible OpenSSL package availability
-          ansible.builtin.assert:
-            that:
-              - available_satellite_openssl_packages.rc == 0
-              - >-
-                (
-                  'openssl-'
-                  ~ satellite_openssl_compatible_version
-                  ~ '.'
-                  ~ satellite_openssl_arch
-                )
-                in
-                (
-                  available_satellite_openssl_packages.stdout_lines
-                  | default([])
-                )
-              - >-
-                (
-                  'openssl-libs-'
-                  ~ satellite_openssl_compatible_version
-                  ~ '.'
-                  ~ satellite_openssl_arch
-                )
-                in
-                (
-                  available_satellite_openssl_packages.stdout_lines
-                  | default([])
-                )
-            fail_msg: |
-              Required Satellite-compatible OpenSSL packages are unavailable.
-
-              Required:
-              {{ satellite_openssl_expected_packages | join('\n') }}
-
-              Repository query:
-              {{
-                available_satellite_openssl_packages.stdout_lines
-                | default([])
-                | join('\n')
-              }}
-
-              Enabled repositories:
-              Run:
-                dnf repolist
-                dnf repoquery --available openssl openssl-libs
-          when: satellite_openssl_remediation_required | bool
-
-        - name: PHASE 6B | Downgrade OpenSSL to compatible packages
-          ansible.builtin.command:
-            argv:
-              - dnf
-              - install
-              - --assumeyes
-              - --allowerasing
-              - --disableexcludes=all
-              - "{{ satellite_openssl_expected_packages[0] }}"
-              - "{{ satellite_openssl_expected_packages[1] }}"
-          register: satellite_openssl_package_change
-          changed_when: >-
-            satellite_openssl_package_change.rc == 0
-            and
-            (
-              'Downgraded:' in
-              (
-                satellite_openssl_package_change.stdout
-                | default('')
-              )
-              or
-              'Installed:' in
-              (
-                satellite_openssl_package_change.stdout
-                | default('')
-              )
-            )
-          failed_when: satellite_openssl_package_change.rc != 0
-          when: satellite_openssl_remediation_required | bool
-
-        - name: PHASE 6B | Reboot after replacing OpenSSL libraries
-          ansible.builtin.reboot:
-            msg: >-
-              Rebooting after applying the temporary Satellite OpenSSL
-              compatibility workaround
-            reboot_timeout: 1200
-            connect_timeout: 10
-            pre_reboot_delay: 5
-            post_reboot_delay: 30
-            test_command: "systemctl is-system-running --wait"
-          when:
-            - satellite_openssl_package_change is defined
-            - satellite_openssl_package_change.changed
-
-        - name: PHASE 6B | Reset SSH connection after reboot
-          ansible.builtin.meta: reset_connection
-          when:
-            - satellite_openssl_package_change is defined
-            - satellite_openssl_package_change.changed
-
-        - name: PHASE 6B | Refresh gathered facts after reboot
-          ansible.builtin.setup:
-          when:
-            - satellite_openssl_package_change is defined
-            - satellite_openssl_package_change.changed
-
-        - name: PHASE 6B | Read final OpenSSL package versions
-          ansible.builtin.command:
-            argv:
-              - rpm
-              - -q
-              - --qf
-              - "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n"
-              - openssl
-              - openssl-libs
-          register: final_satellite_openssl_packages
-          changed_when: false
-
-        - name: PHASE 6B | Validate compatible OpenSSL packages
-          ansible.builtin.assert:
-            that:
-              - >-
-                (
-                  'openssl-'
-                  ~ satellite_openssl_compatible_version
-                  ~ '.'
-                  ~ satellite_openssl_arch
-                )
-                in final_satellite_openssl_packages.stdout_lines
-              - >-
-                (
-                  'openssl-libs-'
-                  ~ satellite_openssl_compatible_version
-                  ~ '.'
-                  ~ satellite_openssl_arch
-                )
-                in final_satellite_openssl_packages.stdout_lines
-            fail_msg: |
-              Satellite-compatible OpenSSL packages were not installed.
-
-              Expected:
-              {{ satellite_openssl_expected_packages | join('\n') }}
-
-              Installed:
-              {{
-                final_satellite_openssl_packages.stdout_lines
-                | default([])
-                | join('\n')
-              }}
-
-        - name: PHASE 6B | Read system OpenSSL version
-          ansible.builtin.command:
-            argv:
-              - openssl
-              - version
-              - -a
-          register: satellite_openssl_runtime
-          changed_when: false
-
-        - name: PHASE 6B | Read Ansible Python OpenSSL runtime
-          ansible.builtin.command:
-            argv:
-              - "{{ ansible_python.executable | default('/usr/bin/python3') }}"
-              - -c
-              - >-
-                import ssl;
-                print(ssl.OPENSSL_VERSION);
-                print(ssl._OPENSSL_API_VERSION)
-          register: satellite_python_openssl_runtime
-          changed_when: false
-
-        - name: PHASE 6B | Verify Python SSL module loads successfully
-          ansible.builtin.command:
-            argv:
-              - "{{ ansible_python.executable | default('/usr/bin/python3') }}"
-              - -c
-              - >-
-                import ssl;
-                context = ssl.create_default_context();
-                print(type(context).__name__)
-          register: satellite_python_ssl_context_check
-          changed_when: false
-          failed_when: satellite_python_ssl_context_check.rc != 0
-
-        - name: PHASE 6B | Report OpenSSL compatibility state
-          ansible.builtin.debug:
-            msg:
-              - >-
-                Installed RPMs:
-                {{
-                  final_satellite_openssl_packages.stdout_lines
-                }}
-              - >-
-                OpenSSL runtime:
-                {{
-                  satellite_openssl_runtime.stdout_lines
-                  | default([])
-                  | first
-                  | default('unknown')
-                }}
-              - >-
-                Python runtime:
-                {{
-                  satellite_python_openssl_runtime.stdout_lines
-                  | default([])
-                }}
-              - >-
-                Python SSL context:
-                {{
-                  satellite_python_ssl_context_check.stdout
-                  | default('unavailable')
-                }}
-              - >-
-                Reboot performed:
-                {{
-                  satellite_openssl_package_change.changed
-                  | default(false)
-                }}
-
-
     ###########################################################################
     # PHASE 7 | Determine current installation state
     ###########################################################################
@@ -1233,20 +935,24 @@
       register: satellite_answer_file
 
     - name: PHASE 7 | Check current Satellite HTTPS endpoint
-      ansible.builtin.uri:
-        url: "https://{{ satellite_fqdn }}/users/login"
-        method: GET
-        validate_certs: false
-        follow_redirects: all
-        status_code:
-          - 200
-          - 301
-          - 302
-          - 401
-          - 403
-          - 422
-          - 503
-        timeout: 30
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --insecure
+          - --location
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --connect-timeout
+          - "10"
+          - --max-time
+          - "30"
+          - --resolve
+          - "{{ satellite_fqdn }}:443:127.0.0.1"
+          - "https://{{ satellite_fqdn }}/users/login"
       register: existing_satellite_endpoint
       changed_when: false
       failed_when: false
@@ -1257,8 +963,12 @@
           {{
             not satellite_answer_file.stat.exists
             or
-            existing_satellite_endpoint.status
-            | default(0)
+            existing_satellite_endpoint.rc | default(1) | int != 0
+            or
+            existing_satellite_endpoint.stdout
+            | default('0')
+            | trim
+            | int
             not in [200, 301, 302, 401, 403, 422]
           }}
 
@@ -1305,27 +1015,24 @@
     # PHASE 8B | Install public ACM TLS certificate
     ###########################################################################
 
-    - name: PHASE 8B | Create persistent Satellite TLS directories
+    - name: PHASE 8B | Create persistent Satellite TLS directory
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ satellite_tls_directory }}"
         state: directory
         owner: root
         group: root
         mode: "0700"
-      loop:
-        - "{{ satellite_tls_directory }}"
-        - "{{ satellite_tls_system_ca_parts_directory }}"
-        - "{{ satellite_tls_acm_chain_parts_directory }}"
 
     - name: PHASE 8B | Read currently served Satellite certificate
       ansible.builtin.shell: |
-        set -euo pipefail
+        set -o pipefail
 
-        openssl s_client \
-          -connect 127.0.0.1:443 \
-          -servername "{{ satellite_public_tls_fqdn }}" \
-          -showcerts \
-          </dev/null 2>/dev/null |
+        timeout 15 \
+          openssl s_client \
+            -connect 127.0.0.1:443 \
+            -servername "{{ satellite_public_tls_fqdn }}" \
+            -showcerts \
+            </dev/null 2>/dev/null |
           awk '
             /-----BEGIN CERTIFICATE-----/ {
               capture = 1
@@ -1404,7 +1111,7 @@
     - name: PHASE 8B | Export and deploy ACM certificate
       block:
         #######################################################################
-        # Export ACM material on the Ansible controller
+        # Export ACM certificate material on the Ansible controller
         #######################################################################
 
         - name: PHASE 8B | Generate ACM export passphrase
@@ -1475,14 +1182,17 @@
               - >-
                 satellite_acm_exported_certificate.Certificate
                 | default('')
+                | trim
                 | length > 0
               - >-
                 satellite_acm_exported_certificate.CertificateChain
                 | default('')
+                | trim
                 | length > 0
               - >-
                 satellite_acm_exported_certificate.PrivateKey
                 | default('')
+                | trim
                 | length > 0
             fail_msg: >-
               ACM did not return a certificate, certificate chain, and
@@ -1521,7 +1231,7 @@
           no_log: true
 
         #######################################################################
-        # Validate the ACM certificate before changing Satellite
+        # Validate ACM certificate before changing Satellite
         #######################################################################
 
         - name: PHASE 8B | Validate ACM certificate hostname
@@ -1589,9 +1299,15 @@
               - satellite_acm_fingerprint.rc == 0
               - satellite_acm_tls_sha256 | length == 64
               - satellite_acm_tls_sha256 is match('^[0-9A-F]{64}$')
-            fail_msg: >-
+            fail_msg: |
               Could not determine a valid SHA-256 fingerprint for the
               exported Satellite ACM certificate.
+
+              OpenSSL output:
+              {{
+                satellite_acm_fingerprint.stdout
+                | default('no output')
+              }}
 
         - name: PHASE 8B | Determine whether Satellite TLS update is required
           ansible.builtin.set_fact:
@@ -1602,9 +1318,14 @@
                 (
                   satellite_current_tls_sha256
                   | default('')
+                  | trim
                 )
                 !=
-                satellite_acm_tls_sha256
+                (
+                  satellite_acm_tls_sha256
+                  | default('')
+                  | trim
+                )
               }}
 
         - name: PHASE 8B | Report Satellite TLS state
@@ -1624,7 +1345,7 @@
                 {{ satellite_public_tls_install_required }}
 
         #######################################################################
-        # Install persistent certificate files on Satellite
+        # Install persistent certificate material on Satellite
         #######################################################################
 
         - name: PHASE 8B | Install ACM leaf certificate
@@ -1710,7 +1431,7 @@
           no_log: true
 
         #######################################################################
-        # Verify key and certificate match
+        # Verify certificate and private key match
         #######################################################################
 
         - name: PHASE 8B | Read certificate public key hash
@@ -1729,6 +1450,7 @@
             executable: /bin/bash
           register: satellite_certificate_public_key_hash
           changed_when: false
+          failed_when: satellite_certificate_public_key_hash.rc != 0
           when: satellite_public_tls_install_required
 
         - name: PHASE 8B | Read private key public key hash
@@ -1744,33 +1466,50 @@
             executable: /bin/bash
           register: satellite_private_key_public_key_hash
           changed_when: false
+          failed_when: satellite_private_key_public_key_hash.rc != 0
+          when: satellite_public_tls_install_required
+          no_log: true
+
+        - name: PHASE 8B | Normalize certificate and key hashes
+          ansible.builtin.set_fact:
+            satellite_certificate_public_key_sha256: >-
+              {{
+                satellite_certificate_public_key_hash.stdout
+                | default('')
+                | regex_replace('^.*=', '')
+                | trim
+                | lower
+              }}
+            satellite_private_key_public_key_sha256: >-
+              {{
+                satellite_private_key_public_key_hash.stdout
+                | default('')
+                | regex_replace('^.*=', '')
+                | trim
+                | lower
+              }}
           when: satellite_public_tls_install_required
           no_log: true
 
         - name: PHASE 8B | Verify Satellite certificate and key match
           ansible.builtin.assert:
             that:
+              - satellite_certificate_public_key_sha256 | length == 64
+              - satellite_private_key_public_key_sha256 | length == 64
               - >-
-                (
-                  satellite_certificate_public_key_hash.stdout
-                  | regex_replace('^.*=', '')
-                  | trim
-                  | lower
-                )
+                satellite_certificate_public_key_sha256
                 ==
-                (
-                  satellite_private_key_public_key_hash.stdout
-                  | regex_replace('^.*=', '')
-                  | trim
-                  | lower
-                )
+                satellite_private_key_public_key_sha256
             fail_msg: >-
               The exported ACM certificate and private key do not match.
           when: satellite_public_tls_install_required
           no_log: true
 
         #######################################################################
-        # Build Satellite CA bundle: root first, then intermediates
+        # Build the Satellite CA bundle
+        #
+        # Satellite expects the root CA first, followed by the intermediate
+        # certificates. ACM normally exports only the intermediate chain.
         #######################################################################
 
         - name: PHASE 8B | Build complete Satellite CA bundle
@@ -1857,7 +1596,7 @@
                 for pem in system_roots
             ]
 
-            subjects = {
+            chain_subjects = {
                 item["subject"]
                 for item in chain_details
             }
@@ -1866,7 +1605,7 @@
                 (
                     item
                     for item in chain_details
-                    if item["issuer"] not in subjects
+                    if item["issuer"] not in chain_subjects
                 ),
                 chain_details[-1],
             )
@@ -1885,42 +1624,26 @@
 
             if root is None:
                 raise SystemExit(
-                    "Could not find the public root CA in the "
+                    "Could not find the required public root CA in the "
                     "RHEL system trust store. Required subject: "
                     f"{highest_intermediate['issuer']}"
                 )
 
             ordered_intermediates = []
-            current_subject = highest_intermediate["subject"]
+            current = highest_intermediate
 
-            while True:
-                current = next(
-                    (
-                        item
-                        for item in chain_details
-                        if item["subject"] == current_subject
-                    ),
-                    None,
-                )
-
-                if current is None:
-                    break
-
+            while current is not None:
                 ordered_intermediates.insert(0, current)
 
-                child = next(
+                current = next(
                     (
-                        item
-                        for item in chain_details
-                        if item["issuer"] == current["subject"]
+                        candidate
+                        for candidate in chain_details
+                        if candidate["issuer"] == current["subject"]
+                        and candidate["subject"] != current["subject"]
                     ),
                     None,
                 )
-
-                if child is None:
-                    break
-
-                current_subject = child["subject"]
 
             bundle = [root["pem"]]
             bundle.extend(
@@ -1959,6 +1682,8 @@
               - verify
               - -CAfile
               - "{{ satellite_tls_ca_bundle_path }}"
+              - -untrusted
+              - "{{ satellite_tls_acm_chain_path }}"
               - "{{ satellite_tls_certificate_path }}"
           register: satellite_tls_chain_validation
           changed_when: false
@@ -1966,7 +1691,7 @@
           when: satellite_public_tls_install_required
 
         #######################################################################
-        # Validate and deploy through supported Satellite tooling
+        # Validate and deploy using supported Satellite tooling
         #######################################################################
 
         - name: PHASE 8B | Validate custom Satellite TLS files
@@ -2006,6 +1731,9 @@
           when: satellite_public_tls_install_required
           no_log: false
 
+        #######################################################################
+        # Wait for TLS without using the remote Python SSL runtime
+        #######################################################################
 
         - name: PHASE 8B | Wait for Satellite TCP port 443
           ansible.builtin.wait_for:
@@ -2016,21 +1744,15 @@
             timeout: 300
           when: satellite_public_tls_install_required
 
-        - name: PHASE 8B | Wait for a parseable Satellite TLS certificate
+        - name: PHASE 8B | Wait for Satellite to serve a parseable certificate
           ansible.builtin.shell: |
-            set -euo pipefail
+            set -o pipefail
 
-            certificate="$(
-              timeout 15 \
-                openssl s_client \
-                  -connect 127.0.0.1:443 \
-                  -servername "{{ satellite_public_tls_fqdn }}" \
-                  </dev/null 2>/dev/null
-            )"
-
-            test -n "${certificate}"
-
-            printf '%s\n' "${certificate}" |
+            timeout 15 \
+              openssl s_client \
+                -connect 127.0.0.1:443 \
+                -servername "{{ satellite_public_tls_fqdn }}" \
+                </dev/null 2>/dev/null |
               openssl x509 \
                 -noout \
                 -subject \
@@ -2039,110 +1761,162 @@
                 -dates
           args:
             executable: /bin/bash
-          register: satellite_tls_certificate_parse_check
+          register: satellite_tls_parse_check
           changed_when: false
           failed_when: false
           retries: 30
           delay: 10
-          until: satellite_tls_certificate_parse_check.rc == 0
+          until:
+            - satellite_tls_parse_check.rc == 0
+            - >-
+              'subject='
+              in (satellite_tls_parse_check.stdout | default(''))
           when: satellite_public_tls_install_required
 
-
-
         - name: PHASE 8B | Wait for Satellite HTTPS after TLS update
-          ansible.builtin.uri:
-            url: "https://{{ satellite_public_tls_fqdn }}/users/login"
-            method: GET
-            validate_certs: true
-            follow_redirects: all
-            status_code:
-              - 200
-              - 301
-              - 302
-              - 401
-              - 403
-              - 422
-            timeout: 60
-          register: satellite_public_tls_https_check
-          retries: 30
-          delay: 20
-          until: >-
-            satellite_public_tls_https_check.status
-            in [200, 301, 302, 401, 403, 422]
-          changed_when: false
-
-        #######################################################################
-        # Validate and deploy through supported Satellite tooling
-        #######################################################################
-
-        - name: PHASE 8B | Wait for Satellite HTTPS after TLS update
-          ansible.builtin.uri:
-            url: "https://{{ satellite_public_tls_fqdn }}/users/login"
-            method: GET
-            validate_certs: false
-            follow_redirects: all
-            status_code:
-              - 200
-              - 301
-              - 302
-              - 401
-              - 403
-              - 422
-              - 503
-            timeout: 60
-            return_content: false
-          register: satellite_public_tls_https_check
-          retries: 30
-          delay: 20
-          until: >-
-            satellite_public_tls_https_check.status
-            | default(0)
-            | int
-            in [200, 301, 302, 401, 403, 422]
-          changed_when: false
-          when: satellite_public_tls_install_required
-
-        - name: PHASE 8B | Deploy public ACM certificate to Satellite
           ansible.builtin.command:
             argv:
-              - satellite-installer
-              - "--certs-server-cert"
-              - "{{ satellite_tls_certificate_path }}"
-              - "--certs-server-key"
-              - "{{ satellite_tls_private_key_path }}"
-              - "--certs-server-ca-cert"
-              - "{{ satellite_tls_ca_bundle_path }}"
-              - "--certs-update-server"
-              - "--certs-update-server-ca"
-          async: 3600
-          poll: 30
-          register: satellite_public_tls_installer
-          changed_when: satellite_public_tls_installer.rc == 0
-          failed_when: satellite_public_tls_installer.rc != 0
-          when: satellite_public_tls_install_required
-          no_log: false
-
-        - name: PHASE 8B | Wait for Satellite HTTPS after TLS update
-          ansible.builtin.uri:
-            url: "https://{{ satellite_public_tls_fqdn }}/users/login"
-            method: GET
-            validate_certs: true
-            follow_redirects: all
-            status_code:
-              - 200
-              - 301
-              - 302
-              - 401
-              - 403
-              - 422
-            timeout: 60
-          register: satellite_public_tls_https_check
+              - curl
+              - --silent
+              - --show-error
+              - --insecure
+              - --location
+              - --output
+              - /dev/null
+              - --write-out
+              - "%{http_code}"
+              - --connect-timeout
+              - "10"
+              - --max-time
+              - "60"
+              - --resolve
+              - "{{ satellite_public_tls_fqdn }}:443:127.0.0.1"
+              - "https://{{ satellite_public_tls_fqdn }}/users/login"
+          register: satellite_public_tls_curl_check
+          changed_when: false
+          failed_when: false
           retries: 30
           delay: 20
-          until: >-
-            satellite_public_tls_https_check.status
-            in [200, 301, 302, 401, 403, 422]
+          until:
+            - satellite_public_tls_curl_check.rc == 0
+            - >-
+              satellite_public_tls_curl_check.stdout
+              | default('0')
+              | trim
+              | int
+              in [200, 301, 302, 401, 403, 422]
+
+        #######################################################################
+        # Verify the installed certificate
+        #######################################################################
+
+        - name: PHASE 8B | Read certificate served by Satellite
+          ansible.builtin.shell: |
+            set -o pipefail
+
+            timeout 15 \
+              openssl s_client \
+                -connect 127.0.0.1:443 \
+                -servername "{{ satellite_public_tls_fqdn }}" \
+                </dev/null 2>/dev/null |
+              openssl x509 \
+                -noout \
+                -fingerprint \
+                -sha256
+          args:
+            executable: /bin/bash
+          register: satellite_installed_tls_fingerprint
           changed_when: false
+          failed_when: satellite_installed_tls_fingerprint.rc != 0
+
+        - name: PHASE 8B | Normalize installed Satellite certificate fingerprint
+          ansible.builtin.set_fact:
+            satellite_installed_tls_sha256: >-
+              {{
+                satellite_installed_tls_fingerprint.stdout
+                | default('')
+                | regex_replace('^.*=', '')
+                | regex_replace(':', '')
+                | trim
+                | upper
+              }}
+
+        - name: PHASE 8B | Verify installed Satellite certificate matches ACM
+          ansible.builtin.assert:
+            that:
+              - satellite_installed_tls_sha256 | length == 64
+              - satellite_installed_tls_sha256 is match('^[0-9A-F]{64}$')
+              - satellite_installed_tls_sha256 == satellite_acm_tls_sha256
+            fail_msg: |
+              Satellite is not serving the ACM certificate.
+
+              Expected ACM fingerprint:
+              {{ satellite_acm_tls_sha256 }}
+
+              Served certificate fingerprint:
+              {{
+                satellite_installed_tls_sha256
+                | default('not detected')
+              }}
+
+        - name: PHASE 8B | Read installed Satellite certificate details
+          ansible.builtin.shell: |
+            set -o pipefail
+
+            timeout 15 \
+              openssl s_client \
+                -connect 127.0.0.1:443 \
+                -servername "{{ satellite_public_tls_fqdn }}" \
+                </dev/null 2>/dev/null |
+              openssl x509 \
+                -noout \
+                -subject \
+                -issuer \
+                -serial \
+                -dates \
+                -ext subjectAltName
+          args:
+            executable: /bin/bash
+          register: satellite_installed_tls_details
+          changed_when: false
+          failed_when: satellite_installed_tls_details.rc != 0
+
+        - name: PHASE 8B | Verify installed Satellite certificate hostname
+          ansible.builtin.shell: |
+            set -o pipefail
+
+            timeout 15 \
+              openssl s_client \
+                -connect 127.0.0.1:443 \
+                -servername "{{ satellite_public_tls_fqdn }}" \
+                </dev/null 2>/dev/null |
+              openssl x509 \
+                -noout \
+                -checkhost "{{ satellite_public_tls_fqdn }}"
+          args:
+            executable: /bin/bash
+          register: satellite_installed_tls_hostname_check
+          changed_when: false
+          failed_when: satellite_installed_tls_hostname_check.rc != 0
+
+        - name: PHASE 8B | Report installed Satellite certificate
+          ansible.builtin.debug:
+            msg:
+              - "Satellite public TLS certificate is installed."
+              - "URL: https://{{ satellite_public_tls_fqdn }}"
+              - "Certificate: {{ satellite_tls_certificate_path }}"
+              - "Private key: {{ satellite_tls_private_key_path }}"
+              - "ACM chain: {{ satellite_tls_acm_chain_path }}"
+              - "CA bundle: {{ satellite_tls_ca_bundle_path }}"
+              - >-
+                Fingerprint:
+                {{ satellite_installed_tls_sha256 }}
+              - >-
+                Certificate details:
+                {{
+                  satellite_installed_tls_details.stdout_lines
+                  | default([])
+                }}
 
       always:
         - name: PHASE 8B | Remove local ACM staging directory
@@ -2174,6 +1948,42 @@
             satellite_acm_export_passphrase: ""
             satellite_acm_exported_certificate: {}
           no_log: true
+
+    ###########################################################################
+    # PHASE 8B | Validate public trust from the Ansible controller
+    #
+    # This uses the controller's Python/OpenSSL runtime rather than the
+    # potentially incompatible Python SSL runtime on the Satellite host.
+    ###########################################################################
+
+    - name: PHASE 8B | Validate trusted Satellite HTTPS from controller
+      ansible.builtin.uri:
+        url: "https://{{ satellite_public_tls_fqdn }}/users/login"
+        method: GET
+        validate_certs: true
+        follow_redirects: all
+        status_code:
+          - 200
+          - 301
+          - 302
+          - 401
+          - 403
+          - 422
+        timeout: 60
+        return_content: false
+      delegate_to: localhost
+      become: false
+      register: satellite_controller_https_check
+      changed_when: false
+      retries: 10
+      delay: 15
+      until: >-
+        satellite_controller_https_check.status
+        | default(0)
+        | int
+        in [200, 301, 302, 401, 403, 422]
+
+
 
     ###########################################################################
     # PHASE 9 | Validate Satellite services
