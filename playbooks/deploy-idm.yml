@@ -1766,6 +1766,7 @@
             executable: /bin/bash
           register: idm_acm_certificate_public_key_hash
           changed_when: false
+          when: idm_public_tls_install_required
 
         - name: Read ACM private key public key hash
           ansible.builtin.shell: |
@@ -1781,6 +1782,8 @@
           register: idm_acm_private_key_public_key_hash
           changed_when: false
           no_log: true
+          when: idm_public_tls_install_required
+
 
         - name: Decrypt ACM private key on the IdM server
           ansible.builtin.command:
@@ -1816,6 +1819,7 @@
             fail_msg: >-
               The exported ACM certificate and private key do not match.
           no_log: true
+          when: idm_public_tls_install_required
 
         - name: Restore SELinux contexts on IdM TLS directory
           ansible.builtin.command:
