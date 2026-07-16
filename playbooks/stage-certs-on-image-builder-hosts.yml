@@ -1,188 +1,590 @@
 ---
-- name: Enroll EC2 hosts into Red Hat IdM domain
-  hosts: all:!idm
+###############################################################################
+# Export AWS ACM certificates and stage them on Image Builder hosts
+#
+# This playbook is intended to run upstream from Terraform or from the local
+# Terraform automation environment where:
+#
+# - AWS CLI is installed
+# - aws_profile is available
+# - the Terraform-generated inventory contains host-specific:
+#     public_tls_fqdn
+#     acm_certificate_arn
+#
+# Certificate material is installed on each builder under:
+#
+#   /opt/image-builder/certs
+###############################################################################
+
+- name: Stage public ACM certificates on Image Builder hosts
+  hosts: image_builder
   become: true
-  gather_facts: true
+  gather_facts: false
+  any_errors_fatal: true
 
   vars:
-    idm_domain: "{{ idm_domain_name }}"
-    idm_realm: "{{ idm_realm_name }}"
-    idm_server: "{{ idm_server_fqdn }}"
-    idm_client_hostname: "{{ inventory_hostname }}"
-    idm_enroll_user: "admin"
+    ###########################################################################
+    # Public Cockpit TLS certificate
+    ###########################################################################
+
+    image_builder_public_tls_fqdn: >-
+      {{
+        public_tls_fqdn
+        | default(inventory_hostname, true)
+      }}
+
+    image_builder_acm_certificate_arn: >-
+      {{
+        acm_certificate_arn
+        | default('', true)
+      }}
+
+    image_builder_tls_root: /opt/image-builder
+    image_builder_tls_directory: "{{ image_builder_tls_root }}/certs"
+
+    image_builder_tls_leaf_certificate_path: >-
+      {{ image_builder_tls_directory }}/cockpit-leaf.crt
+
+    image_builder_tls_chain_path: >-
+      {{ image_builder_tls_directory }}/cockpit-chain.crt
+
+    image_builder_tls_private_key_path: >-
+      {{ image_builder_tls_directory }}/cockpit.key
+
+    image_builder_tls_fullchain_path: >-
+      {{ image_builder_tls_directory }}/cockpit-fullchain.crt
+
+    image_builder_tls_metadata_path: >-
+      {{ image_builder_tls_directory }}/certificate-metadata.json
+
+    image_builder_tls_local_staging_prefix: image-builder-acm-tls-
+
+    # Require at least 14 days of remaining validity.
+    image_builder_tls_minimum_validity_seconds: 1209600
 
   pre_tasks:
-    - name: Validate required IdM inventory variables
+    ###########################################################################
+    # Validation
+    ###########################################################################
+
+    - name: Validate Image Builder ACM inputs
       ansible.builtin.assert:
         that:
-          - idm_domain_name is defined
-          - idm_domain_name | length > 0
-          - idm_realm_name is defined
-          - idm_realm_name | length > 0
-          - idm_server_fqdn is defined
-          - idm_server_fqdn | length > 0
-          - secret_prefix is defined
-          - secret_prefix | length > 0
           - aws_region is defined
-          - aws_region | length > 0
-          - aws_profile is defined
-          - aws_profile | length > 0
-        fail_msg: "Missing required IdM/AWS inventory variables."
+          - aws_region | string | trim | length > 0
+          - image_builder_public_tls_fqdn | string | trim | length > 0
+          - image_builder_acm_certificate_arn | string | trim | length > 0
+          - >-
+            image_builder_acm_certificate_arn
+            is match(
+              '^arn:aws[a-z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate/.+$'
+            )
+        fail_msg: |
+          Image Builder {{ inventory_hostname }} is missing ACM TLS data.
 
-    - name: Read IdM admin password from AWS Secrets Manager using AWS CLI
+          Required inventory host variables:
+
+          public_tls_fqdn=<public Image Builder FQDN>
+          acm_certificate_arn=<exportable ACM certificate ARN>
+
+    - name: Verify required controller-side commands
       ansible.builtin.command:
         argv:
-          - aws
-          - secretsmanager
-          - get-secret-value
-          - --secret-id
-          - "{{ secret_prefix }}/idm/admin_password"
-          - --region
-          - "{{ aws_region }}"
-          - --profile
-          - "{{ aws_profile }}"
-          - --query
-          - SecretString
-          - --output
-          - text
+          - bash
+          - -lc
+          - "command -v {{ item }}"
+      loop:
+        - aws
+        - openssl
       delegate_to: localhost
       become: false
-      register: idm_admin_secret_result
+      changed_when: false
+
+    - name: Verify AWS caller identity
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'sts',
+              'get-caller-identity',
+              '--region',
+              aws_region,
+              '--output',
+              'json',
+              '--no-cli-pager'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: image_builder_aws_identity
       changed_when: false
       no_log: true
 
-    - name: Set IdM enrollment password fact
-      ansible.builtin.set_fact:
-        idm_enroll_password: "{{ idm_admin_secret_result.stdout }}"
-      no_log: true
-
-    - name: Read IdM CA certificate from IdM server
-      ansible.builtin.slurp:
-        src: /etc/ipa/ca.crt
-      delegate_to: "{{ groups['idm'][0] }}"
-      become: true
-      register: idm_ca_cert
-      run_once: true
-      no_log: true
+    - name: Verify ACM certificate is issued
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'acm',
+              'describe-certificate',
+              '--certificate-arn',
+              image_builder_acm_certificate_arn,
+              '--region',
+              aws_region,
+              '--query',
+              'Certificate.Status',
+              '--output',
+              'text',
+              '--no-cli-pager'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: image_builder_acm_certificate_status
+      changed_when: false
+      failed_when: >-
+        image_builder_acm_certificate_status.rc != 0
+        or
+        image_builder_acm_certificate_status.stdout | trim != 'ISSUED'
 
   tasks:
-    - name: Ensure required IdM client packages are installed
-      ansible.builtin.dnf:
-        name:
-          - ipa-client
-          - oddjob
-          - oddjob-mkhomedir
-          - sssd
-          - bind-utils
-          - chrony
-          - ca-certificates
-        state: present
+    ###########################################################################
+    # Persistent remote TLS directory
+    ###########################################################################
 
-    - name: Install IdM CA certificate into system trust
-      ansible.builtin.copy:
-        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
-        content: "{{ idm_ca_cert.content | b64decode }}"
+    - name: Create Image Builder TLS directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
         owner: root
         group: root
-        mode: "0644"
-      register: idm_ca_install
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ image_builder_tls_root }}"
+          mode: "0755"
 
-    - name: Update system CA trust
-      ansible.builtin.command: update-ca-trust
-      changed_when: idm_ca_install.changed
+        - path: "{{ image_builder_tls_directory }}"
+          mode: "0700"
+      loop_control:
+        label: "{{ item.path }}"
 
-    - name: Set persistent client hostname
-      ansible.builtin.hostname:
-        name: "{{ idm_client_hostname }}"
+    ###########################################################################
+    # Export certificate locally
+    ###########################################################################
 
-    - name: Preserve hostname across cloud-init runs
-      ansible.builtin.copy:
-        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
-        content: |
-          preserve_hostname: true
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Ensure IdM server resolves locally during enrollment
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        regexp: '^\S+\s+{{ idm_server | regex_escape }}(\s|$)'
-        line: "{{ idm_server_ip }} {{ idm_server }}"
-        state: present
-      when:
-        - idm_server_ip is defined
-        - idm_server_ip | length > 0
-
-    - name: Check for existing IPA client config
-      ansible.builtin.stat:
-        path: /etc/ipa/default.conf
-      register: ipa_client_default_conf
-
-    - name: Enroll host into IdM domain
-      ansible.builtin.command:
-        argv:
-          - ipa-client-install
-          - "--unattended"
-          - "--principal={{ idm_enroll_user }}"
-          - "--password={{ idm_enroll_password }}"
-          - "--domain={{ idm_domain }}"
-          - "--realm={{ idm_realm }}"
-          - "--server={{ idm_server }}"
-          - "--hostname={{ idm_client_hostname }}"
-          - "--mkhomedir"
-          - "--force-join"
-          - "--no-ntp"
-      register: ipa_client_install
+    - name: Create local ACM export staging directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "{{ image_builder_tls_local_staging_prefix }}"
+      delegate_to: localhost
+      become: false
+      register: image_builder_tls_local_staging
       no_log: true
-      when:
-        - not ipa_client_default_conf.stat.exists
 
-    - name: Re-check IPA client config after enrollment
+    - name: Export and stage Image Builder certificate
+      block:
+        - name: Generate ACM export passphrase
+          ansible.builtin.set_fact:
+            image_builder_acm_export_passphrase: >-
+              {{
+                lookup(
+                  'ansible.builtin.password',
+                  '/dev/null',
+                  length=64,
+                  chars=['ascii_letters', 'digits']
+                )
+              }}
+          no_log: true
+
+        - name: Write local ACM export passphrase
+          ansible.builtin.copy:
+            content: "{{ image_builder_acm_export_passphrase }}"
+            dest: >-
+              {{ image_builder_tls_local_staging.path }}/passphrase
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Export Image Builder certificate from ACM
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  'aws',
+                  'acm',
+                  'export-certificate',
+                  '--certificate-arn',
+                  image_builder_acm_certificate_arn,
+                  '--passphrase',
+                  (
+                    'fileb://'
+                    ~ image_builder_tls_local_staging.path
+                    ~ '/passphrase'
+                  ),
+                  '--region',
+                  aws_region,
+                  '--output',
+                  'json',
+                  '--no-cli-pager'
+                ]
+                +
+                (
+                  ['--profile', aws_profile]
+                  if aws_profile | default('') | trim | length > 0
+                  else []
+                )
+              }}
+          delegate_to: localhost
+          become: false
+          register: image_builder_acm_export_result
+          changed_when: false
+          no_log: true
+
+        - name: Parse ACM export response
+          ansible.builtin.set_fact:
+            image_builder_acm_exported_certificate: >-
+              {{
+                image_builder_acm_export_result.stdout
+                | from_json
+              }}
+          no_log: true
+
+        - name: Validate exported ACM material
+          ansible.builtin.assert:
+            that:
+              - >-
+                image_builder_acm_exported_certificate.Certificate
+                | default('')
+                | length > 0
+
+              - >-
+                image_builder_acm_exported_certificate.CertificateChain
+                | default('')
+                | length > 0
+
+              - >-
+                image_builder_acm_exported_certificate.PrivateKey
+                | default('')
+                | length > 0
+            fail_msg: >-
+              ACM did not return the certificate, certificate chain, and
+              encrypted private key. Verify that the certificate was requested
+              or imported as an exportable ACM certificate.
+          no_log: true
+
+        - name: Write exported ACM files locally
+          ansible.builtin.copy:
+            content: "{{ item.content | trim }}\n"
+            dest: >-
+              {{
+                image_builder_tls_local_staging.path
+                ~ '/'
+                ~ item.filename
+              }}
+            mode: "0600"
+          loop:
+            - filename: cockpit-leaf.crt
+              content: >-
+                {{ image_builder_acm_exported_certificate.Certificate }}
+
+            - filename: cockpit-chain.crt
+              content: >-
+                {{
+                  image_builder_acm_exported_certificate.CertificateChain
+                }}
+
+            - filename: cockpit-encrypted.key
+              content: >-
+                {{ image_builder_acm_exported_certificate.PrivateKey }}
+          loop_control:
+            label: "{{ item.filename }}"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        #######################################################################
+        # Validate certificate
+        #######################################################################
+
+        - name: Validate ACM certificate hostname
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - >-
+                {{ image_builder_tls_local_staging.path }}/cockpit-leaf.crt
+              - -noout
+              - -checkhost
+              - "{{ image_builder_public_tls_fqdn }}"
+          delegate_to: localhost
+          become: false
+          register: image_builder_certificate_hostname_check
+          changed_when: false
+          failed_when: image_builder_certificate_hostname_check.rc != 0
+
+        - name: Validate ACM certificate remaining lifetime
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - >-
+                {{ image_builder_tls_local_staging.path }}/cockpit-leaf.crt
+              - -noout
+              - -checkend
+              - >-
+                {{ image_builder_tls_minimum_validity_seconds | string }}
+          delegate_to: localhost
+          become: false
+          register: image_builder_certificate_validity_check
+          changed_when: false
+          failed_when: image_builder_certificate_validity_check.rc != 0
+
+        #######################################################################
+        # Decrypt key locally
+        #######################################################################
+
+        - name: Decrypt ACM private key locally
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - >-
+                {{ image_builder_tls_local_staging.path }}/cockpit-encrypted.key
+              - -out
+              - >-
+                {{ image_builder_tls_local_staging.path }}/cockpit.key
+              - -passin
+              - >-
+                file:{{ image_builder_tls_local_staging.path }}/passphrase
+          delegate_to: localhost
+          become: false
+          register: image_builder_private_key_decrypt
+          changed_when: false
+          failed_when: image_builder_private_key_decrypt.rc != 0
+          no_log: true
+
+        - name: Validate decrypted private key
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - >-
+                {{ image_builder_tls_local_staging.path }}/cockpit.key
+              - -noout
+              - -check
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          no_log: true
+
+        #######################################################################
+        # Verify key pair
+        #######################################################################
+
+        - name: Verify certificate and private key match
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            certificate_hash="$(
+              openssl x509 \
+                -in "{{ image_builder_tls_local_staging.path }}/cockpit-leaf.crt" \
+                -noout \
+                -pubkey |
+              openssl pkey \
+                -pubin \
+                -outform DER |
+              openssl dgst -sha256
+            )"
+
+            private_key_hash="$(
+              openssl pkey \
+                -in "{{ image_builder_tls_local_staging.path }}/cockpit.key" \
+                -pubout \
+                -outform DER |
+              openssl dgst -sha256
+            )"
+
+            test "${certificate_hash}" = "${private_key_hash}"
+          args:
+            executable: /bin/bash
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          no_log: true
+
+        #######################################################################
+        # Build full chain locally
+        #######################################################################
+
+        - name: Build local certificate full chain
+          ansible.builtin.shell: |
+            set -euo pipefail
+
+            cat \
+              "{{ image_builder_tls_local_staging.path }}/cockpit-leaf.crt" \
+              "{{ image_builder_tls_local_staging.path }}/cockpit-chain.crt" \
+              > "{{ image_builder_tls_local_staging.path }}/cockpit-fullchain.crt"
+
+            chmod 0600 \
+              "{{ image_builder_tls_local_staging.path }}/cockpit-fullchain.crt"
+          args:
+            executable: /bin/bash
+          delegate_to: localhost
+          become: false
+          changed_when: false
+
+        #######################################################################
+        # Install material on builder
+        #######################################################################
+
+        - name: Install staged Image Builder TLS material
+          ansible.builtin.copy:
+            src: >-
+              {{
+                image_builder_tls_local_staging.path
+                ~ '/'
+                ~ item.src
+              }}
+            dest: "{{ item.dest }}"
+            owner: root
+            group: root
+            mode: "{{ item.mode }}"
+          loop:
+            - src: cockpit-leaf.crt
+              dest: "{{ image_builder_tls_leaf_certificate_path }}"
+              mode: "0644"
+
+            - src: cockpit-chain.crt
+              dest: "{{ image_builder_tls_chain_path }}"
+              mode: "0644"
+
+            - src: cockpit-fullchain.crt
+              dest: "{{ image_builder_tls_fullchain_path }}"
+              mode: "0644"
+
+            - src: cockpit.key
+              dest: "{{ image_builder_tls_private_key_path }}"
+              mode: "0600"
+          loop_control:
+            label: "{{ item.dest }}"
+          no_log: true
+
+        #######################################################################
+        # Metadata marker
+        #######################################################################
+
+        - name: Read staged certificate metadata
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ image_builder_tls_leaf_certificate_path }}"
+              - -noout
+              - -subject
+              - -issuer
+              - -serial
+              - -dates
+              - -fingerprint
+              - -sha256
+          register: image_builder_staged_certificate_metadata
+          changed_when: false
+
+        - name: Write certificate staging metadata
+          ansible.builtin.copy:
+            dest: "{{ image_builder_tls_metadata_path }}"
+            owner: root
+            group: root
+            mode: "0600"
+            content: |
+              {{
+                {
+                  'fqdn': image_builder_public_tls_fqdn,
+                  'acm_certificate_arn': image_builder_acm_certificate_arn,
+                  'staged_at': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'),
+                  'certificate_details': (
+                    image_builder_staged_certificate_metadata.stdout_lines
+                  )
+                }
+                | to_nice_json
+              }}
+
+        - name: Restore SELinux contexts on staged certificates
+          ansible.builtin.command:
+            argv:
+              - restorecon
+              - -RFv
+              - "{{ image_builder_tls_root }}"
+          register: image_builder_tls_restorecon
+          changed_when: image_builder_tls_restorecon.stdout | length > 0
+
+      always:
+        - name: Remove local ACM export staging directory
+          ansible.builtin.file:
+            path: "{{ image_builder_tls_local_staging.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when:
+            - image_builder_tls_local_staging is defined
+            - image_builder_tls_local_staging.path is defined
+          no_log: true
+
+  post_tasks:
+    ###########################################################################
+    # Verify staged files
+    ###########################################################################
+
+    - name: Inspect staged Image Builder TLS files
       ansible.builtin.stat:
-        path: /etc/ipa/default.conf
-      register: ipa_client_default_conf_after
+        path: "{{ item }}"
+      loop:
+        - "{{ image_builder_tls_leaf_certificate_path }}"
+        - "{{ image_builder_tls_chain_path }}"
+        - "{{ image_builder_tls_fullchain_path }}"
+        - "{{ image_builder_tls_private_key_path }}"
+        - "{{ image_builder_tls_metadata_path }}"
+      register: image_builder_staged_tls_files
 
-    - name: Enable and start oddjobd
-      ansible.builtin.service:
-        name: oddjobd
-        state: started
-        enabled: true
-
-    - name: Enable and start SSSD
-      ansible.builtin.service:
-        name: sssd
-        state: started
-        enabled: true
-
-    - name: Verify host keytab exists
-      ansible.builtin.stat:
-        path: /etc/krb5.keytab
-      register: krb5_keytab
-
-    - name: Validate IdM client enrollment
+    - name: Validate staged Image Builder TLS files
       ansible.builtin.assert:
         that:
-          - ipa_client_default_conf_after.stat.exists
-          - krb5_keytab.stat.exists
-        fail_msg: "IdM client enrollment failed or /etc/krb5.keytab is missing."
+          - item.stat.exists
+          - item.stat.isreg
+          - item.stat.size | int > 0
+        fail_msg: >-
+          Required staged TLS file {{ item.item }} is missing or empty on
+          {{ inventory_hostname }}.
+      loop: "{{ image_builder_staged_tls_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-    - name: Verify IdM user lookup through SSSD
-      ansible.builtin.command:
-        argv:
-          - getent
-          - passwd
-          - "{{ idm_users[0] }}"
-      register: idm_getent_test
-      changed_when: false
-      failed_when: idm_getent_test.rc != 0
-
-    - name: Show enrollment result
+    - name: Display staged Image Builder certificate
       ansible.builtin.debug:
         msg:
-          - "Host enrolled or already enrolled in IdM."
-          - "Client hostname: {{ idm_client_hostname }}"
-          - "IdM domain: {{ idm_domain }}"
-          - "IdM realm: {{ idm_realm }}"
-          - "IdM server: {{ idm_server }}"
-          - "IdM CA installed into system trust."
+          - >-
+            Certificate staged successfully on
+            {{ inventory_hostname }}.
+          - "Public FQDN: {{ image_builder_public_tls_fqdn }}"
+          - "TLS directory: {{ image_builder_tls_directory }}"
+          - >-
+            {{ image_builder_staged_certificate_metadata.stdout_lines }}
