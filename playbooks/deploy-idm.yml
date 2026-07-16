@@ -2344,7 +2344,7 @@
           when:
             - idm_public_tls_install_required
             - idm_system_root_ca_directory.path is defined
-            
+
         - name: Update IdM certificate databases
           ansible.builtin.command:
             argv:
@@ -2359,14 +2359,26 @@
               - ipa-server-certinstall
               - --http
               - "{{ idm_tls_private_key_path }}"
-              - "{{ idm_tls_fullchain_path }}"
+              - "{{ idm_tls_certificate_path }}"
           args:
             stdin: "{{ idm_vault_dm_password }}"
             stdin_add_newline: true
           register: idm_http_certificate_install
           changed_when: idm_http_certificate_install.rc == 0
-          no_log: true
+          failed_when: false
           when: idm_public_tls_install_required
+          no_log: false
+
+        - name: Fail when IdM HTTP certificate installation fails
+          ansible.builtin.fail:
+            msg: >-
+              ipa-server-certinstall failed with return code
+              {{ idm_http_certificate_install.rc | default('unknown') }}.
+              Temporarily set no_log to false on the installation task to
+              inspect its stderr if this failure continues.
+          when:
+            - idm_public_tls_install_required
+            - idm_http_certificate_install.rc | default(1) != 0
 
 
         - name: Remove encrypted ACM private key
