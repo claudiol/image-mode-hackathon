@@ -10,7 +10,8 @@ data "aws_route53_zones" "public" {}
 
 data "aws_route53_zone" "all_public" {
   for_each = toset(data.aws_route53_zones.public.ids)
-  zone_id  = each.value
+
+  zone_id = each.value
 }
 
 locals {
@@ -23,14 +24,37 @@ locals {
   discovered_opentlc_zone_ids = [
     for zone_id, zone_name in local.all_public_zones :
     zone_id
-    if can(regex("^sandbox[0-9]+\\.${replace(var.opentlc_domain_suffix, ".", "\\.")}$", zone_name))
+    if can(
+      regex(
+        "^sandbox[0-9]+\\.${replace(var.opentlc_domain_suffix, ".", "\\.")}$",
+        zone_name
+      )
+    )
   ]
 
-  discovered_domain_name     = length(local.discovered_opentlc_zone_ids) == 1 ? local.all_public_zones[local.discovered_opentlc_zone_ids[0]] : ""
-  discovered_route53_zone_id = length(local.discovered_opentlc_zone_ids) == 1 ? local.discovered_opentlc_zone_ids[0] : ""
+  discovered_domain_name = (
+    length(local.discovered_opentlc_zone_ids) == 1
+    ? local.all_public_zones[local.discovered_opentlc_zone_ids[0]]
+    : ""
+  )
 
-  effective_domain_name  = trimspace(var.domain_name) != "" ? trimsuffix(var.domain_name, ".") : local.discovered_domain_name
-  public_route53_zone_id = var.route53_zone_id != "" ? var.route53_zone_id : local.discovered_route53_zone_id
+  discovered_route53_zone_id = (
+    length(local.discovered_opentlc_zone_ids) == 1
+    ? local.discovered_opentlc_zone_ids[0]
+    : ""
+  )
+
+  effective_domain_name = (
+    trimspace(var.domain_name) != ""
+    ? trimsuffix(var.domain_name, ".")
+    : local.discovered_domain_name
+  )
+
+  public_route53_zone_id = (
+    trimspace(var.route53_zone_id) != ""
+    ? trimspace(var.route53_zone_id)
+    : local.discovered_route53_zone_id
+  )
 
   parent_domain_name = local.effective_domain_name
 
@@ -49,20 +73,26 @@ resource "terraform_data" "validate_dns_discovery" {
         trimspace(var.domain_name) != "" ||
         length(local.discovered_opentlc_zone_ids) == 1
       )
+
       error_message = "Unable to auto-discover exactly one public sandbox*.opentlc.com Route53 hosted zone. Set domain_name explicitly."
     }
 
     precondition {
-      condition     = !var.create_public_dns_records || local.effective_domain_name != ""
+      condition = (
+        !var.create_public_dns_records ||
+        local.effective_domain_name != ""
+      )
+
       error_message = "domain_name is blank and no usable public hosted zone was discovered."
     }
 
     precondition {
       condition = (
         !var.create_public_dns_records ||
-        var.route53_zone_id != "" ||
+        trimspace(var.route53_zone_id) != "" ||
         local.public_route53_zone_id != ""
       )
+
       error_message = "No public Route53 zone ID could be resolved. Set route53_zone_id explicitly."
     }
   }
@@ -89,8 +119,16 @@ locals {
     if server.role == "idm"
   ])
 
-  primary_idm_key      = try(local.idm_server_keys[0], null)
-  primary_idm_hostname = local.primary_idm_key != null ? local.flattened_servers[local.primary_idm_key].hostname : null
+  primary_idm_key = try(
+    local.idm_server_keys[0],
+    null
+  )
+
+  primary_idm_hostname = (
+    local.primary_idm_key != null
+    ? local.flattened_servers[local.primary_idm_key].hostname
+    : null
+  )
 }
 
 resource "terraform_data" "validate_idm_server" {
@@ -126,14 +164,28 @@ data "aws_ami" "rhel9" {
 }
 
 locals {
-  selected_ami = var.ami_id != "" ? var.ami_id : data.aws_ami.rhel9[0].id
+  selected_ami = (
+    var.ami_id != ""
+    ? var.ami_id
+    : data.aws_ami.rhel9[0].id
+  )
 
-  aws_dns_resolver = cidrhost(aws_vpc.lab.cidr_block, 2)
+  aws_dns_resolver = cidrhost(
+    aws_vpc.lab.cidr_block,
+    2
+  )
 
-  lab_ssh_private_key_filename = "${path.module}/image-mode-lab-key.pem"
-  ansible_ssh_private_key_file = abspath(local.lab_ssh_private_key_filename)
+  lab_ssh_private_key_filename = (
+    "${path.module}/image-mode-lab-key.pem"
+  )
 
-  lab_ssh_private_key_secret_name = "${var.secret_prefix}/aws/ssh_private_key"
+  ansible_ssh_private_key_file = abspath(
+    local.lab_ssh_private_key_filename
+  )
+
+  lab_ssh_private_key_secret_name = (
+    "${var.secret_prefix}/aws/ssh_private_key"
+  )
 }
 
 ############################################################
@@ -267,6 +319,7 @@ resource "terraform_data" "preflight_cleanup" {
       }
 
       echo "Checking EC2 key pair: $KEY_PAIR_NAME"
+
       if state_has 'aws_key_pair.lab'; then
         echo "Skipping key pair cleanup because aws_key_pair.lab is already managed by Terraform state."
       else
@@ -276,6 +329,7 @@ resource "terraform_data" "preflight_cleanup" {
       fi
 
       echo "Checking Secrets Manager secrets"
+
       if terraform state list 2>/dev/null | grep -q '^aws_secretsmanager_secret\.'; then
         echo "Skipping Secrets Manager cleanup because secrets are already managed by Terraform state."
       else
@@ -480,13 +534,18 @@ resource "aws_iam_role" "aap" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
       }
-      Action = "sts:AssumeRole"
-    }]
+    ]
   })
 
   tags = {
@@ -501,14 +560,21 @@ resource "aws_iam_role_policy" "aap_secrets_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-      ]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/*"
-    }]
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+
+        Resource = (
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/*"
+        )
+      }
+    ]
   })
 }
 
@@ -583,12 +649,6 @@ resource "aws_iam_role_policy" "aap_s3_read" {
     ]
   })
 }
-
-############################################################
-# Satellite IAM Role For Reading Installation ISO From S3
-############################################################
-
-
 
 ############################################################
 # Networking
@@ -717,25 +777,21 @@ resource "aws_security_group" "lab" {
   }
 }
 
-
 ############################################################
 # Image Builder Security Group
 ############################################################
 
 resource "aws_security_group" "image_builder" {
-
   name        = "${var.environment_name}-image-builder-sg"
   description = "Additional access for Image Builder hosts"
   vpc_id      = aws_vpc.lab.id
 
   ingress {
-
     description = "Cockpit Web Console"
     from_port   = 9090
     to_port     = 9090
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
-
   }
 
   ingress {
@@ -744,11 +800,9 @@ resource "aws_security_group" "image_builder" {
     to_port          = 9090
     protocol         = "tcp"
     ipv6_cidr_blocks = ["::/0"]
-
   }
 
   tags = {
-
     Name        = "${var.environment_name}-image-builder-sg"
     Environment = var.environment_name
   }
@@ -760,136 +814,114 @@ resource "aws_security_group" "image_builder" {
 
 resource "aws_instance" "server" {
   for_each = local.flattened_servers
+
   ami           = local.selected_ami
   instance_type = each.value.instance_type
   subnet_id     = aws_subnet.public.id
+
   vpc_security_group_ids = concat(
-
     [
-
       aws_security_group.lab.id
-
     ],
-
     each.value.role == "image-builder" ? [
-
       aws_security_group.image_builder.id
-
     ] : []
-
   )
 
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
-  
-iam_instance_profile = contains(
 
-  ["aap", "satellite"],
-
-  each.value.role
-
-) ? aws_iam_instance_profile.aap.name : null
+  iam_instance_profile = contains(
+    [
+      "aap",
+      "satellite"
+    ],
+    each.value.role
+  ) ? aws_iam_instance_profile.aap.name : null
 
   root_block_device {
-
     volume_size = each.value.root_volume
     volume_type = "gp3"
     encrypted   = true
-
   }
 
   user_data = <<-EOF
     #!/bin/bash
     hostnamectl set-hostname ${each.value.hostname}
     echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
-
   EOF
 
   tags = {
-
     Name        = each.value.hostname
     Role        = each.value.role
     Environment = var.environment_name
-
   }
 
   depends_on = [
-
-  terraform_data.validate_dns_discovery,
-  terraform_data.validate_idm_server,
-  aws_key_pair.lab,
-  local_sensitive_file.lab_ssh_private_key,
-  aws_iam_instance_profile.aap,
-  aws_iam_role_policy.aap_s3_read,
-  aws_security_group.image_builder,
-  aws_secretsmanager_secret_version.ssh_private_key,
-  aws_secretsmanager_secret_version.generated,
-  aws_secretsmanager_secret_version.static,
-  aws_secretsmanager_secret_version.redhat
-
+    terraform_data.validate_dns_discovery,
+    terraform_data.validate_idm_server,
+    aws_key_pair.lab,
+    local_sensitive_file.lab_ssh_private_key,
+    aws_iam_instance_profile.aap,
+    aws_iam_role_policy.aap_s3_read,
+    aws_security_group.image_builder,
+    aws_secretsmanager_secret_version.ssh_private_key,
+    aws_secretsmanager_secret_version.generated,
+    aws_secretsmanager_secret_version.static,
+    aws_secretsmanager_secret_version.redhat
   ]
 }
 
 locals {
-
   primary_idm_private_ip = try(
     aws_instance.server[local.primary_idm_key].private_ip,
     null
-
   )
 }
 
 resource "aws_ebs_volume" "extra" {
-
   for_each = {
-
     for name, server in local.flattened_servers :
     name => server
     if server.extra_volume > 0
-
   }
 
   availability_zone = aws_subnet.public.availability_zone
   size              = each.value.extra_volume
   type              = "gp3"
   encrypted         = true
-  tags = {
 
+  tags = {
     Name        = "${each.value.hostname}-data"
     Role        = each.value.role
     Environment = var.environment_name
   }
-
 }
 
 resource "aws_volume_attachment" "extra" {
-
   for_each = aws_ebs_volume.extra
+
   device_name = "/dev/sdf"
   volume_id   = each.value.id
   instance_id = aws_instance.server[each.key].id
-
 }
 
 resource "aws_eip" "server" {
-
   for_each = aws_instance.server
-  domain = "vpc"
-  tags = {
 
+  domain = "vpc"
+
+  tags = {
     Name        = "${each.value.tags.Name}-eip"
     Environment = var.environment_name
-
   }
-
 }
 
 resource "aws_eip_association" "server" {
-
   for_each = aws_instance.server
+
   instance_id   = each.value.id
   allocation_id = aws_eip.server[each.key].id
-
 }
 
 ############################################################
@@ -897,7 +929,11 @@ resource "aws_eip_association" "server" {
 ############################################################
 
 resource "aws_route53_record" "public_dns" {
-  for_each = var.create_public_dns_records ? local.flattened_servers : {}
+  for_each = (
+    var.create_public_dns_records
+    ? local.flattened_servers
+    : {}
+  )
 
   zone_id = local.public_route53_zone_id
   name    = each.value.hostname
@@ -905,11 +941,110 @@ resource "aws_route53_record" "public_dns" {
 
   ttl             = 300
   allow_overwrite = true
-  records         = [aws_eip.server[each.key].public_ip]
+
+  records = [
+    aws_eip.server[each.key].public_ip
+  ]
 
   depends_on = [
     aws_eip_association.server,
     terraform_data.validate_dns_discovery
+  ]
+}
+
+############################################################
+# Publicly Trusted TLS Certificates
+############################################################
+
+resource "aws_acm_certificate" "server" {
+  for_each = (
+    var.create_public_dns_records
+    ? local.flattened_servers
+    : {}
+  )
+
+  domain_name       = each.value.hostname
+  validation_method = "DNS"
+  key_algorithm     = "RSA_2048"
+
+  options {
+    certificate_transparency_logging_preference = "ENABLED"
+
+    # Allows the certificate, certificate chain, and encrypted
+    # private key to be exported and installed directly on EC2.
+    export = "ENABLED"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name        = "${each.value.hostname}-public-tls"
+    Hostname    = each.value.hostname
+    Role        = each.value.role
+    Environment = var.environment_name
+  }
+
+  depends_on = [
+    aws_route53_record.public_dns,
+    terraform_data.validate_dns_discovery
+  ]
+}
+
+############################################################
+# ACM DNS Validation Records
+############################################################
+
+locals {
+  acm_validation_records = merge(
+    {},
+    [
+      for server_name, certificate in aws_acm_certificate.server : {
+        for validation_option in certificate.domain_validation_options :
+        "${server_name}-${validation_option.domain_name}" => {
+          server_name = server_name
+          name        = validation_option.resource_record_name
+          type        = validation_option.resource_record_type
+          value       = validation_option.resource_record_value
+        }
+      }
+    ]...
+  )
+}
+
+resource "aws_route53_record" "server_certificate_validation" {
+  for_each = local.acm_validation_records
+
+  zone_id = local.public_route53_zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+
+  records = [
+    each.value.value
+  ]
+
+  allow_overwrite = true
+
+  depends_on = [
+    terraform_data.validate_dns_discovery
+  ]
+}
+
+############################################################
+# Wait For ACM Certificate Issuance
+############################################################
+
+resource "aws_acm_certificate_validation" "server" {
+  for_each = aws_acm_certificate.server
+
+  certificate_arn = each.value.arn
+
+  validation_record_fqdns = [
+    for validation_key, validation_record in local.acm_validation_records :
+    aws_route53_record.server_certificate_validation[validation_key].fqdn
+    if validation_record.server_name == each.key
   ]
 }
 
@@ -981,15 +1116,33 @@ resource "local_file" "ansible_inventory" {
     aws_profile   = var.aws_profile
     secret_prefix = var.secret_prefix
 
-    lab_ssh_private_key_secret_name = local.lab_ssh_private_key_secret_name
+    lab_ssh_private_key_secret_name = (
+      local.lab_ssh_private_key_secret_name
+    )
 
-    satellite_iso_s3_bucket = var.satellite_iso_s3_bucket
-    satellite_iso_s3_key    = var.satellite_iso_s3_key
-    satellite_iso_sha256    = var.satellite_iso_sha256
+    satellite_iso_s3_bucket = (
+      var.satellite_iso_s3_bucket
+    )
 
-    satellite_manifest_s3_bucket = var.satellite_manifest_s3_bucket
-    satellite_manifest_s3_key    = var.satellite_manifest_s3_key
-    satellite_manifest_sha256    = var.satellite_manifest_sha256
+    satellite_iso_s3_key = (
+      var.satellite_iso_s3_key
+    )
+
+    satellite_iso_sha256 = (
+      var.satellite_iso_sha256
+    )
+
+    satellite_manifest_s3_bucket = (
+      var.satellite_manifest_s3_bucket
+    )
+
+    satellite_manifest_s3_key = (
+      var.satellite_manifest_s3_key
+    )
+
+    satellite_manifest_sha256 = (
+      var.satellite_manifest_sha256
+    )
 
     satellite_initial_admin_username = (
       var.satellite_initial_admin_username
@@ -1020,6 +1173,11 @@ resource "local_file" "ansible_inventory" {
         role       = instance.tags.Role
         private_ip = instance.private_ip
         public_ip  = aws_eip.server[name].public_ip
+
+        acm_certificate_arn = try(
+          aws_acm_certificate.server[name].arn,
+          ""
+        )
       }
     }
   })
@@ -1027,6 +1185,7 @@ resource "local_file" "ansible_inventory" {
   depends_on = [
     aws_eip_association.server,
     aws_route53_record.public_dns,
+    aws_acm_certificate_validation.server,
     aws_route53_resolver_rule_association.idm_forward,
     terraform_data.validate_dns_discovery,
     terraform_data.validate_idm_server,

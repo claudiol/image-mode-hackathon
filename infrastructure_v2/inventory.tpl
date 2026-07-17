@@ -34,34 +34,34 @@ idm_users=${jsonencode(idm_users)}
 [idm]
 %{ for name, s in servers ~}
 %{ if s.role == "idm" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
+${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
 [satellite]
 %{ for name, s in servers ~}
 %{ if s.role == "satellite" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
+${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
 [aap]
 %{ for name, s in servers ~}
 %{ if s.role == "aap" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
+${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
 [quay]
 %{ for name, s in servers ~}
 %{ if s.role == "quay" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} quay_hostname=${s.fqdn}
+${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} quay_hostname=${s.fqdn} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
 [image_builder]
 %{ for name, s in servers ~}
 %{ if s.role == "image-builder" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role}
+${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}

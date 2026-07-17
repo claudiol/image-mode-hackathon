@@ -66,6 +66,36 @@
     aap_installer_poll_delay: 30
     aap_installer_poll_retries: 500
 
+
+    ###########################################################################
+    # Public AAP TLS certificate
+    ###########################################################################
+
+    aap_public_tls_fqdn: >-
+      {{
+        public_tls_fqdn
+        | default(aap_fqdn, true)
+      }}
+
+    aap_acm_certificate_arn: >-
+      {{
+        acm_certificate_arn
+        | default('', true)
+      }}
+
+    aap_tls_root: "/opt/aap"
+    aap_tls_directory: "{{ aap_tls_root }}/certs"
+
+    aap_tls_certificate_path: "{{ aap_tls_directory }}/aap.crt"
+    aap_tls_leaf_certificate_path: "{{ aap_tls_directory }}/aap-leaf.crt"
+    aap_tls_chain_path: "{{ aap_tls_directory }}/aap-chain.crt"
+    aap_tls_private_key_path: "{{ aap_tls_directory }}/aap.key"
+
+    aap_tls_local_staging_prefix: "aap-acm-tls-"
+
+    # Require the certificate to remain valid for at least 14 days.
+    aap_tls_minimum_validity_seconds: 1209600
+
     ###########################################################################
     # Temporary OpenSSL compatibility workaround
     ###########################################################################
@@ -92,6 +122,8 @@
           - aws_region | string | length > 0
           - secret_prefix is defined
           - secret_prefix | string | length > 0
+          - aap_public_tls_fqdn | string | length > 0
+          - aap_acm_certificate_arn | string | length > 0
         fail_msg: >-
           aws_region and secret_prefix must be defined in the Ansible
           inventory.
@@ -176,6 +208,39 @@
     - name: PHASE 0 | Set static PostgreSQL administrator username
       ansible.builtin.set_fact:
         postgresql_admin_username: "postgres"
+
+    - name: PHASE 0 | Verify AAP ACM certificate is issued
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'acm',
+              'describe-certificate',
+              '--certificate-arn',
+              aap_acm_certificate_arn,
+              '--region',
+              aws_region,
+              '--query',
+              'Certificate.Status',
+              '--output',
+              'text'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: aap_acm_certificate_status
+      changed_when: false
+      failed_when: >-
+        aap_acm_certificate_status.rc != 0
+        or
+        aap_acm_certificate_status.stdout | trim != 'ISSUED'
 
   tasks:
     ###########################################################################
@@ -654,6 +719,395 @@
           when:
             - installed_idm_ca is defined
             - installed_idm_ca.changed
+        #######################################################################
+        # PHASE 8A | Export and install the public ACM TLS certificate
+        #######################################################################
+
+        - name: PHASE 8A | Create persistent AAP TLS directories
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "{{ item.mode }}"
+          loop:
+            - path: "{{ aap_tls_root }}"
+              mode: "0755"
+            - path: "{{ aap_tls_directory }}"
+              mode: "0700"
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: PHASE 8A | Create local ACM TLS staging directory
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: "{{ aap_tls_local_staging_prefix }}"
+          delegate_to: localhost
+          become: false
+          register: aap_tls_local_staging
+          no_log: true
+
+        - name: PHASE 8A | Export and install AAP ACM certificate
+          block:
+            - name: PHASE 8A | Generate ACM export passphrase
+              ansible.builtin.set_fact:
+                aap_acm_export_passphrase: >-
+                  {{
+                    lookup(
+                      'ansible.builtin.password',
+                      '/dev/null',
+                      length=64,
+                      chars=['ascii_letters', 'digits']
+                    )
+                  }}
+              no_log: true
+
+            - name: PHASE 8A | Write local ACM export passphrase
+              ansible.builtin.copy:
+                content: "{{ aap_acm_export_passphrase }}"
+                dest: "{{ aap_tls_local_staging.path }}/passphrase"
+                mode: "0600"
+              delegate_to: localhost
+              become: false
+              no_log: true
+
+            - name: PHASE 8A | Export AAP certificate from AWS ACM
+              ansible.builtin.command:
+                argv: >-
+                  {{
+                    [
+                      'aws',
+                      'acm',
+                      'export-certificate',
+                      '--certificate-arn',
+                      aap_acm_certificate_arn,
+                      '--passphrase',
+                      'fileb://'
+                      ~ aap_tls_local_staging.path
+                      ~ '/passphrase',
+                      '--region',
+                      aws_region,
+                      '--output',
+                      'json',
+                      '--no-cli-pager'
+                    ]
+                    +
+                    (
+                      ['--profile', aws_profile]
+                      if aws_profile | default('') | trim | length > 0
+                      else []
+                    )
+                  }}
+              delegate_to: localhost
+              become: false
+              register: aap_acm_export_result
+              changed_when: false
+              no_log: true
+
+            - name: PHASE 8A | Parse exported ACM certificate data
+              ansible.builtin.set_fact:
+                aap_acm_exported_certificate: >-
+                  {{
+                    aap_acm_export_result.stdout
+                    | from_json
+                  }}
+              no_log: true
+
+            - name: PHASE 8A | Validate exported ACM material
+              ansible.builtin.assert:
+                that:
+                  - >-
+                    aap_acm_exported_certificate.Certificate
+                    | default('')
+                    | length > 0
+                  - >-
+                    aap_acm_exported_certificate.CertificateChain
+                    | default('')
+                    | length > 0
+                  - >-
+                    aap_acm_exported_certificate.PrivateKey
+                    | default('')
+                    | length > 0
+                fail_msg: >-
+                  ACM did not return the AAP certificate, certificate chain,
+                  and encrypted private key. Verify that this is an exportable
+                  ACM certificate.
+              no_log: true
+
+            - name: PHASE 8A | Write exported ACM leaf certificate locally
+              ansible.builtin.copy:
+                content: |
+                  {{ aap_acm_exported_certificate.Certificate | trim }}
+                dest: "{{ aap_tls_local_staging.path }}/aap-leaf.crt"
+                mode: "0600"
+              delegate_to: localhost
+              become: false
+              no_log: true
+
+            - name: PHASE 8A | Write exported ACM certificate chain locally
+              ansible.builtin.copy:
+                content: |
+                  {{ aap_acm_exported_certificate.CertificateChain | trim }}
+                dest: "{{ aap_tls_local_staging.path }}/aap-chain.crt"
+                mode: "0600"
+              delegate_to: localhost
+              become: false
+              no_log: true
+
+            - name: PHASE 8A | Write encrypted ACM private key locally
+              ansible.builtin.copy:
+                content: |
+                  {{ aap_acm_exported_certificate.PrivateKey | trim }}
+                dest: "{{ aap_tls_local_staging.path }}/aap-encrypted.key"
+                mode: "0600"
+              delegate_to: localhost
+              become: false
+              no_log: true
+
+            - name: PHASE 8A | Build AAP web server certificate chain
+              ansible.builtin.shell: |
+                set -euo pipefail
+
+                cat \
+                  "{{ aap_tls_local_staging.path }}/aap-leaf.crt" \
+                  "{{ aap_tls_local_staging.path }}/aap-chain.crt" \
+                  > "{{ aap_tls_local_staging.path }}/aap.crt"
+
+                chmod 0600 \
+                  "{{ aap_tls_local_staging.path }}/aap.crt"
+              args:
+                executable: /bin/bash
+              delegate_to: localhost
+              become: false
+              changed_when: false
+              no_log: true
+
+            - name: PHASE 8A | Validate AAP ACM certificate hostname
+              ansible.builtin.command:
+                argv:
+                  - openssl
+                  - x509
+                  - -in
+                  - "{{ aap_tls_local_staging.path }}/aap-leaf.crt"
+                  - -noout
+                  - -checkhost
+                  - "{{ aap_public_tls_fqdn }}"
+              delegate_to: localhost
+              become: false
+              register: aap_acm_hostname_check
+              changed_when: false
+              failed_when: aap_acm_hostname_check.rc != 0
+
+            - name: PHASE 8A | Validate AAP ACM certificate lifetime
+              ansible.builtin.command:
+                argv:
+                  - openssl
+                  - x509
+                  - -in
+                  - "{{ aap_tls_local_staging.path }}/aap-leaf.crt"
+                  - -noout
+                  - -checkend
+                  - "{{ aap_tls_minimum_validity_seconds | string }}"
+              delegate_to: localhost
+              become: false
+              register: aap_acm_validity_check
+              changed_when: false
+              failed_when: aap_acm_validity_check.rc != 0
+
+            - name: PHASE 8A | Install encrypted ACM private key temporarily
+              ansible.builtin.copy:
+                src: "{{ aap_tls_local_staging.path }}/aap-encrypted.key"
+                dest: "{{ aap_tls_private_key_path }}.encrypted"
+                owner: root
+                group: root
+                mode: "0600"
+              no_log: true
+
+            - name: PHASE 8A | Install temporary ACM export passphrase
+              ansible.builtin.copy:
+                content: "{{ aap_acm_export_passphrase }}"
+                dest: "{{ aap_tls_directory }}/.acm-passphrase"
+                owner: root
+                group: root
+                mode: "0600"
+              no_log: true
+
+            - name: PHASE 8A | Decrypt AAP ACM private key
+              ansible.builtin.command:
+                argv:
+                  - openssl
+                  - pkey
+                  - -in
+                  - "{{ aap_tls_private_key_path }}.encrypted"
+                  - -out
+                  - "{{ aap_tls_private_key_path }}"
+                  - -passin
+                  - "file:{{ aap_tls_directory }}/.acm-passphrase"
+              register: aap_acm_private_key_decrypt
+              changed_when: aap_acm_private_key_decrypt.rc == 0
+              failed_when: aap_acm_private_key_decrypt.rc != 0
+              no_log: true
+
+            - name: PHASE 8A | Install AAP leaf certificate
+              ansible.builtin.copy:
+                src: "{{ aap_tls_local_staging.path }}/aap-leaf.crt"
+                dest: "{{ aap_tls_leaf_certificate_path }}"
+                owner: root
+                group: root
+                mode: "0644"
+
+            - name: PHASE 8A | Install AAP certificate chain
+              ansible.builtin.copy:
+                src: "{{ aap_tls_local_staging.path }}/aap-chain.crt"
+                dest: "{{ aap_tls_chain_path }}"
+                owner: root
+                group: root
+                mode: "0644"
+
+            - name: PHASE 8A | Install AAP web server certificate
+              ansible.builtin.copy:
+                src: "{{ aap_tls_local_staging.path }}/aap.crt"
+                dest: "{{ aap_tls_certificate_path }}"
+                owner: root
+                group: root
+                mode: "0644"
+
+            - name: PHASE 8A | Secure AAP private key
+              ansible.builtin.file:
+                path: "{{ aap_tls_private_key_path }}"
+                state: file
+                owner: root
+                group: root
+                mode: "0600"
+
+            - name: PHASE 8A | Verify decrypted AAP private key
+              ansible.builtin.command:
+                argv:
+                  - openssl
+                  - pkey
+                  - -in
+                  - "{{ aap_tls_private_key_path }}"
+                  - -noout
+                  - -check
+                  - -passin
+                  - "pass:"
+              register: aap_private_key_check
+              changed_when: false
+              failed_when: aap_private_key_check.rc != 0
+              no_log: true
+
+            - name: PHASE 8A | Read AAP certificate public key hash
+              ansible.builtin.shell: |
+                set -euo pipefail
+
+                openssl x509 \
+                  -in "{{ aap_tls_leaf_certificate_path }}" \
+                  -noout \
+                  -pubkey |
+                  openssl pkey \
+                    -pubin \
+                    -outform DER |
+                  openssl dgst -sha256
+              args:
+                executable: /bin/bash
+              register: aap_certificate_public_key_hash
+              changed_when: false
+
+            - name: PHASE 8A | Read AAP private key public key hash
+              ansible.builtin.shell: |
+                set -euo pipefail
+
+                openssl pkey \
+                  -in "{{ aap_tls_private_key_path }}" \
+                  -pubout \
+                  -outform DER |
+                  openssl dgst -sha256
+              args:
+                executable: /bin/bash
+              register: aap_private_key_public_key_hash
+              changed_when: false
+              no_log: true
+
+            - name: PHASE 8A | Normalize AAP public key hashes
+              ansible.builtin.set_fact:
+                aap_certificate_public_key_sha256: >-
+                  {{
+                    aap_certificate_public_key_hash.stdout
+                    | default('')
+                    | regex_replace('^.*=', '')
+                    | trim
+                    | lower
+                  }}
+                aap_private_key_public_key_sha256: >-
+                  {{
+                    aap_private_key_public_key_hash.stdout
+                    | default('')
+                    | regex_replace('^.*=', '')
+                    | trim
+                    | lower
+                  }}
+              no_log: true
+
+            - name: PHASE 8A | Verify AAP certificate and private key match
+              ansible.builtin.assert:
+                that:
+                  - aap_certificate_public_key_sha256 | length == 64
+                  - aap_private_key_public_key_sha256 | length == 64
+                  - >-
+                    aap_certificate_public_key_sha256
+                    ==
+                    aap_private_key_public_key_sha256
+                fail_msg: >-
+                  The exported AAP ACM certificate and decrypted private key
+                  do not contain the same public key.
+              no_log: true
+
+            - name: PHASE 8A | Validate installed AAP certificate hostname
+              ansible.builtin.command:
+                argv:
+                  - openssl
+                  - x509
+                  - -in
+                  - "{{ aap_tls_leaf_certificate_path }}"
+                  - -noout
+                  - -checkhost
+                  - "{{ aap_public_tls_fqdn }}"
+              register: aap_installed_certificate_hostname_check
+              changed_when: false
+              failed_when: >-
+                aap_installed_certificate_hostname_check.rc != 0
+
+          always:
+            - name: PHASE 8A | Remove local ACM TLS staging directory
+              ansible.builtin.file:
+                path: >-
+                  {{
+                    aap_tls_local_staging.path
+                    | default('/nonexistent')
+                  }}
+                state: absent
+              delegate_to: localhost
+              become: false
+              no_log: true
+
+            - name: PHASE 8A | Remove encrypted AAP ACM key
+              ansible.builtin.file:
+                path: "{{ aap_tls_private_key_path }}.encrypted"
+                state: absent
+              no_log: true
+
+            - name: PHASE 8A | Remove temporary AAP ACM passphrase
+              ansible.builtin.file:
+                path: "{{ aap_tls_directory }}/.acm-passphrase"
+                state: absent
+              no_log: true
+
+            - name: PHASE 8A | Clear AAP ACM export facts
+              ansible.builtin.set_fact:
+                aap_acm_export_passphrase: ""
+                aap_acm_exported_certificate: {}
+              no_log: true
+
 
         - name: PHASE 8 | Write AAP installer inventory
           ansible.builtin.copy:
@@ -663,32 +1117,31 @@
             mode: "0600"
             content: |
               [automationgateway]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [automationcontroller]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [automationhub]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [automationeda]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [database]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [redis]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [automationmetrics]
-              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }}
+              {{ aap_fqdn }} ansible_connection=local ansible_user={{ aap_run_user }} ansible_user_uid={{ aap_run_user_uid.stdout }} ansible_user_dir={{ aap_run_user_home }} routable_hostname={{ aap_public_tls_fqdn }}
 
               [all:vars]
               redis_mode=standalone
-              routable_hostname={{ ansible_default_ipv4.address }}
 
               automationgateway_main_url=https://{{ aap_fqdn }}
-              gateway_hostname={{ aap_fqdn }}
+              gateway_hostname={{ aap_public_tls_fqdn }}
 
               gateway_pg_host={{ aap_fqdn }}
               controller_pg_host={{ aap_fqdn }}
@@ -720,7 +1173,15 @@
               automationmetrics_pg_password={{ automationmetrics_pg_password }}
               automationmetrics_controller_read_pg_password={{ automationmetrics_controller_read_pg_password }}
 
+              web_server_ssl_cert={{ aap_tls_certificate_path }}
+              web_server_ssl_key={{ aap_tls_private_key_path }}
+
+              gateway_tls_cert={{ aap_tls_certificate_path }}
+              gateway_tls_key={{ aap_tls_private_key_path }}
+              gateway_tls_remote=true
+
               custom_ca_cert={{ idm_ca_dest }}
+
           no_log: true
 
         - name: PHASE 8 | Give installer user ownership of installer directory
@@ -729,6 +1190,14 @@
             owner: "{{ aap_run_user }}"
             group: "{{ aap_run_user }}"
             recurse: true
+
+        - name: PHASE 8 | Give installer user ownership of "{{ aap_tls_root }}" directory
+          ansible.builtin.file:
+            path: "{{ aap_tls_root }}"
+            owner: "{{ aap_run_user }}"
+            group: "{{ aap_run_user }}"
+            recurse: true
+
 
         - name: PHASE 8 | Validate generated installer inventory
           ansible.builtin.shell: |

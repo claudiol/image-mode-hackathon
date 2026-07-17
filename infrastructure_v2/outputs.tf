@@ -53,15 +53,33 @@ output "ansible_inventory" {
     aws_profile   = var.aws_profile
     secret_prefix = var.secret_prefix
 
-    lab_ssh_private_key_secret_name = local.lab_ssh_private_key_secret_name
+    lab_ssh_private_key_secret_name = (
+      local.lab_ssh_private_key_secret_name
+    )
 
-    satellite_iso_s3_bucket = var.satellite_iso_s3_bucket
-    satellite_iso_s3_key    = var.satellite_iso_s3_key
-    satellite_iso_sha256    = var.satellite_iso_sha256
+    satellite_iso_s3_bucket = (
+      var.satellite_iso_s3_bucket
+    )
 
-    satellite_manifest_s3_bucket = var.satellite_manifest_s3_bucket
-    satellite_manifest_s3_key    = var.satellite_manifest_s3_key
-    satellite_manifest_sha256    = var.satellite_manifest_sha256
+    satellite_iso_s3_key = (
+      var.satellite_iso_s3_key
+    )
+
+    satellite_iso_sha256 = (
+      var.satellite_iso_sha256
+    )
+
+    satellite_manifest_s3_bucket = (
+      var.satellite_manifest_s3_bucket
+    )
+
+    satellite_manifest_s3_key = (
+      var.satellite_manifest_s3_key
+    )
+
+    satellite_manifest_sha256 = (
+      var.satellite_manifest_sha256
+    )
 
     satellite_initial_admin_username = (
       var.satellite_initial_admin_username
@@ -82,17 +100,13 @@ output "ansible_inventory" {
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
 
-    idm_server_fqdn = local.flattened_servers[sort([
-      for name, server in local.flattened_servers :
-      name
-      if server.role == "idm"
-    ])[0]].hostname
+    idm_server_fqdn = local.flattened_servers[
+      local.primary_idm_key
+    ].hostname
 
-    idm_server_ip = aws_instance.server[sort([
-      for name, server in local.flattened_servers :
-      name
-      if server.role == "idm"
-    ])[0]].private_ip
+    idm_server_ip = aws_instance.server[
+      local.primary_idm_key
+    ].private_ip
 
     servers = {
       for name, instance in aws_instance.server :
@@ -102,6 +116,11 @@ output "ansible_inventory" {
         role       = instance.tags.Role
         private_ip = instance.private_ip
         public_ip  = aws_eip.server[name].public_ip
+
+        acm_certificate_arn = try(
+          aws_acm_certificate.server[name].arn,
+          ""
+        )
       }
     }
   })
