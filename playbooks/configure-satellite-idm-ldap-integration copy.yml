@@ -1,0 +1,14 @@
+---
+###############################################################################
+# Clean previous RHSM / Satellite registration state from AWS EC2 RHEL hosts
+###############################################################################
+
+- name: Clean previous subscription and Satellite registration state
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  serial: 1
+
+  roles:
+    - role: satellite_subscription_cleanup
