@@ -24,7 +24,6 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "Image Mode Machine Credential"
-    limit: "satellite"
     job_type: "run"
     verbosity: 1
     forks: 1
