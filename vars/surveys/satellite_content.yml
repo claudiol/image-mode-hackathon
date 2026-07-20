@@ -1,0 +1,254 @@
+---
+###############################################################################
+# AAP survey definition
+#
+# Job template:
+#   Bootstrap Satellite Content
+#
+# This survey exposes only operator-facing Satellite content settings.
+# Repository definitions, content labels, and internal role behavior should
+# remain controlled by the satellite_content_bootstrap role defaults.
+###############################################################################
+
+satellite_content_bootstrap_survey:
+  name: "Bootstrap Satellite Content"
+
+  description: >-
+    Configure connected Red Hat Satellite content for RHEL 9 and RHEL 10.
+    The job enables repositories, optionally synchronizes content, creates
+    lifecycle environments and content views, publishes and promotes content,
+    and manages activation keys.
+
+  spec:
+
+    ###########################################################################
+    # Satellite organization
+    ###########################################################################
+
+    - question_name: "Satellite organization name"
+      question_description: >-
+        Human-readable Satellite organization name. The organization must
+        already exist before the bootstrap job runs.
+      variable: "satellite_organization_name"
+      type: "text"
+      required: true
+      default: "Image Mode Lab"
+      min: 1
+      max: 128
+
+    - question_name: "Satellite organization label"
+      question_description: >-
+        Satellite organization label used by Hammer commands. This is normally
+        the organization name with spaces replaced by underscores.
+      variable: "satellite_organization_label"
+      type: "text"
+      required: true
+      default: "Image_Mode_Lab"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # Subscription connection
+    ###########################################################################
+
+    - question_name: "Enable Satellite subscription connection"
+      question_description: >-
+        Ensure the Satellite subscription_connection_enabled setting is true.
+        The job still requires a valid imported subscription manifest.
+      variable: "satellite_enable_subscription_connection"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    ###########################################################################
+    # Repository architecture and releases
+    ###########################################################################
+
+    - question_name: "Repository architecture"
+      question_description: >-
+        CPU architecture used when enabling the RHEL repository sets.
+      variable: "satellite_basearch"
+      type: "multiplechoice"
+      required: true
+      default: "x86_64"
+      choices:
+        - "x86_64"
+        - "aarch64"
+
+    - question_name: "RHEL 9 release version"
+      question_description: >-
+        RHEL 9 release version to enable for BaseOS and AppStream content.
+        The requested release must be available from the imported manifest.
+      variable: "rhel9_releasever"
+      type: "text"
+      required: true
+      default: "9.8"
+      min: 1
+      max: 16
+
+    - question_name: "RHEL 10 release version"
+      question_description: >-
+        RHEL 10 release version to enable for BaseOS and AppStream content.
+        The requested release must be available from the imported manifest.
+      variable: "rhel10_releasever"
+      type: "text"
+      required: true
+      default: "10.1"
+      min: 1
+      max: 16
+
+    ###########################################################################
+    # Repository synchronization
+    ###########################################################################
+
+    - question_name: "Synchronize enabled repositories"
+      question_description: >-
+        Start synchronization for the enabled RHEL BaseOS and AppStream
+        repositories. Set this to false to configure repository availability,
+        content views, and activation keys without starting a content sync.
+      variable: "satellite_sync_repositories"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "Repository synchronization timeout"
+      question_description: >-
+        Maximum number of seconds to wait for repository synchronization tasks
+        to finish.
+      variable: "satellite_repository_sync_timeout"
+      type: "integer"
+      required: true
+      default: 14400
+      min: 600
+      max: 86400
+
+    - question_name: "Repository synchronization polling interval"
+      question_description: >-
+        Number of seconds between checks for active repository synchronization
+        tasks.
+      variable: "satellite_repository_sync_poll"
+      type: "integer"
+      required: true
+      default: 30
+      min: 10
+      max: 300
+
+    ###########################################################################
+    # Lifecycle environment
+    ###########################################################################
+
+    - question_name: "Manage lifecycle environment"
+      question_description: >-
+        Create the requested lifecycle environment when it does not already
+        exist.
+      variable: "satellite_manage_lifecycle_environment"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "Lifecycle environment name"
+      question_description: >-
+        Lifecycle environment into which the latest content-view versions are
+        promoted.
+      variable: "satellite_lifecycle_environment"
+      type: "text"
+      required: true
+      default: "Development"
+      min: 1
+      max: 128
+
+    - question_name: "Prior lifecycle environment"
+      question_description: >-
+        Existing lifecycle environment that precedes the managed environment.
+        This is normally Library.
+      variable: "satellite_library_environment"
+      type: "text"
+      required: true
+      default: "Library"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # Content views
+    ###########################################################################
+
+    - question_name: "RHEL 9 content-view name"
+      question_description: >-
+        Content view containing the selected RHEL 9 BaseOS and AppStream
+        repositories.
+      variable: "satellite_rhel9_content_view"
+      type: "text"
+      required: true
+      default: "RHEL9"
+      min: 1
+      max: 128
+
+    - question_name: "RHEL 10 content-view name"
+      question_description: >-
+        Content view containing the selected RHEL 10 BaseOS and AppStream
+        repositories.
+      variable: "satellite_rhel10_content_view"
+      type: "text"
+      required: true
+      default: "RHEL10"
+      min: 1
+      max: 128
+
+    - question_name: "Force content-view publication"
+      question_description: >-
+        Publish a new content-view version even when no repository assignments
+        changed. Leave this false for normal idempotent operation.
+      variable: "satellite_force_publish_content_views"
+      type: "multiplechoice"
+      required: true
+      default: "false"
+      choices:
+        - "false"
+        - "true"
+
+    ###########################################################################
+    # Activation keys
+    ###########################################################################
+
+    - question_name: "Manage activation keys"
+      question_description: >-
+        Create or update the RHEL activation keys and enable the requested
+        repository content overrides.
+      variable: "satellite_manage_activation_keys"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "RHEL 9 activation key"
+      question_description: >-
+        Activation key assigned to the RHEL 9 content view and lifecycle
+        environment.
+      variable: "satellite_rhel9_activation_key"
+      type: "text"
+      required: true
+      default: "rhel9"
+      min: 1
+      max: 128
+
+    - question_name: "RHEL 10 activation key"
+      question_description: >-
+        Activation key assigned to the RHEL 10 content view and lifecycle
+        environment.
+      variable: "satellite_rhel10_activation_key"
+      type: "text"
+      required: true
+      default: "rhel10"
+      min: 1
+      max: 128
