@@ -20,7 +20,7 @@ controller_templates:
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Mode Lab Infrastructure"
-    playbook: "playbooks/bootstrap-satellite-content.yml"
+    playbook: "playbooks/configure-satellite-bootstrap-content.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "Image Mode Machine Credential"
