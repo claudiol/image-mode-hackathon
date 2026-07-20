@@ -1,0 +1,912 @@
+---
+###############################################################################
+# Bootstrap Red Hat Satellite content
+###############################################################################
+
+###############################################################################
+# PHASE 1 | Validate Satellite and organization
+###############################################################################
+
+- name: PHASE 1 | Verify Hammer CLI is installed
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --version
+  register: satellite_content_bootstrap_hammer_version
+  changed_when: false
+
+- name: PHASE 1 | Verify Satellite services
+  ansible.builtin.command:
+    argv:
+      - satellite-maintain
+      - service
+      - status
+  register: satellite_content_bootstrap_service_status
+  changed_when: false
+  failed_when: satellite_content_bootstrap_service_status.rc != 0
+
+- name: PHASE 1 | Read organization
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - organization
+      - info
+      - --label
+      - "{{ satellite_organization_label }}"
+  register: satellite_content_bootstrap_organization_info
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 1 | Verify organization
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_organization_info.rc == 0
+      - satellite_organization_label in satellite_content_bootstrap_organization_info.stdout
+    fail_msg: >-
+      Satellite organization {{ satellite_organization_label }} was not found.
+      Create the organization before running this role.
+
+###############################################################################
+# PHASE 2 | Validate subscription connection and manifest
+###############################################################################
+
+- name: PHASE 2 | Read subscription connection setting
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - settings
+      - info
+      - --name
+      - subscription_connection_enabled
+  register: satellite_content_bootstrap_connection_setting
+  changed_when: false
+  when: satellite_enable_subscription_connection | bool
+
+- name: PHASE 2 | Parse subscription connection setting
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_connection_enabled: >-
+      {{
+        (
+          satellite_content_bootstrap_connection_setting.stdout
+          | from_json
+        ).Value
+        | default(false)
+        | string
+        | lower
+        in ['true', 'yes', '1']
+      }}
+  when: satellite_enable_subscription_connection | bool
+
+- name: PHASE 2 | Enable subscription connection
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - settings
+      - set
+      - --name
+      - subscription_connection_enabled
+      - --value
+      - "true"
+  register: satellite_content_bootstrap_enable_connection
+  changed_when: satellite_content_bootstrap_enable_connection.rc == 0
+  when:
+    - satellite_enable_subscription_connection | bool
+    - not satellite_content_bootstrap_connection_enabled | default(false) | bool
+
+- name: PHASE 2 | Verify a subscription manifest is imported
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - subscription
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  register: satellite_content_bootstrap_subscriptions
+  changed_when: false
+
+- name: PHASE 2 | Assert manifest contains subscriptions
+  ansible.builtin.assert:
+    that:
+      - (satellite_content_bootstrap_subscriptions.stdout | from_json | length) > 0
+    fail_msg: >-
+      No subscriptions were found for {{ satellite_organization_name }}.
+      Import a valid manifest before enabling Red Hat repositories.
+
+###############################################################################
+# PHASE 3 | Validate repository sets
+###############################################################################
+
+- name: PHASE 3 | Locate required Red Hat repository sets
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - repository-set
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ item.1.repository_set_name }}"'
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | subelements('repositories')
+    }}
+  loop_control:
+    label: "{{ item.1.repository_set_name }}"
+  register: satellite_content_bootstrap_repository_set_lookups
+  changed_when: false
+
+- name: PHASE 3 | Verify required repository sets are available
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | length) == 1
+    fail_msg: >-
+      Repository set was not found or was ambiguous:
+      {{ item.item.1.repository_set_name }}.
+      Confirm the imported manifest provides RHEL
+      {{ item.item.0.major }} content.
+  loop: "{{ satellite_content_bootstrap_repository_set_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.1.repository_set_name }}"
+
+###############################################################################
+# PHASE 4 | Enable repositories and resolve repository IDs
+###############################################################################
+
+- name: PHASE 4 | Enable requested RHEL repositories
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      repository_set_search='name="{{ item.1.repository_set_name }}"'
+      repository_search='content_label="{{ item.1.content_label }}"'
+
+      repo_set_id="$(
+        hammer \
+          --csv \
+          --no-headers \
+          repository-set \
+          list \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --search "${repository_set_search}" |
+        awk -F',' '
+          NR == 1 {
+            gsub(/"/, "", $1)
+            print $1
+          }
+        '
+      )"
+
+      if [[ -z "${repo_set_id}" ]]; then
+        echo "Unable to resolve repository-set ID:" >&2
+        echo "  repository set: {{ item.1.repository_set_name }}" >&2
+        exit 2
+      fi
+
+      existing_id="$(
+        hammer \
+          --csv \
+          --no-headers \
+          repository \
+          list \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --search "${repository_search}" |
+        awk -F',' '
+          NR == 1 {
+            gsub(/"/, "", $1)
+            print $1
+          }
+        '
+      )"
+
+      if [[ -n "${existing_id}" ]]; then
+        echo "ALREADY_ENABLED:${existing_id}"
+        exit 0
+      fi
+
+      set +e
+
+      enable_output="$(
+        hammer \
+          repository-set \
+          enable \
+          --id "${repo_set_id}" \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --basearch {{ satellite_basearch | quote }} \
+          --releasever {{ item.0.releasever | quote }} \
+          2>&1
+      )"
+
+      enable_rc=$?
+
+      set -e
+
+      if [[ ${enable_rc} -eq 0 ]]; then
+        printf '%s\n' "${enable_output}"
+        echo "ENABLED"
+        exit 0
+      fi
+
+      if grep -qiE \
+        '409[[:space:]]+Conflict|already[[:space:]]+enabled|already[[:space:]]+exists' \
+        <<< "${enable_output}"; then
+        printf '%s\n' "${enable_output}" >&2
+        echo "ALREADY_ENABLED_BY_SATELLITE"
+        exit 0
+      fi
+
+      printf '%s\n' "${enable_output}" >&2
+      exit "${enable_rc}"
+    executable: /bin/bash
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | subelements('repositories')
+    }}
+  loop_control:
+    label: >-
+      RHEL {{ item.0.releasever }} |
+      {{ item.1.repository_set_name }}
+  register: satellite_content_bootstrap_repository_enable_results
+  changed_when: >-
+    'ENABLED' in satellite_content_bootstrap_repository_enable_results.stdout
+    and
+    'ALREADY_ENABLED' not in
+    satellite_content_bootstrap_repository_enable_results.stdout
+  failed_when: >-
+    satellite_content_bootstrap_repository_enable_results.rc != 0
+
+- name: PHASE 4 | Resolve enabled repository IDs
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      repository_search='content_label="{{ item.1.content_label }}"'
+
+      repository_id="$(
+        hammer \
+          --csv \
+          --no-headers \
+          repository \
+          list \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --search "${repository_search}" |
+        awk -F',' '
+          NR == 1 {
+            gsub(/"/, "", $1)
+            print $1
+          }
+        '
+      )"
+
+      if [[ -z "${repository_id}" ]]; then
+        echo "Unable to resolve enabled repository:" >&2
+        echo "  repository set: {{ item.1.repository_set_name }}" >&2
+        echo "  content label: {{ item.1.content_label }}" >&2
+        echo "  requested release: {{ item.0.releasever }}" >&2
+        exit 2
+      fi
+
+      printf '%s\n' "${repository_id}"
+    executable: /bin/bash
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | subelements('repositories')
+    }}
+  loop_control:
+    label: >-
+      {{ item.1.content_label }} |
+      release {{ item.0.releasever }}
+  register: satellite_content_bootstrap_enabled_repository_ids
+  changed_when: false
+  failed_when: >-
+    satellite_content_bootstrap_enabled_repository_ids.rc != 0
+    or
+    (
+      satellite_content_bootstrap_enabled_repository_ids.stdout
+      | trim
+      | length
+    ) == 0
+
+###############################################################################
+# PHASE 5 | Synchronize repositories
+###############################################################################
+
+- name: PHASE 5 | Synchronize enabled repositories
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - repository
+      - synchronize
+      - --id
+      - "{{ item.stdout | trim }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --async
+  loop: "{{ satellite_content_bootstrap_enabled_repository_ids.results }}"
+  loop_control:
+    label: "Repository ID {{ item.stdout | trim }}"
+  register: satellite_content_bootstrap_repository_sync_requests
+  changed_when: true
+  when: satellite_sync_repositories | bool
+
+- name: PHASE 5 | Wait for repository synchronization tasks
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - task
+      - list
+      - --search
+      - "label = Actions::Katello::Repository::Sync and state != stopped"
+  register: satellite_content_bootstrap_active_sync_tasks
+  changed_when: false
+  retries: >-
+    {{
+      (
+        satellite_repository_sync_timeout
+        | int
+      )
+      //
+      (
+        satellite_repository_sync_poll
+        | int
+      )
+    }}
+  delay: "{{ satellite_repository_sync_poll | int }}"
+  until: >-
+    (
+      satellite_content_bootstrap_active_sync_tasks.stdout
+      | from_json
+      | length
+    ) == 0
+  when: satellite_sync_repositories | bool
+
+- name: PHASE 5 | Check for failed repository synchronization tasks
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - task
+      - list
+      - --search
+      - "label = Actions::Katello::Repository::Sync and result = error"
+  register: satellite_content_bootstrap_failed_sync_tasks
+  changed_when: false
+  when: satellite_sync_repositories | bool
+
+- name: PHASE 5 | Fail when repository synchronization failed
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          satellite_content_bootstrap_failed_sync_tasks.stdout
+          | from_json
+          | length
+        ) == 0
+    fail_msg: >-
+      One or more repository synchronization tasks failed.
+      Review Monitor > Satellite Tasks or run hammer task list.
+  when: satellite_sync_repositories | bool
+
+###############################################################################
+# PHASE 6 | Lifecycle environment
+###############################################################################
+
+- name: PHASE 6 | Check for lifecycle environment
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - lifecycle-environment
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ satellite_lifecycle_environment }}"'
+  register: satellite_content_bootstrap_lifecycle_environment_lookup
+  changed_when: false
+  when: satellite_manage_lifecycle_environment | bool
+
+- name: PHASE 6 | Create lifecycle environment
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - lifecycle-environment
+      - create
+      - --name
+      - "{{ satellite_lifecycle_environment }}"
+      - --label
+      - "{{ satellite_lifecycle_environment }}"
+      - --prior
+      - "{{ satellite_library_environment }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --description
+      - "Automatically managed lifecycle environment"
+  register: satellite_content_bootstrap_lifecycle_environment_create
+  changed_when: satellite_content_bootstrap_lifecycle_environment_create.rc == 0
+  when:
+    - satellite_manage_lifecycle_environment | bool
+    - >-
+      (
+        satellite_content_bootstrap_lifecycle_environment_lookup.stdout
+        | from_json
+        | length
+      ) == 0
+
+###############################################################################
+# PHASE 7 | Content views and repositories
+###############################################################################
+
+- name: PHASE 7 | Check for content views
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - content-view
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ item.content_view }}"'
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_content_view_lookups
+  changed_when: false
+
+- name: PHASE 7 | Create missing content views
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-view
+      - create
+      - --name
+      - "{{ item.item.content_view }}"
+      - --label
+      - "{{ item.item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --description
+      - "RHEL {{ item.item.major }} BaseOS and AppStream"
+  loop: "{{ satellite_content_bootstrap_content_view_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.content_view }}"
+  register: satellite_content_bootstrap_content_view_create_results
+  changed_when: satellite_content_bootstrap_content_view_create_results.rc == 0
+  when: (item.stdout | from_json | length) == 0
+
+- name: PHASE 7 | Add repositories to content views
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      repository_search='content_label="{{ item.1.content_label }}"'
+
+      repository_id="$(
+        hammer \
+          --csv \
+          --no-headers \
+          repository \
+          list \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --search "${repository_search}" |
+        awk -F',' '
+          NR == 1 {
+            gsub(/"/, "", $1)
+            print $1
+          }
+        '
+      )"
+
+      if [[ -z "${repository_id}" ]]; then
+        echo "Unable to resolve repository ID:" >&2
+        echo "  content label: {{ item.1.content_label }}" >&2
+        echo "  requested release: {{ item.0.releasever }}" >&2
+        exit 2
+      fi
+
+      content_view_json="$(
+        hammer \
+          --output json \
+          content-view \
+          info \
+          --name {{ item.0.content_view | quote }} \
+          --organization-label {{ satellite_organization_label | quote }}
+      )"
+
+      repository_present="$(
+        REPOSITORY_ID="${repository_id}" \
+        CONTENT_VIEW_JSON="${content_view_json}" \
+        python3 <<'PYTHON'
+      import json
+      import os
+      import sys
+
+      repository_id = str(os.environ["REPOSITORY_ID"])
+      content_view = json.loads(os.environ["CONTENT_VIEW_JSON"])
+
+      def contains_repository(value):
+          if isinstance(value, dict):
+              normalized = {
+                  str(key).strip().lower().replace(" ", "_"): item
+                  for key, item in value.items()
+              }
+
+              candidate_id = normalized.get("id")
+
+              if candidate_id is not None and str(candidate_id) == repository_id:
+                  return True
+
+              return any(contains_repository(item) for item in value.values())
+
+          if isinstance(value, list):
+              return any(contains_repository(item) for item in value)
+
+          return False
+
+      sys.stdout.write("true" if contains_repository(content_view) else "false")
+      PYTHON
+      )"
+
+      if [[ "${repository_present}" == "true" ]]; then
+        echo "ALREADY_PRESENT:${repository_id}"
+        exit 0
+      fi
+
+      set +e
+
+      add_output="$(
+        hammer \
+          content-view \
+          add-repository \
+          --name {{ item.0.content_view | quote }} \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --repository-id "${repository_id}" \
+          2>&1
+      )"
+
+      add_rc=$?
+
+      set -e
+
+      if [[ ${add_rc} -eq 0 ]]; then
+        printf '%s\n' "${add_output}"
+        echo "ADDED:${repository_id}"
+        exit 0
+      fi
+
+      if grep -qiE \
+        'already[[:space:]]+associated|already[[:space:]]+exists|409[[:space:]]+Conflict' \
+        <<< "${add_output}"; then
+        printf '%s\n' "${add_output}" >&2
+        echo "ALREADY_PRESENT:${repository_id}"
+        exit 0
+      fi
+
+      printf '%s\n' "${add_output}" >&2
+      exit "${add_rc}"
+    executable: /bin/bash
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | subelements('repositories')
+    }}
+  loop_control:
+    label: >-
+      {{ item.0.content_view }}
+      <- {{ item.1.content_label }}
+  register: satellite_content_bootstrap_cv_repository_results
+  changed_when: >-
+    'ADDED:' in satellite_content_bootstrap_cv_repository_results.stdout
+  failed_when: >-
+    satellite_content_bootstrap_cv_repository_results.rc != 0
+
+###############################################################################
+# PHASE 8 | Publish and promote content views
+###############################################################################
+
+- name: PHASE 8 | Read current content-view versions
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - content-view
+      - version
+      - list
+      - --content-view
+      - "{{ item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_cv_version_lookups
+  changed_when: false
+
+- name: PHASE 8 | Publish content views when needed
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-view
+      - publish
+      - --name
+      - "{{ item.item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --description
+      - "Automated publication for RHEL {{ item.item.releasever }}"
+  loop: "{{ satellite_content_bootstrap_cv_version_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.content_view }}"
+  register: satellite_content_bootstrap_cv_publish_results
+  changed_when: satellite_content_bootstrap_cv_publish_results.rc == 0
+  when: >-
+    satellite_force_publish_content_views | bool
+    or
+    (item.stdout | from_json | length) == 0
+    or
+    (
+      satellite_content_bootstrap_cv_repository_results.results
+      | selectattr(
+          'item.0.content_view',
+          'equalto',
+          item.item.content_view
+        )
+      | selectattr('changed', 'equalto', true)
+      | list
+      | length
+    ) > 0
+
+- name: PHASE 8 | Resolve latest content-view versions
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      hammer \
+        --csv \
+        --no-headers \
+        content-view \
+        version \
+        list \
+        --content-view {{ item.content_view | quote }} \
+        --organization-label {{ satellite_organization_label | quote }} |
+      awk -F',' '
+        {
+          gsub(/"/, "", $0)
+          version = $3
+
+          if ((version + 0) > (max + 0)) {
+            max = version
+          }
+        }
+
+        END {
+          if (max == "") {
+            exit 1
+          }
+
+          print max
+        }
+      '
+    executable: /bin/bash
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_latest_cv_versions
+  changed_when: false
+  failed_when: >-
+    satellite_content_bootstrap_latest_cv_versions.rc != 0
+    or
+    (
+      satellite_content_bootstrap_latest_cv_versions.stdout
+      | trim
+      | length
+    ) == 0
+
+- name: PHASE 8 | Promote latest content-view versions
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-view
+      - version
+      - promote
+      - --content-view
+      - "{{ item.item.content_view }}"
+      - --version
+      - "{{ item.stdout | trim }}"
+      - --to-lifecycle-environment
+      - "{{ satellite_lifecycle_environment }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  loop: "{{ satellite_content_bootstrap_latest_cv_versions.results }}"
+  loop_control:
+    label: >-
+      {{ item.item.content_view }}
+      {{ item.stdout | trim }}
+  register: satellite_content_bootstrap_cv_promotions
+  changed_when: satellite_content_bootstrap_cv_promotions.rc == 0
+  failed_when: >-
+    satellite_content_bootstrap_cv_promotions.rc != 0
+    and
+    'already exists' not in
+    (
+      satellite_content_bootstrap_cv_promotions.stdout
+      ~ satellite_content_bootstrap_cv_promotions.stderr
+    )
+    and
+    'already promoted' not in
+    (
+      satellite_content_bootstrap_cv_promotions.stdout
+      ~ satellite_content_bootstrap_cv_promotions.stderr
+    )
+
+###############################################################################
+# PHASE 9 | Activation keys
+###############################################################################
+
+- name: PHASE 9 | Check for activation keys
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - activation-key
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ item.activation_key }}"'
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_lookups
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 9 | Create missing activation keys
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - activation-key
+      - create
+      - --name
+      - "{{ item.item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --lifecycle-environment
+      - "{{ satellite_lifecycle_environment }}"
+      - --content-view
+      - "{{ item.item.content_view }}"
+      - --unlimited-hosts
+  loop: >-
+    {{
+      satellite_content_bootstrap_activation_key_lookups.results
+      | default([])
+    }}
+  loop_control:
+    label: "{{ item.item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_creations
+  changed_when: satellite_content_bootstrap_activation_key_creations.rc == 0
+  when:
+    - satellite_manage_activation_keys | bool
+    - (item.stdout | from_json | length) == 0
+
+- name: PHASE 9 | Ensure activation key assignments
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - activation-key
+      - update
+      - --name
+      - "{{ item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --lifecycle-environment
+      - "{{ satellite_lifecycle_environment }}"
+      - --content-view
+      - "{{ item.content_view }}"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_updates
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 9 | Enable repository overrides on activation keys
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - activation-key
+      - content-override
+      - --name
+      - "{{ item.0.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --content-label
+      - "{{ item.1.content_label }}"
+      - --value
+      - "1"
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | subelements('repositories')
+    }}
+  loop_control:
+    label: >-
+      {{ item.0.activation_key }}
+      | {{ item.1.content_label }}
+  register: satellite_content_bootstrap_activation_key_overrides
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+###############################################################################
+# PHASE 10 | Validate activation keys and display registration commands
+###############################################################################
+
+- name: PHASE 10 | Read activation key details
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - activation-key
+      - info
+      - --name
+      - "{{ item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_validation
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 10 | Verify activation key validation succeeded
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim | length > 0
+    fail_msg: >-
+      Activation key {{ item.item.activation_key }} could not be validated.
+  loop: >-
+    {{
+      satellite_content_bootstrap_activation_key_validation.results
+      | default([])
+    }}
+  loop_control:
+    label: "{{ item.item.activation_key }}"
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 10 | Display registration commands
+  ansible.builtin.debug:
+    msg:
+      - "Satellite content bootstrap completed."
+      - >-
+        RHEL 9: subscription-manager register
+        --org={{ satellite_organization_label }}
+        --activationkey={{ satellite_rhel9_activation_key }}
+      - >-
+        RHEL 10: subscription-manager register
+        --org={{ satellite_organization_label }}
+        --activationkey={{ satellite_rhel10_activation_key }}
+      - >-
+        Install the current Katello CA consumer RPM from
+        https://{{ inventory_hostname }}/pub/katello-ca-consumer-latest.noarch.rpm
+        before registering each host.

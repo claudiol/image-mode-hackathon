@@ -1,0 +1,49 @@
+---
+###############################################################################
+# Role defaults for satellite_content_bootstrap
+###############################################################################
+
+satellite_organization_name: "Image Mode Lab"
+satellite_organization_label: "Image_Mode_Lab"
+
+satellite_rhel9_releasever: "9.8"
+satellite_rhel10_releasever: "10.1"
+satellite_basearch: "x86_64"
+
+satellite_lifecycle_environment: "Development"
+satellite_library_environment: "Library"
+
+satellite_rhel9_content_view: "RHEL9"
+satellite_rhel10_content_view: "RHEL10"
+
+satellite_rhel9_activation_key: "rhel9"
+satellite_rhel10_activation_key: "rhel10"
+
+satellite_force_publish_content_views: false
+satellite_repository_sync_timeout: 14400
+satellite_repository_sync_poll: 30
+satellite_enable_subscription_connection: true
+satellite_sync_repositories: true
+satellite_manage_lifecycle_environment: true
+satellite_manage_activation_keys: true
+
+satellite_rhel_repository_definitions:
+  - major: "9"
+    releasever: "{{ satellite_rhel9_releasever }}"
+    content_view: "{{ satellite_rhel9_content_view }}"
+    activation_key: "{{ satellite_rhel9_activation_key }}"
+    repositories:
+      - repository_set_name: "Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)"
+        content_label: "rhel-9-for-x86_64-baseos-rpms"
+      - repository_set_name: "Red Hat Enterprise Linux 9 for x86_64 - AppStream (RPMs)"
+        content_label: "rhel-9-for-x86_64-appstream-rpms"
+
+  - major: "10"
+    releasever: "{{ satellite_rhel10_releasever }}"
+    content_view: "{{ satellite_rhel10_content_view }}"
+    activation_key: "{{ satellite_rhel10_activation_key }}"
+    repositories:
+      - repository_set_name: "Red Hat Enterprise Linux 10 for x86_64 - BaseOS (RPMs)"
+        content_label: "rhel-10-for-x86_64-baseos-rpms"
+      - repository_set_name: "Red Hat Enterprise Linux 10 for x86_64 - AppStream (RPMs)"
+        content_label: "rhel-10-for-x86_64-appstream-rpms"
