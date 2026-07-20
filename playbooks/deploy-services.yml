@@ -22,3 +22,6 @@
 
 - name: Configure Ansible Automation Platform For Image Mode Lab
   ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
+
+- name: Clean Up Satellite Registration
+  ansible.builtin.import_playbook: cleanup-satellite-subscription.yml
