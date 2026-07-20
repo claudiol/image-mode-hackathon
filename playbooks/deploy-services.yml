@@ -24,7 +24,7 @@
   ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
 
 - name: Configure Satellite Server For Image Mode Lab
-  ansible.builtin.import_playbook: configure-aap-idm-sso.yml
+  ansible.builtin.import_playbook: configure-satellite-bootstrap-content.yml
 
 - name: Clean Up Satellite Registration
   ansible.builtin.import_playbook: cleanup-satellite-subscription.yml
