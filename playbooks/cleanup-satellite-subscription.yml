@@ -1,6 +1,17 @@
 ---
 ###############################################################################
 # Clean previous RHSM / Satellite registration state from AWS EC2 RHEL hosts
+#
+# Satellite hosts are excluded using:
+#
+#   1. The [satellite] inventory group
+#   2. The host variable role=satellite
+#
+# Recommended AAP Job Template limit:
+#
+#   all:!satellite
+#
+# The AAP limit may also be left blank.
 ###############################################################################
 
 - name: Clean previous subscription and Satellite registration state
@@ -9,6 +20,26 @@
   gather_facts: true
   any_errors_fatal: false
   serial: 1
+
+  pre_tasks:
+    - name: SAFETY | Stop processing hosts identified as Satellite servers
+      ansible.builtin.meta: end_host
+      when:
+        - >-
+          'satellite' in group_names
+          or
+          (
+            role
+            | default('')
+            | string
+            | lower
+          ) == 'satellite'
+          or
+          (
+            inventory_hostname
+            | string
+            | lower
+          ) is match('^satellite([.-]|$)')
 
   roles:
     - role: satellite_subscription_cleanup
