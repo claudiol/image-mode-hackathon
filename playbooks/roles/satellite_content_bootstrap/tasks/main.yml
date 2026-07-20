@@ -53,19 +53,30 @@
 # PHASE 2 | Configure connection and validate subscription allocations
 ###############################################################################
 
-- name: PHASE 2 | Read subscription connection setting
+- name: PHASE 2 | Refresh subscription manifest
   ansible.builtin.command:
     argv:
       - hammer
-      - --output
-      - json
-      - settings
-      - info
-      - --name
-      - subscription_connection_enabled
-  register: satellite_content_bootstrap_connection_setting
-  changed_when: false
-  when: satellite_enable_subscription_connection | bool
+      - subscription
+      - refresh-manifest
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  register: satellite_content_bootstrap_manifest_refresh
+  changed_when: satellite_content_bootstrap_manifest_refresh.rc == 0
+  retries: >-
+    {{
+      satellite_subscription_manifest_refresh_retries
+      | default(3)
+      | int
+    }}
+  delay: >-
+    {{
+      satellite_subscription_manifest_refresh_delay
+      | default(30)
+      | int
+    }}
+  until: satellite_content_bootstrap_manifest_refresh.rc == 0
+  when: satellite_refresh_subscription_manifest | default(true) | boolFU
 
 - name: PHASE 2 | Parse subscription connection setting
   ansible.builtin.set_fact:
