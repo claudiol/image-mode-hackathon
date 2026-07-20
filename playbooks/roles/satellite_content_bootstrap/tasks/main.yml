@@ -76,7 +76,7 @@
       | int
     }}
   until: satellite_content_bootstrap_manifest_refresh.rc == 0
-  when: satellite_refresh_subscription_manifest | default(true) | boolFU
+  when: satellite_refresh_subscription_manifest | default(true) | bool
 
 - name: PHASE 2 | Parse subscription connection setting
   ansible.builtin.set_fact:
