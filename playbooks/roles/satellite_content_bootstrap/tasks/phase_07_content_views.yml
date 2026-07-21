@@ -3,7 +3,11 @@
 # PHASE 7 | Content views and repository membership
 ###############################################################################
 
-- name: PHASE 7 | Check for content views
+###############################################################################
+# PHASE 7A | Create content views
+###############################################################################
+
+- name: PHASE 7A | Check for content views
   ansible.builtin.command:
     argv:
       - hammer
@@ -20,8 +24,10 @@
     label: "{{ item.content_view }}"
   register: satellite_content_bootstrap_content_view_lookups
   changed_when: false
+  failed_when: >-
+    satellite_content_bootstrap_content_view_lookups.rc != 0
 
-- name: PHASE 7 | Create missing content views
+- name: PHASE 7A | Create missing content views
   ansible.builtin.command:
     argv:
       - hammer
@@ -39,17 +45,25 @@
   loop_control:
     label: "{{ item.item.content_view }}"
   register: satellite_content_bootstrap_content_view_create_results
-  changed_when: satellite_content_bootstrap_content_view_create_results.rc == 0
-  when: (item.stdout | from_json | length) == 0
+  changed_when: >-
+    satellite_content_bootstrap_content_view_create_results.rc == 0
+  failed_when: >-
+    satellite_content_bootstrap_content_view_create_results.rc != 0
+  when:
+    - (item.stdout | from_json | length) == 0
 
-- name: PHASE 7 | Add required repositories to content views
+###############################################################################
+# PHASE 7B | Associate repositories with content views
+###############################################################################
+
+- name: PHASE 7B | Add required repositories to content views
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
 
       organization_label={{ satellite_organization_label | quote }}
       content_view_name={{ item.content_view | quote }}
-      repository_id={{ item.repository_id | quote }}
+      repository_id={{ item.repository_id | string | quote }}
       expected_content_label={{ item.content_label | quote }}
 
       content_view_json="$(
@@ -64,48 +78,97 @@
         python3 <<'PYTHON'
       import json
       import os
+      import sys
 
-      content_view = json.loads(os.environ["CONTENT_VIEW_JSON"])
-      expected_repository_id = str(os.environ["REPOSITORY_ID"]).strip()
-
-      repositories = content_view.get(
-          "Yum Repositories",
-          content_view.get("yum_repositories", []),
+      content_view = json.loads(
+          os.environ["CONTENT_VIEW_JSON"]
       )
 
-      present = any(
-          isinstance(repository, dict)
-          and str(
+      expected_repository_id = str(
+          os.environ["REPOSITORY_ID"]
+      ).strip()
+
+      repositories_raw = content_view.get(
+          "Yum Repositories",
+          content_view.get(
+              "yum_repositories",
+              [],
+          ),
+      )
+
+      # Hammer may return repository collections as either:
+      #
+      #   [
+      #     {"Id": 1, ...},
+      #     {"Id": 2, ...}
+      #   ]
+      #
+      # or:
+      #
+      #   {
+      #     "1": {"Id": 1, ...},
+      #     "2": {"Id": 2, ...}
+      #   }
+      #
+      # Normalize both representations into a list of repository dictionaries.
+      if isinstance(repositories_raw, dict):
+          repositories = list(
+              repositories_raw.values()
+          )
+      elif isinstance(repositories_raw, list):
+          repositories = repositories_raw
+      else:
+          repositories = []
+
+      actual_repository_ids = {
+          str(
               repository.get(
                   "Id",
-                  repository.get("ID", repository.get("id", "")),
+                  repository.get(
+                      "ID",
+                      repository.get(
+                          "id",
+                          "",
+                      ),
+                  ),
               )
-          ).strip() == expected_repository_id
+          ).strip()
           for repository in repositories
-      )
+          if isinstance(repository, dict)
+      }
 
-      print("true" if present else "false")
+      sys.stdout.write(
+          "true"
+          if expected_repository_id in actual_repository_ids
+          else "false"
+      )
       PYTHON
       )"
 
       if [[ "${repository_present}" == "true" ]]; then
-        echo "ALREADY_PRESENT:${content_view_name}:${repository_id}:${expected_content_label}"
+        echo \
+          "ALREADY_PRESENT:${content_view_name}:${repository_id}:${expected_content_label}"
         exit 0
       fi
 
       set +e
+
       add_output="$(
         hammer content-view add-repository \
           --name "${content_view_name}" \
           --organization-label "${organization_label}" \
-          --repository-id "${repository_id}" 2>&1
+          --repository-id "${repository_id}" \
+          2>&1
       )"
+
       add_rc=$?
+
       set -e
 
       if [[ ${add_rc} -eq 0 ]]; then
         printf '%s\n' "${add_output}"
-        echo "ADDED:${content_view_name}:${repository_id}:${expected_content_label}"
+        echo \
+          "ADDED:${content_view_name}:${repository_id}:${expected_content_label}"
         exit 0
       fi
 
@@ -113,7 +176,8 @@
         'already[[:space:]]+(associated|exists|present)|409[[:space:]]+Conflict' \
         <<< "${add_output}"; then
         printf '%s\n' "${add_output}" >&2
-        echo "ALREADY_PRESENT:${content_view_name}:${repository_id}:${expected_content_label}"
+        echo \
+          "ALREADY_PRESENT:${content_view_name}:${repository_id}:${expected_content_label}"
         exit 0
       fi
 
@@ -122,12 +186,22 @@
     executable: /bin/bash
   loop: "{{ satellite_content_bootstrap_resolved_repositories }}"
   loop_control:
-    label: "{{ item.content_view }} <- {{ item.content_label }}"
+    label: >-
+      {{ item.content_view }}
+      <-
+      {{ item.content_label }}
   register: satellite_content_bootstrap_cv_repository_results
-  changed_when: "'ADDED:' in satellite_content_bootstrap_cv_repository_results.stdout"
-  failed_when: satellite_content_bootstrap_cv_repository_results.rc != 0
+  changed_when: >-
+    'ADDED:' in
+    satellite_content_bootstrap_cv_repository_results.stdout
+  failed_when: >-
+    satellite_content_bootstrap_cv_repository_results.rc != 0
 
-- name: PHASE 7 | Read final content-view definitions
+###############################################################################
+# PHASE 7C | Read final content-view definitions
+###############################################################################
+
+- name: PHASE 7C | Read final content-view definitions
   ansible.builtin.command:
     argv:
       - hammer
@@ -144,8 +218,14 @@
     label: "{{ item.content_view }}"
   register: satellite_content_bootstrap_final_content_view_info
   changed_when: false
+  failed_when: >-
+    satellite_content_bootstrap_final_content_view_info.rc != 0
 
-- name: PHASE 7 | Validate BaseOS and AppStream membership
+###############################################################################
+# PHASE 7D | Validate repository membership
+###############################################################################
+
+- name: PHASE 7D | Validate BaseOS and AppStream membership
   ansible.builtin.command:
     argv:
       - python3
@@ -155,49 +235,133 @@
         import os
         import sys
 
-        content_view = json.loads(os.environ["CONTENT_VIEW_JSON"])
-        expected = json.loads(os.environ["EXPECTED_REPOSITORIES"])
-
-        repositories = content_view.get(
-            "Yum Repositories",
-            content_view.get("yum_repositories", []),
+        content_view = json.loads(
+            os.environ["CONTENT_VIEW_JSON"]
         )
 
-        actual_ids = {
-            str(
+        expected_repositories = json.loads(
+            os.environ["EXPECTED_REPOSITORIES"]
+        )
+
+        repositories_raw = content_view.get(
+            "Yum Repositories",
+            content_view.get(
+                "yum_repositories",
+                [],
+            ),
+        )
+
+        # Hammer JSON can represent nested collections as dictionaries whose
+        # values are the actual objects. Normalize dictionaries and lists.
+        if isinstance(repositories_raw, dict):
+            repositories = list(
+                repositories_raw.values()
+            )
+        elif isinstance(repositories_raw, list):
+            repositories = repositories_raw
+        else:
+            repositories = []
+
+        actual_repositories = []
+
+        for repository in repositories:
+            if not isinstance(repository, dict):
+                continue
+
+            repository_id = repository.get(
+                "Id",
                 repository.get(
-                    "Id",
-                    repository.get("ID", repository.get("id", "")),
-                )
+                    "ID",
+                    repository.get(
+                        "id",
+                        "",
+                    ),
+                ),
+            )
+
+            repository_name = repository.get(
+                "Name",
+                repository.get(
+                    "name",
+                    "",
+                ),
+            )
+
+            repository_label = repository.get(
+                "Label",
+                repository.get(
+                    "label",
+                    "",
+                ),
+            )
+
+            actual_repositories.append(
+                {
+                    "repository_id": str(
+                        repository_id
+                    ).strip(),
+                    "name": str(
+                        repository_name
+                    ).strip(),
+                    "label": str(
+                        repository_label
+                    ).strip(),
+                }
+            )
+
+        actual_repository_ids = {
+            repository["repository_id"]
+            for repository in actual_repositories
+            if repository["repository_id"]
+        }
+
+        expected_repository_ids = {
+            str(
+                repository["repository_id"]
             ).strip()
-            for repository in repositories
-            if isinstance(repository, dict)
+            for repository in expected_repositories
         }
 
-        expected_ids = {
-            str(repository["repository_id"]).strip()
-            for repository in expected
-        }
-
-        missing_ids = sorted(expected_ids - actual_ids)
+        missing_repository_ids = sorted(
+            expected_repository_ids
+            - actual_repository_ids
+        )
 
         result = {
-            "content_view": content_view.get("Name", content_view.get("name", "")),
-            "expected_repositories": expected,
-            "actual_repository_ids": sorted(actual_ids),
-            "missing_repository_ids": missing_ids,
+            "content_view": content_view.get(
+                "Name",
+                content_view.get(
+                    "name",
+                    "",
+                ),
+            ),
+            "expected_repositories": expected_repositories,
+            "actual_repositories": actual_repositories,
+            "actual_repository_ids": sorted(
+                actual_repository_ids
+            ),
+            "missing_repository_ids": missing_repository_ids,
         }
 
-        print(json.dumps(result))
+        print(
+            json.dumps(
+                result,
+                sort_keys=True,
+            )
+        )
 
-        if missing_ids:
+        if missing_repository_ids:
             sys.exit(2)
   environment:
     CONTENT_VIEW_JSON: "{{ item.stdout }}"
     EXPECTED_REPOSITORIES: >-
       {{
         satellite_content_bootstrap_resolved_repositories
-        | selectattr('content_view', 'equalto', item.item.content_view)
+        | selectattr(
+            'content_view',
+            'equalto',
+            item.item.content_view
+          )
         | list
         | to_json
       }}
@@ -208,7 +372,7 @@
   changed_when: false
   failed_when: false
 
-- name: PHASE 7 | Assert BaseOS and AppStream content-view membership
+- name: PHASE 7D | Assert BaseOS and AppStream content-view membership
   ansible.builtin.assert:
     that:
       - item.rc == 0
@@ -218,10 +382,40 @@
 
       Validation result:
 
-      {{ item.stdout | default(item.stderr, true) | trim }}
+      {{
+        item.stdout
+        | default(
+            item.stderr,
+            true
+          )
+        | trim
+      }}
     success_msg: >-
       Content view {{ item.item.item.content_view }} contains all required
       BaseOS and AppStream repositories.
-  loop: "{{ satellite_content_bootstrap_cv_membership_validation.results | default([]) }}"
+  loop: >-
+    {{
+      satellite_content_bootstrap_cv_membership_validation.results
+      | default([])
+    }}
+  loop_control:
+    label: "{{ item.item.item.content_view }}"
+
+###############################################################################
+# PHASE 7E | Display content-view repository summary
+###############################################################################
+
+- name: PHASE 7E | Display content-view repository membership summary
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        item.stdout
+        | from_json
+      }}
+  loop: >-
+    {{
+      satellite_content_bootstrap_cv_membership_validation.results
+      | default([])
+    }}
   loop_control:
     label: "{{ item.item.item.content_view }}"
