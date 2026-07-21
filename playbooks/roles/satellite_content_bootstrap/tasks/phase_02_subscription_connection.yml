@@ -1,0 +1,368 @@
+---
+###############################################################################
+# PHASE 2 | Configure connection and validate subscription allocations
+###############################################################################
+
+- name: PHASE 2A | Read subscription connection setting
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - settings
+      - info
+      - --name
+      - subscription_connection_enabled
+  register: satellite_content_bootstrap_connection_setting
+  changed_when: false
+  failed_when: satellite_content_bootstrap_connection_setting.rc != 0
+  when: satellite_enable_subscription_connection | default(true) | bool
+
+- name: PHASE 2A | Parse subscription connection setting
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_connection_enabled: >-
+      {{
+        (
+          satellite_content_bootstrap_connection_setting.stdout
+          | default('{}', true)
+          | from_json
+        ).get('Value', false)
+        | string
+        | lower
+        in ['true', 'yes', '1']
+      }}
+  when:
+    - satellite_enable_subscription_connection | default(true) | bool
+    - satellite_content_bootstrap_connection_setting is defined
+    - not (satellite_content_bootstrap_connection_setting.skipped | default(false) | bool)
+    - satellite_content_bootstrap_connection_setting.rc | default(1) | int == 0
+    - satellite_content_bootstrap_connection_setting.stdout | default('') | trim | length > 0
+
+- name: PHASE 2A | Set connection status when management is disabled
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_connection_enabled: false
+  when: not (satellite_enable_subscription_connection | default(true) | bool)
+
+- name: PHASE 2A | Enable subscription connection
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - settings
+      - set
+      - --name
+      - subscription_connection_enabled
+      - --value
+      - "true"
+  register: satellite_content_bootstrap_enable_connection
+  changed_when: satellite_content_bootstrap_enable_connection.rc == 0
+  failed_when: satellite_content_bootstrap_enable_connection.rc != 0
+  when:
+    - satellite_enable_subscription_connection | default(true) | bool
+    - not (satellite_content_bootstrap_connection_enabled | default(false) | bool)
+
+- name: PHASE 2A | Read subscription connection setting after update
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - settings
+      - info
+      - --name
+      - subscription_connection_enabled
+  register: satellite_content_bootstrap_connection_setting_validation
+  changed_when: false
+  failed_when: satellite_content_bootstrap_connection_setting_validation.rc != 0
+  when: satellite_enable_subscription_connection | default(true) | bool
+
+- name: PHASE 2A | Parse validated subscription connection setting
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_connection_enabled: >-
+      {{
+        (
+          satellite_content_bootstrap_connection_setting_validation.stdout
+          | default('{}', true)
+          | from_json
+        ).get('Value', false)
+        | string
+        | lower
+        in ['true', 'yes', '1']
+      }}
+  when:
+    - satellite_enable_subscription_connection | default(true) | bool
+    - satellite_content_bootstrap_connection_setting_validation is defined
+    - satellite_content_bootstrap_connection_setting_validation.rc | default(1) | int == 0
+    - satellite_content_bootstrap_connection_setting_validation.stdout | default('') | trim | length > 0
+
+- name: PHASE 2A | Verify subscription connection is enabled
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_connection_enabled | bool
+    fail_msg: >-
+      Satellite subscription connection could not be enabled. Verify the
+      subscription_connection_enabled setting and review the Hammer output.
+  when: satellite_enable_subscription_connection | default(true) | bool
+
+- name: PHASE 2B | Read subscription manifest history
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - subscription
+      - manifest-history
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  register: satellite_content_bootstrap_manifest_history
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 2B | Verify manifest history command succeeded
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_manifest_history.rc == 0
+      - satellite_content_bootstrap_manifest_history.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      Unable to read subscription manifest history for
+      {{ satellite_organization_name }}.
+
+      Hammer output:
+
+      {{
+        satellite_content_bootstrap_manifest_history.stderr
+        | default(satellite_content_bootstrap_manifest_history.stdout, true)
+        | trim
+      }}
+
+- name: PHASE 2B | Parse subscription manifest history
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_manifest_history_data: >-
+      {{ satellite_content_bootstrap_manifest_history.stdout | from_json }}
+
+- name: PHASE 2B | Verify subscription manifest is imported
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_manifest_history_data | length > 0
+    fail_msg: >-
+      No subscription manifest history was found for organization
+      {{ satellite_organization_name }}. Import the connected Satellite
+      manifest before running this role.
+
+- name: PHASE 2C | Refresh subscription manifest
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - subscription
+      - refresh-manifest
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  register: satellite_content_bootstrap_manifest_refresh
+  changed_when: satellite_content_bootstrap_manifest_refresh.rc == 0
+  failed_when: satellite_content_bootstrap_manifest_refresh.rc != 0
+  retries: "{{ satellite_subscription_manifest_refresh_retries | default(3) | int }}"
+  delay: "{{ satellite_subscription_manifest_refresh_delay | default(30) | int }}"
+  until: satellite_content_bootstrap_manifest_refresh.rc == 0
+  when: satellite_refresh_subscription_manifest | default(true) | bool
+
+- name: PHASE 2D | Read allocated subscriptions
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - subscription
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --per-page
+      - "1000"
+  register: satellite_content_bootstrap_subscriptions
+  changed_when: false
+  failed_when: satellite_content_bootstrap_subscriptions.rc != 0
+
+- name: PHASE 2D | Verify allocated subscription output
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_subscriptions.rc == 0
+      - satellite_content_bootstrap_subscriptions.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      Unable to read allocated subscriptions for
+      {{ satellite_organization_name }}.
+
+      Hammer output:
+
+      {{
+        satellite_content_bootstrap_subscriptions.stderr
+        | default(satellite_content_bootstrap_subscriptions.stdout, true)
+        | trim
+      }}
+
+- name: PHASE 2D | Parse allocated subscriptions
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_subscription_data: >-
+      {{ satellite_content_bootstrap_subscriptions.stdout | from_json }}
+
+- name: PHASE 2D | Assert manifest contains subscriptions
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_subscription_data | length > 0
+    fail_msg: >-
+      No allocated subscriptions were found for {{ satellite_organization_name }}.
+      In Satellite, navigate to Content > Subscriptions > Add Subscriptions,
+      allocate the required subscriptions, and rerun this role.
+
+- name: PHASE 2E | Normalize subscription allocation records
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import os
+
+        subscriptions = json.loads(os.environ["SUBSCRIPTIONS_JSON"])
+        normalized = []
+
+        def first_value(record, keys, default=None):
+            for key in keys:
+                value = record.get(key)
+                if value not in (None, ""):
+                    return value
+            return default
+
+        for subscription in subscriptions:
+            name = str(first_value(subscription, ["Name", "Subscription Name", "name"], "")).strip()
+            quantity_raw = first_value(
+                subscription,
+                [
+                    "Quantity",
+                    "Quantity Used",
+                    "Quantity Attached",
+                    "Entitlement Quantity",
+                    "Consumed",
+                    "Consumed Quantity",
+                    "quantity",
+                ],
+                0,
+            )
+            quantity_text = str(quantity_raw).strip().lower()
+            unlimited = quantity_text == "unlimited" or quantity_text.startswith("unlimited ")
+
+            if unlimited:
+                quantity = 2147483647
+            else:
+                numeric_characters = "".join(
+                    character
+                    for character in quantity_text
+                    if character.isdigit() or character == "-"
+                )
+                try:
+                    quantity = int(numeric_characters or "0")
+                except ValueError:
+                    quantity = 0
+
+            normalized.append(
+                {
+                    "name": name,
+                    "quantity": quantity,
+                    "unlimited": unlimited,
+                    "raw": subscription,
+                }
+            )
+
+        print(json.dumps(normalized))
+  environment:
+    SUBSCRIPTIONS_JSON: "{{ satellite_content_bootstrap_subscription_data | to_json }}"
+  register: satellite_content_bootstrap_normalized_subscriptions_command
+  changed_when: false
+  failed_when: >-
+    satellite_content_bootstrap_normalized_subscriptions_command.rc != 0
+    or
+    (satellite_content_bootstrap_normalized_subscriptions_command.stdout | default('') | trim | length) == 0
+
+- name: PHASE 2E | Store normalized subscription allocation records
+  ansible.builtin.set_fact:
+    satellite_content_bootstrap_normalized_subscriptions: >-
+      {{ satellite_content_bootstrap_normalized_subscriptions_command.stdout | from_json }}
+
+- name: PHASE 2E | Display normalized subscription records
+  ansible.builtin.debug:
+    msg:
+      subscription: "{{ item.name }}"
+      quantity: "{{ 'Unlimited' if item.unlimited | bool else item.quantity }}"
+  loop: "{{ satellite_content_bootstrap_normalized_subscriptions }}"
+  loop_control:
+    label: "{{ item.name | default('Unnamed subscription') }}"
+
+- name: PHASE 2F | Validate required subscription allocations
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import os
+        import sys
+
+        subscriptions = json.loads(os.environ["SUBSCRIPTIONS_JSON"])
+        required_name = os.environ["REQUIRED_NAME"].strip()
+        required_quantity = int(os.environ.get("REQUIRED_QUANTITY", "1"))
+
+        matches = [
+            subscription
+            for subscription in subscriptions
+            if subscription.get("name", "").strip() == required_name
+        ]
+
+        if not matches:
+            print(f"MISSING:{required_name}")
+            sys.exit(2)
+
+        if any(bool(subscription.get("unlimited", False)) for subscription in matches):
+            print(f"VALID:{required_name}:Unlimited")
+            sys.exit(0)
+
+        allocated_quantity = sum(int(subscription.get("quantity", 0)) for subscription in matches)
+
+        if allocated_quantity < required_quantity:
+            print(
+                f"INSUFFICIENT:{required_name}:"
+                f"allocated={allocated_quantity}:"
+                f"required={required_quantity}"
+            )
+            sys.exit(3)
+
+        print(f"VALID:{required_name}:{allocated_quantity}")
+  environment:
+    SUBSCRIPTIONS_JSON: "{{ satellite_content_bootstrap_normalized_subscriptions | to_json }}"
+    REQUIRED_NAME: "{{ item.name }}"
+    REQUIRED_QUANTITY: "{{ item.minimum_quantity | default(1) | int | string }}"
+  loop: "{{ satellite_required_subscription_allocations | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: satellite_content_bootstrap_subscription_allocation_validation
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 2F | Assert required subscription allocations are present
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      Required subscription allocation is missing or insufficient.
+
+      Subscription: {{ item.item.name }}
+      Minimum allocation: {{ item.item.minimum_quantity | default(1) }}
+      Validation result: {{ item.stdout | default(item.stderr, true) | trim }}
+    success_msg: "{{ item.stdout | trim }}"
+  loop: "{{ satellite_content_bootstrap_subscription_allocation_validation.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: PHASE 2F | Display subscription validation summary
+  ansible.builtin.debug:
+    msg:
+      - "Subscription connection enabled: {{ satellite_content_bootstrap_connection_enabled | default(false) }}"
+      - "Manifest refresh enabled: {{ satellite_refresh_subscription_manifest | default(true) }}"
+      - "Allocated subscription records: {{ satellite_content_bootstrap_normalized_subscriptions | length }}"
+      - "Required subscription validations completed successfully."

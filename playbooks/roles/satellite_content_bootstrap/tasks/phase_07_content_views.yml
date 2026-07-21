@@ -1,0 +1,227 @@
+---
+###############################################################################
+# PHASE 7 | Content views and repository membership
+###############################################################################
+
+- name: PHASE 7 | Check for content views
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - content-view
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ item.content_view }}"'
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_content_view_lookups
+  changed_when: false
+
+- name: PHASE 7 | Create missing content views
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-view
+      - create
+      - --name
+      - "{{ item.item.content_view }}"
+      - --label
+      - "{{ item.item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --description
+      - "RHEL {{ item.item.major }} BaseOS and AppStream"
+  loop: "{{ satellite_content_bootstrap_content_view_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.content_view }}"
+  register: satellite_content_bootstrap_content_view_create_results
+  changed_when: satellite_content_bootstrap_content_view_create_results.rc == 0
+  when: (item.stdout | from_json | length) == 0
+
+- name: PHASE 7 | Add required repositories to content views
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      organization_label={{ satellite_organization_label | quote }}
+      content_view_name={{ item.content_view | quote }}
+      repository_id={{ item.repository_id | quote }}
+      expected_content_label={{ item.content_label | quote }}
+
+      content_view_json="$(
+        hammer --output json content-view info \
+          --name "${content_view_name}" \
+          --organization-label "${organization_label}"
+      )"
+
+      repository_present="$(
+        CONTENT_VIEW_JSON="${content_view_json}" \
+        REPOSITORY_ID="${repository_id}" \
+        python3 <<'PYTHON'
+      import json
+      import os
+
+      content_view = json.loads(os.environ["CONTENT_VIEW_JSON"])
+      expected_repository_id = str(os.environ["REPOSITORY_ID"]).strip()
+
+      repositories = content_view.get(
+          "Yum Repositories",
+          content_view.get("yum_repositories", []),
+      )
+
+      present = any(
+          isinstance(repository, dict)
+          and str(
+              repository.get(
+                  "Id",
+                  repository.get("ID", repository.get("id", "")),
+              )
+          ).strip() == expected_repository_id
+          for repository in repositories
+      )
+
+      print("true" if present else "false")
+      PYTHON
+      )"
+
+      if [[ "${repository_present}" == "true" ]]; then
+        echo "ALREADY_PRESENT:${content_view_name}:${repository_id}:${expected_content_label}"
+        exit 0
+      fi
+
+      set +e
+      add_output="$(
+        hammer content-view add-repository \
+          --name "${content_view_name}" \
+          --organization-label "${organization_label}" \
+          --repository-id "${repository_id}" 2>&1
+      )"
+      add_rc=$?
+      set -e
+
+      if [[ ${add_rc} -eq 0 ]]; then
+        printf '%s\n' "${add_output}"
+        echo "ADDED:${content_view_name}:${repository_id}:${expected_content_label}"
+        exit 0
+      fi
+
+      if grep -qiE \
+        'already[[:space:]]+(associated|exists|present)|409[[:space:]]+Conflict' \
+        <<< "${add_output}"; then
+        printf '%s\n' "${add_output}" >&2
+        echo "ALREADY_PRESENT:${content_view_name}:${repository_id}:${expected_content_label}"
+        exit 0
+      fi
+
+      printf '%s\n' "${add_output}" >&2
+      exit "${add_rc}"
+    executable: /bin/bash
+  loop: "{{ satellite_content_bootstrap_resolved_repositories }}"
+  loop_control:
+    label: "{{ item.content_view }} <- {{ item.content_label }}"
+  register: satellite_content_bootstrap_cv_repository_results
+  changed_when: "'ADDED:' in satellite_content_bootstrap_cv_repository_results.stdout"
+  failed_when: satellite_content_bootstrap_cv_repository_results.rc != 0
+
+- name: PHASE 7 | Read final content-view definitions
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - content-view
+      - info
+      - --name
+      - "{{ item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_final_content_view_info
+  changed_when: false
+
+- name: PHASE 7 | Validate BaseOS and AppStream membership
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json
+        import os
+        import sys
+
+        content_view = json.loads(os.environ["CONTENT_VIEW_JSON"])
+        expected = json.loads(os.environ["EXPECTED_REPOSITORIES"])
+
+        repositories = content_view.get(
+            "Yum Repositories",
+            content_view.get("yum_repositories", []),
+        )
+
+        actual_ids = {
+            str(
+                repository.get(
+                    "Id",
+                    repository.get("ID", repository.get("id", "")),
+                )
+            ).strip()
+            for repository in repositories
+            if isinstance(repository, dict)
+        }
+
+        expected_ids = {
+            str(repository["repository_id"]).strip()
+            for repository in expected
+        }
+
+        missing_ids = sorted(expected_ids - actual_ids)
+
+        result = {
+            "content_view": content_view.get("Name", content_view.get("name", "")),
+            "expected_repositories": expected,
+            "actual_repository_ids": sorted(actual_ids),
+            "missing_repository_ids": missing_ids,
+        }
+
+        print(json.dumps(result))
+
+        if missing_ids:
+            sys.exit(2)
+  environment:
+    CONTENT_VIEW_JSON: "{{ item.stdout }}"
+    EXPECTED_REPOSITORIES: >-
+      {{
+        satellite_content_bootstrap_resolved_repositories
+        | selectattr('content_view', 'equalto', item.item.content_view)
+        | list
+        | to_json
+      }}
+  loop: "{{ satellite_content_bootstrap_final_content_view_info.results }}"
+  loop_control:
+    label: "{{ item.item.content_view }}"
+  register: satellite_content_bootstrap_cv_membership_validation
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 7 | Assert BaseOS and AppStream content-view membership
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      Content view {{ item.item.item.content_view }} is missing one or more
+      required repositories.
+
+      Validation result:
+
+      {{ item.stdout | default(item.stderr, true) | trim }}
+    success_msg: >-
+      Content view {{ item.item.item.content_view }} contains all required
+      BaseOS and AppStream repositories.
+  loop: "{{ satellite_content_bootstrap_cv_membership_validation.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item.content_view }}"

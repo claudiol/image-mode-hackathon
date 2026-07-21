@@ -1,0 +1,45 @@
+---
+###############################################################################
+# PHASE 1 | Validate Satellite and organization
+###############################################################################
+
+- name: PHASE 1 | Verify Hammer CLI is installed
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --version
+  register: satellite_content_bootstrap_hammer_version
+  changed_when: false
+
+- name: PHASE 1 | Verify Satellite services
+  ansible.builtin.command:
+    argv:
+      - satellite-maintain
+      - service
+      - status
+  register: satellite_content_bootstrap_service_status
+  changed_when: false
+  failed_when: satellite_content_bootstrap_service_status.rc != 0
+
+- name: PHASE 1 | Read organization
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - organization
+      - info
+      - --label
+      - "{{ satellite_organization_label }}"
+  register: satellite_content_bootstrap_organization_info
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 1 | Verify organization
+  ansible.builtin.assert:
+    that:
+      - satellite_content_bootstrap_organization_info.rc == 0
+      - satellite_organization_label in satellite_content_bootstrap_organization_info.stdout
+    fail_msg: >-
+      Satellite organization {{ satellite_organization_label }} was not found.
+      Create the organization before running this role.
