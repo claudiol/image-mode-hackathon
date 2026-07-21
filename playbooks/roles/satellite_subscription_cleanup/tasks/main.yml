@@ -264,10 +264,13 @@
     that:
       - satellite_cleanup_final_config.rc | default(1) == 0
       - >-
-        satellite_cleanup_final_config.stdout
-        is regex_search(
-          '(?m)^\s*manage_repos\s*=\s*\[?1\]?\s*$'
+        (
+          satellite_cleanup_final_config.stdout
+          | regex_search(
+              '(?m)^\\s*manage_repos\\s*=\\s*\\[?1\\]?\\s*$'
+            )
         )
+        is not none
     success_msg: >-
       subscription-manager repository management is enabled on
       {{ inventory_hostname }}.
