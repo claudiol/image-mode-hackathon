@@ -134,15 +134,39 @@
   when:
     - not satellite_activation_already_correct
 
-- name: PHASE 2 | Install current Katello consumer CA package
+- name: PHASE 2 | Build Katello consumer package URL
+  ansible.builtin.set_fact:
+    satellite_activation_resolved_consumer_rpm_url: >-
+      {{
+        satellite_activation_scheme
+        ~ '://'
+        ~ satellite_activation_resolved_server_fqdn
+        ~ ':'
+        ~ (satellite_activation_port | string)
+        ~ '/pub/katello-ca-consumer-latest.noarch.rpm'
+      }}
+
+- name: PHASE 2 | Display resolved Katello consumer package URL
+  ansible.builtin.debug:
+    msg: >-
+      Downloading Katello consumer package from
+      {{ satellite_activation_resolved_consumer_rpm_url }}
+  when:
+    - satellite_activation_display_status | default(true) | bool
+
+- name: PHASE 2 | Download current Katello consumer CA package
   ansible.builtin.command:
     argv:
-      - rpm
-      - -Uvh
-      - --replacepkgs
+      - curl
+      - --fail
+      - --location
+      - --silent
+      - --show-error
+      - --output
       - "{{ satellite_activation_consumer_rpm_path }}"
-  register: satellite_activation_consumer_install
-  changed_when: satellite_activation_consumer_install.rc == 0
+      - "{{ satellite_activation_resolved_consumer_rpm_url }}"
+  register: satellite_activation_consumer_download
+  changed_when: satellite_activation_consumer_download.rc == 0
   when:
     - not satellite_activation_already_correct
 
