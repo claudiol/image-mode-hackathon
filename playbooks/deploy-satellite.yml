@@ -179,5 +179,5 @@
       when: satellite_manage_public_tls | bool
 
   roles:
-    - role: deploy_satellite
+    # - role: deploy_satellite
     - role: satellite_content_bootstrap
