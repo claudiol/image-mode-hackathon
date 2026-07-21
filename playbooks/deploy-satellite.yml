@@ -180,3 +180,4 @@
 
   roles:
     - role: deploy_satellite
+    - role: satellite_content_bootstrap
