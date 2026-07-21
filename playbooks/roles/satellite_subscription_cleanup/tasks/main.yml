@@ -3,10 +3,6 @@
 # Tasks for satellite_subscription_cleanup
 ###############################################################################
 
-###############################################################################
-# PHASE 0 | Validate host
-###############################################################################
-
 - name: PHASE 0 | Verify supported operating system family
   ansible.builtin.assert:
     that:
@@ -16,16 +12,9 @@
       operating systems only. Host {{ inventory_hostname }} reports
       {{ ansible_facts.os_family | default('unknown') }}.
 
-###############################################################################
-# PHASE 1 | Inspect subscription-manager state
-###############################################################################
-
 - name: PHASE 1 | Check whether subscription-manager is installed
   ansible.builtin.command:
-    argv:
-      - rpm
-      - -q
-      - subscription-manager
+    argv: [rpm, -q, subscription-manager]
   register: satellite_cleanup_subscription_manager_package
   changed_when: false
   failed_when: false
@@ -36,16 +25,12 @@
       - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
     fail_msg: >-
       subscription-manager is not installed on {{ inventory_hostname }}.
-      Install it before running this role or set
-      satellite_cleanup_require_subscription_manager=false.
   when:
-    - satellite_cleanup_require_subscription_manager | default(true) | bool
+    - satellite_cleanup_require_subscription_manager | bool
 
 - name: PHASE 1 | Read current subscription identity
   ansible.builtin.command:
-    argv:
-      - subscription-manager
-      - identity
+    argv: [subscription-manager, identity]
   register: satellite_cleanup_existing_identity
   changed_when: false
   failed_when: false
@@ -59,154 +44,114 @@
         satellite_cleanup_existing_identity.stdout
         | default(
             satellite_cleanup_existing_identity.stderr
-            | default('subscription-manager is not installed or was not checked.'),
+            | default('No identity was found.'),
             true
           )
         | trim
       }}
   when:
-    - satellite_cleanup_display_status | default(true) | bool
-
-###############################################################################
-# PHASE 2 | Remove existing registration
-###############################################################################
+    - satellite_cleanup_display_status | bool
 
 - name: PHASE 2 | Unregister current consumer
   ansible.builtin.command:
-    argv:
-      - subscription-manager
-      - unregister
+    argv: [subscription-manager, unregister]
   register: satellite_cleanup_unregister
-  changed_when:
-    - satellite_cleanup_unregister.rc | default(1) == 0
+  changed_when: satellite_cleanup_unregister.rc | default(1) == 0
   failed_when: >-
-    not (
-      satellite_cleanup_ignore_unregister_errors
-      | default(true)
-      | bool
-    )
-    and
-    (
-      satellite_cleanup_unregister.rc
-      | default(1)
-    ) != 0
+    not (satellite_cleanup_ignore_unregister_errors | bool)
+    and satellite_cleanup_unregister.rc | default(1) != 0
   when:
-    - satellite_cleanup_unregister_existing_consumer | default(true) | bool
+    - satellite_cleanup_unregister_existing_consumer | bool
     - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
     - satellite_cleanup_existing_identity is defined
-    - not (satellite_cleanup_existing_identity.skipped | default(false) | bool)
     - satellite_cleanup_existing_identity.rc | default(1) == 0
-
-- name: PHASE 2 | Report unregister result
-  ansible.builtin.debug:
-    msg: >-
-      subscription-manager unregister returned rc={{
-        satellite_cleanup_unregister.rc | default('unknown')
-      }}.
-      {{
-        satellite_cleanup_unregister.stdout
-        | default(
-            satellite_cleanup_unregister.stderr
-            | default('No unregister output was returned.'),
-            true
-          )
-        | trim
-      }}
-  when:
-    - satellite_cleanup_display_status | default(true) | bool
-    - satellite_cleanup_unregister is defined
-    - not (satellite_cleanup_unregister.skipped | default(false) | bool)
-
-- name: PHASE 2 | Report unregister was not required
-  ansible.builtin.debug:
-    msg: >-
-      No active RHSM consumer identity was found on {{ inventory_hostname }}.
-      The unregister command was not required.
-  when:
-    - satellite_cleanup_display_status | default(true) | bool
-    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
-    - satellite_cleanup_existing_identity is defined
-    - satellite_cleanup_existing_identity.rc | default(1) != 0
-
-###############################################################################
-# PHASE 3 | Clean RHSM
-###############################################################################
 
 - name: PHASE 3 | Clean subscription-manager local data
   ansible.builtin.command:
-    argv:
-      - subscription-manager
-      - clean
+    argv: [subscription-manager, clean]
   register: satellite_cleanup_clean
   changed_when: >-
-    (
-      satellite_cleanup_clean.rc
-      | default(1)
-    ) == 0
+    satellite_cleanup_clean.rc | default(1) == 0
     and
-    (
-      'local data removed'
-      in (
-        satellite_cleanup_clean.stdout
-        | default('')
-        | lower
-      )
-    )
-  failed_when:
-    - satellite_cleanup_clean.rc | default(1) != 0
+    'local data removed' in
+    (satellite_cleanup_clean.stdout | default('') | lower)
+  failed_when: satellite_cleanup_clean.rc | default(1) != 0
   when:
-    - satellite_cleanup_subscription_manager_data | default(true) | bool
+    - satellite_cleanup_subscription_manager_data | bool
     - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
+
+- name: PHASE 3 | Restore subscription-manager repository management
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - "--rhsm.manage_repos={{ satellite_cleanup_manage_repos_value }}"
+  register: satellite_cleanup_manage_repos
+  changed_when: false
+  when:
+    - satellite_cleanup_restore_manage_repos | bool
+    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
+
+- name: PHASE 3 | Clear any previous release pin
+  ansible.builtin.command:
+    argv: [subscription-manager, release, --unset]
+  register: satellite_cleanup_release_unset
+  changed_when: >-
+    satellite_cleanup_release_unset.rc | default(1) == 0
+    and
+    'release preference has been unset' in
+    (
+      (
+        satellite_cleanup_release_unset.stdout | default('')
+      )
+      ~
+      (
+        satellite_cleanup_release_unset.stderr | default('')
+      )
+    ) | lower
+  failed_when: false
+  when:
+    - satellite_cleanup_unset_release | bool
+    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
+
+- name: PHASE 3 | Remove generated redhat.repo
+  ansible.builtin.file:
+    path: "{{ satellite_cleanup_redhat_repo_path }}"
+    state: absent
+  when:
+    - satellite_cleanup_remove_generated_redhat_repo | bool
 
 - name: PHASE 3 | Remove RHSM certificate directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
-  loop: >-
-    {{
-      satellite_cleanup_rhsm_certificate_directories
-      | default([
-          '/etc/pki/consumer',
-          '/etc/pki/entitlement'
-        ])
-    }}
+  loop: "{{ satellite_cleanup_rhsm_certificate_directories }}"
   when:
-    - satellite_cleanup_remove_rhsm_certificates | default(true) | bool
+    - satellite_cleanup_remove_rhsm_certificates | bool
 
 - name: PHASE 3 | Recreate RHSM certificate directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
-    owner: "{{ satellite_cleanup_rhsm_directory_owner | default('root') }}"
-    group: "{{ satellite_cleanup_rhsm_directory_group | default('root') }}"
-    mode: "{{ satellite_cleanup_rhsm_directory_mode | default('0755') }}"
-  loop: >-
-    {{
-      satellite_cleanup_rhsm_certificate_directories
-      | default([
-          '/etc/pki/consumer',
-          '/etc/pki/entitlement'
-        ])
-    }}
+    owner: "{{ satellite_cleanup_rhsm_directory_owner }}"
+    group: "{{ satellite_cleanup_rhsm_directory_group }}"
+    mode: "{{ satellite_cleanup_rhsm_directory_mode }}"
+  loop: "{{ satellite_cleanup_rhsm_certificate_directories }}"
   when:
-    - satellite_cleanup_remove_rhsm_certificates | default(true) | bool
-    - satellite_cleanup_recreate_rhsm_certificate_directories | default(true) | bool
-
-###############################################################################
-# PHASE 4 | Remove Katello CA packages
-###############################################################################
+    - satellite_cleanup_remove_rhsm_certificates | bool
+    - satellite_cleanup_recreate_rhsm_certificate_directories | bool
 
 - name: PHASE 4 | Query installed Katello consumer CA packages
   ansible.builtin.command:
     argv:
       - rpm
       - -qa
-      - "{{ satellite_cleanup_katello_package_pattern | default('katello-ca-consumer*') }}"
+      - "{{ satellite_cleanup_katello_package_pattern }}"
   register: satellite_cleanup_katello_packages_query
   changed_when: false
   failed_when: false
   when:
-    - satellite_cleanup_remove_katello_ca_packages | default(true) | bool
+    - satellite_cleanup_remove_katello_ca_packages | bool
 
 - name: PHASE 4 | Build Katello package list
   ansible.builtin.set_fact:
@@ -218,55 +163,29 @@
         | reject('equalto', '')
         | list
       }}
-  when:
-    - satellite_cleanup_remove_katello_ca_packages | default(true) | bool
-    - satellite_cleanup_katello_packages_query is defined
-    - not (
-        satellite_cleanup_katello_packages_query.skipped
-        | default(false)
-        | bool
-      )
-
-- name: PHASE 4 | Initialize empty Katello package list
-  ansible.builtin.set_fact:
-    satellite_cleanup_katello_packages: []
-  when:
-    - satellite_cleanup_katello_packages is not defined
 
 - name: PHASE 4 | Remove installed Katello consumer CA packages
   ansible.builtin.dnf:
     name: "{{ satellite_cleanup_katello_packages }}"
     state: absent
-  register: satellite_cleanup_katello_package_removal
+    disable_gpg_check: true
   when:
-    - satellite_cleanup_remove_katello_ca_packages | default(true) | bool
+    - satellite_cleanup_remove_katello_ca_packages | bool
     - satellite_cleanup_katello_packages | length > 0
 
 - name: PHASE 4 | Remove stale Katello RHSM CA files
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
-  loop: >-
-    {{
-      satellite_cleanup_katello_ca_files
-      | default([
-          '/etc/rhsm/ca/katello-default-ca.pem',
-          '/etc/rhsm/ca/katello-server-ca.pem'
-        ])
-    }}
+  loop: "{{ satellite_cleanup_katello_ca_files }}"
   when:
-    - satellite_cleanup_remove_katello_ca_files | default(true) | bool
-
-###############################################################################
-# PHASE 5 | Remove RHUI packages
-###############################################################################
+    - satellite_cleanup_remove_katello_ca_files | bool
 
 - name: PHASE 5 | Find installed AWS RHUI client packages
   ansible.builtin.shell: |
     set -o pipefail
-
     rpm -qa |
-    grep -E '{{ satellite_cleanup_rhui_package_regex | default("^(rh-amazon-rhui-client|rhui-client-config|rhui-.*-client)") }}' ||
+    grep -E '{{ satellite_cleanup_rhui_package_regex }}' ||
     true
   args:
     executable: /bin/bash
@@ -274,7 +193,7 @@
   changed_when: false
   failed_when: false
   when:
-    - satellite_cleanup_remove_rhui_client_packages | default(false) | bool
+    - satellite_cleanup_remove_rhui_client_packages | bool
 
 - name: PHASE 5 | Build RHUI package list
   ansible.builtin.set_fact:
@@ -287,13 +206,7 @@
         | list
       }}
   when:
-    - satellite_cleanup_remove_rhui_client_packages | default(false) | bool
-    - satellite_cleanup_rhui_packages_query is defined
-    - not (
-        satellite_cleanup_rhui_packages_query.skipped
-        | default(false)
-        | bool
-      )
+    - satellite_cleanup_remove_rhui_client_packages | bool
 
 - name: PHASE 5 | Initialize empty RHUI package list
   ansible.builtin.set_fact:
@@ -305,42 +218,42 @@
   ansible.builtin.dnf:
     name: "{{ satellite_cleanup_rhui_packages }}"
     state: absent
-  register: satellite_cleanup_rhui_package_removal
   when:
-    - satellite_cleanup_remove_rhui_client_packages | default(false) | bool
+    - satellite_cleanup_remove_rhui_client_packages | bool
     - satellite_cleanup_rhui_packages | length > 0
-
-###############################################################################
-# PHASE 6 | Refresh package metadata
-###############################################################################
 
 - name: PHASE 6 | Clean DNF metadata
   ansible.builtin.command:
-    argv:
-      - dnf
-      - clean
-      - all
-  register: satellite_cleanup_dnf_clean
+    argv: [dnf, clean, all]
   changed_when: false
-  failed_when:
-    - satellite_cleanup_dnf_clean.rc | default(1) != 0
   when:
-    - satellite_cleanup_clean_dnf_metadata | default(true) | bool
+    - satellite_cleanup_clean_dnf_metadata | bool
 
-###############################################################################
-# PHASE 7 | Verify cleanup
-###############################################################################
+- name: PHASE 6 | Remove cached DNF metadata
+  ansible.builtin.file:
+    path: "{{ satellite_cleanup_dnf_cache_path }}"
+    state: absent
+  when:
+    - satellite_cleanup_remove_dnf_cache | bool
+
+- name: PHASE 6 | Recreate DNF cache directory
+  ansible.builtin.file:
+    path: "{{ satellite_cleanup_dnf_cache_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - satellite_cleanup_remove_dnf_cache | bool
 
 - name: PHASE 7 | Verify registration was removed
   ansible.builtin.command:
-    argv:
-      - subscription-manager
-      - identity
+    argv: [subscription-manager, identity]
   register: satellite_cleanup_final_identity
   changed_when: false
   failed_when: false
   when:
-    - satellite_cleanup_verify_unregistered | default(true) | bool
+    - satellite_cleanup_verify_unregistered | bool
     - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
 
 - name: PHASE 7 | Assert registration was removed
@@ -348,169 +261,54 @@
     that:
       - satellite_cleanup_final_identity.rc | default(1) != 0
     success_msg: >-
-      {{ inventory_hostname }} no longer has an RHSM consumer identity and is
-      ready for registration to the current Satellite server.
+      {{ inventory_hostname }} is unregistered and ready for Satellite.
     fail_msg: >-
-      {{ inventory_hostname }} still reports an RHSM consumer identity after
-      cleanup:
-      {{
-        satellite_cleanup_final_identity.stdout
-        | default(
-            satellite_cleanup_final_identity.stderr
-            | default('No identity output was returned.'),
-            true
-          )
-        | trim
-      }}
+      {{ inventory_hostname }} still reports an RHSM identity:
+      {{ satellite_cleanup_final_identity.stdout | default('') | trim }}
   when:
-    - satellite_cleanup_verify_unregistered | default(true) | bool
-    - satellite_cleanup_fail_if_still_registered | default(true) | bool
+    - satellite_cleanup_verify_unregistered | bool
+    - satellite_cleanup_fail_if_still_registered | bool
     - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
-    - satellite_cleanup_final_identity is defined
-    - not (satellite_cleanup_final_identity.skipped | default(false) | bool)
 
-- name: PHASE 7 | Warn when registration remains and failure is disabled
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: {{ inventory_hostname }} still reports an RHSM consumer
-      identity after cleanup:
-      {{
-        satellite_cleanup_final_identity.stdout
-        | default(
-            satellite_cleanup_final_identity.stderr
-            | default('No identity output was returned.'),
-            true
-          )
-        | trim
-      }}
+- name: PHASE 7 | Read effective manage_repos setting
+  ansible.builtin.command:
+    argv: [subscription-manager, config, --list]
+  register: satellite_cleanup_final_config
+  changed_when: false
   when:
-    - satellite_cleanup_verify_unregistered | default(true) | bool
-    - not (
-        satellite_cleanup_fail_if_still_registered
-        | default(true)
-        | bool
-      )
+    - satellite_cleanup_verify_manage_repos | bool
     - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
-    - satellite_cleanup_final_identity is defined
-    - not (satellite_cleanup_final_identity.skipped | default(false) | bool)
-    - satellite_cleanup_final_identity.rc | default(1) == 0
+
+- name: PHASE 7 | Assert RHSM repository management is enabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        satellite_cleanup_final_config.stdout
+        is search('manage_repos\s*=\s*1')
+    fail_msg: >-
+      subscription-manager repository management is not enabled after cleanup.
+  when:
+    - satellite_cleanup_verify_manage_repos | bool
+    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
 
 - name: PHASE 7 | Display cleanup summary
   ansible.builtin.debug:
     msg:
       host: "{{ inventory_hostname }}"
-
-      subscription_manager_installed: >-
-        {{
-          satellite_cleanup_subscription_manager_package.rc
-          | default(1)
-          == 0
-        }}
-
       previous_registration_found: >-
         {{
           satellite_cleanup_existing_identity is defined
-          and
-          not (
-            satellite_cleanup_existing_identity.skipped
-            | default(false)
-            | bool
-          )
-          and
-          (
-            satellite_cleanup_existing_identity.rc
-            | default(1)
-          ) == 0
+          and satellite_cleanup_existing_identity.rc | default(1) == 0
         }}
-
-      unregister_attempted: >-
-        {{
-          satellite_cleanup_unregister is defined
-          and
-          not (
-            satellite_cleanup_unregister.skipped
-            | default(false)
-            | bool
-          )
-        }}
-
-      unregister_successful: >-
-        {{
-          satellite_cleanup_unregister is defined
-          and
-          not (
-            satellite_cleanup_unregister.skipped
-            | default(false)
-            | bool
-          )
-          and
-          (
-            satellite_cleanup_unregister.rc
-            | default(1)
-          ) == 0
-        }}
-
-      rhsm_data_cleanup_enabled: >-
-        {{
-          satellite_cleanup_subscription_manager_data
-          | default(true)
-          | bool
-        }}
-
-      katello_packages_found: >-
-        {{
-          satellite_cleanup_katello_packages
-          | default([])
-        }}
-
-      katello_package_removal_enabled: >-
-        {{
-          satellite_cleanup_remove_katello_ca_packages
-          | default(true)
-          | bool
-        }}
-
-      rhui_package_removal_enabled: >-
-        {{
-          satellite_cleanup_remove_rhui_client_packages
-          | default(false)
-          | bool
-        }}
-
-      rhui_packages_found: >-
-        {{
-          satellite_cleanup_rhui_packages
-          | default([])
-        }}
-
-      registration_verification_enabled: >-
-        {{
-          satellite_cleanup_verify_unregistered
-          | default(true)
-          | bool
-        }}
-
+      manage_repos_restored: "{{ satellite_cleanup_restore_manage_repos | bool }}"
+      release_pin_cleared: "{{ satellite_cleanup_unset_release | bool }}"
+      redhat_repo_removed: "{{ satellite_cleanup_remove_generated_redhat_repo | bool }}"
+      katello_packages_found: "{{ satellite_cleanup_katello_packages | default([]) }}"
+      rhui_packages_removed: "{{ satellite_cleanup_remove_rhui_client_packages | bool }}"
       ready_for_satellite_registration: >-
         {{
-          (
-            satellite_cleanup_subscription_manager_package.rc
-            | default(1)
-          ) != 0
-          or
-          (
-            satellite_cleanup_final_identity is defined
-            and
-            not (
-              satellite_cleanup_final_identity.skipped
-              | default(false)
-              | bool
-            )
-            and
-            (
-              satellite_cleanup_final_identity.rc
-              | default(1)
-            ) != 0
-          )
+          satellite_cleanup_final_identity is defined
+          and satellite_cleanup_final_identity.rc | default(1) != 0
         }}
   when:
-    - satellite_cleanup_display_status | default(true) | bool
+    - satellite_cleanup_display_status | bool

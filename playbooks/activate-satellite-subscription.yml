@@ -1,0 +1,170 @@
+---
+###############################################################################
+# Clean and register Image Mode lab hosts with Red Hat Satellite
+#
+# Workflow:
+#
+#   1. Remove previous RHSM, Katello, repository, and registration state
+#   2. Install the current Satellite Katello consumer CA
+#   3. Register using the activation key matching the host's RHEL major version
+#   4. Set the matching RHEL minor release
+#   5. Enable and validate Satellite repositories
+#   6. Remove AWS RHUI packages after Satellite content is verified
+#
+# Supported host operating systems:
+#
+#   RHEL 9  -> activation key rhel9  -> release 9.8
+#   RHEL 10 -> activation key rhel10 -> release 10.1
+#
+# Satellite hosts are excluded using:
+#
+#   1. The [satellite] inventory group
+#   2. The host variable role=satellite
+#   3. An inventory hostname beginning with satellite
+#
+# Recommended AAP Job Template limit:
+#
+#   all:!satellite
+#
+# The AAP limit may also be left blank because the playbook includes
+# additional Satellite host safety checks.
+###############################################################################
+
+- name: Clean and register Image Mode hosts with Satellite
+  hosts: "all:!satellite"
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  serial: 1
+
+  pre_tasks:
+    ###########################################################################
+    # SAFETY | Exclude Satellite servers
+    ###########################################################################
+
+    - name: SAFETY | Stop processing hosts identified as Satellite servers
+      ansible.builtin.meta: end_host
+      when:
+        - >-
+          'satellite' in group_names
+          or
+          (
+            role
+            | default('')
+            | string
+            | lower
+          ) == 'satellite'
+          or
+          (
+            inventory_hostname
+            | string
+            | lower
+          ) is match('^satellite([.-]|$)')
+
+    ###########################################################################
+    # VALIDATION | Confirm supported RHEL host
+    ###########################################################################
+
+    - name: VALIDATION | Verify supported Red Hat operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family | default('') == "RedHat"
+          - >-
+            ansible_facts.distribution_major_version
+            | default('')
+            | string
+            in ['9', '10']
+        fail_msg: >-
+          Host {{ inventory_hostname }} must run RHEL 9 or RHEL 10.
+          Detected operating system:
+          {{ ansible_facts.distribution | default('unknown') }}
+          {{ ansible_facts.distribution_version | default('unknown') }}.
+        success_msg: >-
+          Host {{ inventory_hostname }} is running supported operating system
+          {{ ansible_facts.distribution | default('Red Hat') }}
+          {{ ansible_facts.distribution_version | default('unknown') }}.
+
+  roles:
+    ###########################################################################
+    # PHASE 1 | Remove previous RHSM and Satellite registration state
+    ###########################################################################
+
+    - role: satellite_subscription_cleanup
+      tags:
+        - satellite_subscription
+        - satellite_cleanup
+
+    ###########################################################################
+    # PHASE 2 | Register host and activate Satellite content
+    ###########################################################################
+
+    - role: satellite_subscription_activation
+      tags:
+        - satellite_subscription
+        - satellite_activation
+
+  post_tasks:
+    ###########################################################################
+    # FINAL | Report completed Satellite registration
+    ###########################################################################
+
+    - name: FINAL | Read final subscription identity
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - identity
+      register: satellite_subscription_final_identity
+      changed_when: false
+
+    - name: FINAL | Read configured Satellite release
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - release
+          - --show
+      register: satellite_subscription_final_release
+      changed_when: false
+
+    - name: FINAL | Read enabled Satellite repositories
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - repos
+          - --list-enabled
+      register: satellite_subscription_final_repositories
+      changed_when: false
+
+    - name: FINAL | Display Satellite registration summary
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+
+          operating_system: >-
+            {{
+              ansible_facts.distribution
+              | default('Red Hat Enterprise Linux')
+            }}
+            {{
+              ansible_facts.distribution_version
+              | default('unknown')
+            }}
+
+          satellite_registration: >-
+            {{
+              satellite_subscription_final_identity.stdout
+              | default('No identity output returned.')
+              | trim
+            }}
+
+          configured_release: >-
+            {{
+              satellite_subscription_final_release.stdout
+              | default('No release output returned.')
+              | trim
+            }}
+
+          enabled_repositories: >-
+            {{
+              satellite_subscription_final_repositories.stdout_lines
+              | default([])
+            }}
