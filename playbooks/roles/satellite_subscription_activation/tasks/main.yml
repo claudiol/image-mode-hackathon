@@ -304,29 +304,34 @@
   register: satellite_activation_post_katello_config
   changed_when: false
 
+- name: PHASE 2 | Normalize effective RHSM configuration
+  ansible.builtin.set_fact:
+    satellite_activation_normalized_rhsm_config: >-
+      {{
+        satellite_activation_post_katello_config.stdout
+        | regex_replace('\[([^\]]*)\]', '\1')
+      }}
+
 - name: PHASE 2 | Verify Katello configured the intended Satellite server
   ansible.builtin.assert:
     that:
       - >-
-        satellite_activation_resolved_server_fqdn
-        in satellite_activation_post_katello_config.stdout
+        'hostname = ' ~ satellite_activation_resolved_server_fqdn
+        in satellite_activation_normalized_rhsm_config
       - >-
-        satellite_activation_post_katello_config.stdout_lines
-        | map('trim')
-        | select('equalto', 'prefix = [/rhsm]')
-        | list
-        | length > 0
+        'port = ' ~ (satellite_activation_port | string)
+        in satellite_activation_normalized_rhsm_config
       - >-
-        satellite_activation_post_katello_config.stdout_lines
-        | map('trim')
-        | select(
-            'equalto',
-            'port = [' ~
-            (satellite_activation_port | string) ~
-            ']'
-          )
-        | list
-        | length > 0
+        'prefix = /rhsm'
+        in satellite_activation_normalized_rhsm_config
+      - >-
+        'baseurl = https://'
+        ~ satellite_activation_resolved_server_fqdn
+        ~ '/pulp/content/'
+        in satellite_activation_normalized_rhsm_config
+      - >-
+        'repo_ca_cert = /etc/rhsm/ca/katello-server-ca.pem'
+        in satellite_activation_normalized_rhsm_config
     fail_msg: >-
       Installing the Katello consumer package did not configure
       subscription-manager to use the intended Satellite server.
@@ -340,6 +345,7 @@
       Effective RHSM configuration:
 
       {{ satellite_activation_post_katello_config.stdout | trim }}
+
 
 ###############################################################################
 # PHASE 3 | Configure RHSM and register the host
