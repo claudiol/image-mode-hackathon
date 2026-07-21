@@ -246,7 +246,50 @@
   when:
     - satellite_cleanup_remove_dnf_cache | bool
 
-- name: PHASE 7 | Read effective manage_repos setting
+- name: PHASE 7 | Enable RHSM repository management using subscription-manager
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - --rhsm.manage_repos=1
+  register: satellite_cleanup_enable_manage_repos
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 7 | Read RHSM repository management value
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - --list
+  register: satellite_cleanup_manage_repos_check
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 7 | Determine whether RHSM repository management is enabled
+  ansible.builtin.set_fact:
+    satellite_cleanup_manage_repos_enabled: >-
+      {{
+        (
+          satellite_cleanup_manage_repos_check.stdout
+          | default('')
+          | regex_search(
+              '(?m)^\s*manage_repos\s*=\s*\[?1\]?\s*$'
+            )
+        ) is not none
+      }}
+
+- name: PHASE 7 | Force-enable RHSM repository management in rhsm.conf
+  ansible.builtin.ini_file:
+    path: /etc/rhsm/rhsm.conf
+    section: rhsm
+    option: manage_repos
+    value: "1"
+    no_extra_spaces: true
+    backup: true
+  when: not satellite_cleanup_manage_repos_enabled
+
+- name: PHASE 7 | Read final RHSM configuration
   ansible.builtin.command:
     argv:
       - subscription-manager
@@ -254,51 +297,21 @@
       - --list
   register: satellite_cleanup_final_config
   changed_when: false
-  failed_when: false
-  when:
-    - satellite_cleanup_verify_manage_repos | default(true) | bool
-    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
 
 - name: PHASE 7 | Assert RHSM repository management is enabled
   ansible.builtin.assert:
     that:
-      - satellite_cleanup_final_config.rc | default(1) == 0
       - >-
         (
           satellite_cleanup_final_config.stdout
           | regex_search(
-              '(?m)^\\s*manage_repos\\s*=\\s*\\[?1\\]?\\s*$'
+              '(?m)^\s*manage_repos\s*=\s*\[?1\]?\s*$'
             )
-        )
-        is not none
-    success_msg: >-
-      subscription-manager repository management is enabled on
-      {{ inventory_hostname }}.
+        ) is not none
     fail_msg: >-
-      subscription-manager repository management is not enabled on
+      subscription-manager repository management is still disabled on
       {{ inventory_hostname }}.
 
-      Expected:
+      Effective configuration:
 
-        manage_repos = [1]
-
-      Effective subscription-manager configuration:
-
-      {{
-        satellite_cleanup_final_config.stdout
-        | default(
-            satellite_cleanup_final_config.stderr
-            | default('No configuration output was returned.'),
-            true
-          )
-        | trim
-      }}
-  when:
-    - satellite_cleanup_verify_manage_repos | default(true) | bool
-    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
-    - satellite_cleanup_final_config is defined
-    - not (
-        satellite_cleanup_final_config.skipped
-        | default(false)
-        | bool
-      )
+      {{ satellite_cleanup_final_config.stdout }}
