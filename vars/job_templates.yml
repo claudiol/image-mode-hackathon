@@ -13,6 +13,24 @@ controller_templates:
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
 
+  # - name: "Bootstrap Satellite Content"
+  #   description: >-
+  #     Bootstrap connected RHEL content, content views, lifecycle environments,
+  #     and activation keys in Red Hat Satellite.
+  #   organization: "Image Mode Lab"
+  #   project: "Image Mode CI/CD"
+  #   inventory: "Image Mode Lab Infrastructure"
+  #   playbook: "playbooks/configure-satellite-bootstrap-content.yml"
+  #   execution_environment: "Image Mode EE"
+  #   credentials:
+  #     - "Image Mode Machine Credential"
+  #   job_type: "run"
+  #   verbosity: 1
+  #   forks: 1
+  #   timeout: 21600
+  #   allow_simultaneous: false
+  #   survey_enabled: true
+  #   survey_spec: "{{ satellite_content_bootstrap_survey }}"
 
   # - name: Build Image
   #   organization: "Image Mode Lab"

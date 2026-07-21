@@ -17,6 +17,8 @@
     - ../vars/projects.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
+    - ../vars/surveys/satellite_content.yml
+
 
   vars:
     ###########################################################################

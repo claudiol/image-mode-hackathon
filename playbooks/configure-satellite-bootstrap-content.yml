@@ -1,0 +1,13 @@
+---
+- name: Bootstrap Satellite content
+  hosts: "satellite*"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  environment:
+    LANG: C.UTF-8
+    LC_ALL: C.UTF-8
+
+  roles:
+    - role: satellite_content_bootstrap
