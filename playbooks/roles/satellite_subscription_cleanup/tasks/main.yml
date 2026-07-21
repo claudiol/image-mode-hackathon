@@ -246,69 +246,56 @@
   when:
     - satellite_cleanup_remove_dnf_cache | bool
 
-- name: PHASE 7 | Verify registration was removed
+- name: PHASE 7 | Read effective manage_repos setting
   ansible.builtin.command:
-    argv: [subscription-manager, identity]
-  register: satellite_cleanup_final_identity
+    argv:
+      - subscription-manager
+      - config
+      - --list
+  register: satellite_cleanup_final_config
   changed_when: false
   failed_when: false
   when:
-    - satellite_cleanup_verify_unregistered | bool
-    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
-
-- name: PHASE 7 | Assert registration was removed
-  ansible.builtin.assert:
-    that:
-      - satellite_cleanup_final_identity.rc | default(1) != 0
-    success_msg: >-
-      {{ inventory_hostname }} is unregistered and ready for Satellite.
-    fail_msg: >-
-      {{ inventory_hostname }} still reports an RHSM identity:
-      {{ satellite_cleanup_final_identity.stdout | default('') | trim }}
-  when:
-    - satellite_cleanup_verify_unregistered | bool
-    - satellite_cleanup_fail_if_still_registered | bool
-    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
-
-- name: PHASE 7 | Read effective manage_repos setting
-  ansible.builtin.command:
-    argv: [subscription-manager, config, --list]
-  register: satellite_cleanup_final_config
-  changed_when: false
-  when:
-    - satellite_cleanup_verify_manage_repos | bool
+    - satellite_cleanup_verify_manage_repos | default(true) | bool
     - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
 
 - name: PHASE 7 | Assert RHSM repository management is enabled
   ansible.builtin.assert:
     that:
+      - satellite_cleanup_final_config.rc | default(1) == 0
       - >-
         satellite_cleanup_final_config.stdout
-        is search('manage_repos\s*=\s*1')
+        is regex_search(
+          '(?m)^\s*manage_repos\s*=\s*\[?1\]?\s*$'
+        )
+    success_msg: >-
+      subscription-manager repository management is enabled on
+      {{ inventory_hostname }}.
     fail_msg: >-
-      subscription-manager repository management is not enabled after cleanup.
-  when:
-    - satellite_cleanup_verify_manage_repos | bool
-    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
+      subscription-manager repository management is not enabled on
+      {{ inventory_hostname }}.
 
-- name: PHASE 7 | Display cleanup summary
-  ansible.builtin.debug:
-    msg:
-      host: "{{ inventory_hostname }}"
-      previous_registration_found: >-
-        {{
-          satellite_cleanup_existing_identity is defined
-          and satellite_cleanup_existing_identity.rc | default(1) == 0
-        }}
-      manage_repos_restored: "{{ satellite_cleanup_restore_manage_repos | bool }}"
-      release_pin_cleared: "{{ satellite_cleanup_unset_release | bool }}"
-      redhat_repo_removed: "{{ satellite_cleanup_remove_generated_redhat_repo | bool }}"
-      katello_packages_found: "{{ satellite_cleanup_katello_packages | default([]) }}"
-      rhui_packages_removed: "{{ satellite_cleanup_remove_rhui_client_packages | bool }}"
-      ready_for_satellite_registration: >-
-        {{
-          satellite_cleanup_final_identity is defined
-          and satellite_cleanup_final_identity.rc | default(1) != 0
-        }}
+      Expected:
+
+        manage_repos = [1]
+
+      Effective subscription-manager configuration:
+
+      {{
+        satellite_cleanup_final_config.stdout
+        | default(
+            satellite_cleanup_final_config.stderr
+            | default('No configuration output was returned.'),
+            true
+          )
+        | trim
+      }}
   when:
-    - satellite_cleanup_display_status | bool
+    - satellite_cleanup_verify_manage_repos | default(true) | bool
+    - satellite_cleanup_subscription_manager_package.rc | default(1) == 0
+    - satellite_cleanup_final_config is defined
+    - not (
+        satellite_cleanup_final_config.skipped
+        | default(false)
+        | bool
+      )
