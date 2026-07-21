@@ -1,0 +1,89 @@
+---
+###############################################################################
+# PHASE 9 | Activation keys
+###############################################################################
+
+- name: PHASE 9 | Check for activation keys
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - activation-key
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ item.activation_key }}"'
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_lookups
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 9 | Create missing activation keys
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - activation-key
+      - create
+      - --name
+      - "{{ item.item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --lifecycle-environment
+      - "{{ satellite_lifecycle_environment }}"
+      - --content-view
+      - "{{ item.item.content_view }}"
+      - --unlimited-hosts
+  loop: "{{ satellite_content_bootstrap_activation_key_lookups.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_creations
+  changed_when: satellite_content_bootstrap_activation_key_creations.rc == 0
+  when:
+    - satellite_manage_activation_keys | bool
+    - (item.stdout | from_json | length) == 0
+
+- name: PHASE 9 | Ensure activation key assignments
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - activation-key
+      - update
+      - --name
+      - "{{ item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --lifecycle-environment
+      - "{{ satellite_lifecycle_environment }}"
+      - --content-view
+      - "{{ item.content_view }}"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_updates
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 9 | Enable repository overrides on activation keys
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - activation-key
+      - content-override
+      - --name
+      - "{{ item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --content-label
+      - "{{ item.content_label }}"
+      - --value
+      - "1"
+  loop: "{{ satellite_content_bootstrap_resolved_repositories }}"
+  loop_control:
+    label: "{{ item.activation_key }} | {{ item.content_label }}"
+  register: satellite_content_bootstrap_activation_key_overrides
+  changed_when: false
+  when: satellite_manage_activation_keys | bool

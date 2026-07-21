@@ -1,0 +1,42 @@
+---
+###############################################################################
+# PHASE 6 | Lifecycle environment
+###############################################################################
+
+- name: PHASE 6 | Check for lifecycle environment
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - lifecycle-environment
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ satellite_lifecycle_environment }}"'
+  register: satellite_content_bootstrap_lifecycle_environment_lookup
+  changed_when: false
+  when: satellite_manage_lifecycle_environment | bool
+
+- name: PHASE 6 | Create lifecycle environment
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - lifecycle-environment
+      - create
+      - --name
+      - "{{ satellite_lifecycle_environment }}"
+      - --label
+      - "{{ satellite_lifecycle_environment }}"
+      - --prior
+      - "{{ satellite_library_environment }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --description
+      - "Automatically managed lifecycle environment"
+  register: satellite_content_bootstrap_lifecycle_environment_create
+  changed_when: satellite_content_bootstrap_lifecycle_environment_create.rc == 0
+  when:
+    - satellite_manage_lifecycle_environment | bool
+    - (satellite_content_bootstrap_lifecycle_environment_lookup.stdout | from_json | length) == 0

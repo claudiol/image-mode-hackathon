@@ -1,0 +1,142 @@
+---
+###############################################################################
+# PHASE 8 | Publish and promote content views
+###############################################################################
+
+- name: PHASE 8 | Read current content-view versions
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - content-view
+      - version
+      - list
+      - --content-view
+      - "{{ item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --per-page
+      - "1000"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_cv_version_lookups
+  changed_when: false
+
+- name: PHASE 8 | Publish content views when needed
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-view
+      - publish
+      - --name
+      - "{{ item.item.content_view }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --description
+      - "Automated publication for RHEL {{ item.item.releasever }}"
+  loop: "{{ satellite_content_bootstrap_cv_version_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.content_view }}"
+  register: satellite_content_bootstrap_cv_publish_results
+  changed_when: satellite_content_bootstrap_cv_publish_results.rc == 0
+  when: >-
+    satellite_force_publish_content_views | bool
+    or
+    (item.stdout | from_json | length) == 0
+    or
+    (
+      satellite_content_bootstrap_cv_repository_results.results
+      | selectattr('item.content_view', 'equalto', item.item.content_view)
+      | selectattr('changed', 'equalto', true)
+      | list
+      | length
+    ) > 0
+
+- name: PHASE 8 | Resolve latest content-view versions
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+
+      versions_json="$(
+        hammer --output json content-view version list \
+          --content-view {{ item.content_view | quote }} \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --per-page 1000
+      )"
+
+      CONTENT_VIEW_VERSIONS="${versions_json}" \
+      python3 <<'PYTHON'
+      import json
+      import os
+      import sys
+
+      versions = json.loads(os.environ["CONTENT_VIEW_VERSIONS"])
+
+      if not versions:
+          print("No content-view versions found", file=sys.stderr)
+          sys.exit(1)
+
+      def version_parts(value):
+          parts = []
+          for part in str(value).split("."):
+              try:
+                  parts.append(int(part))
+              except ValueError:
+                  parts.append(0)
+          return tuple(parts)
+
+      latest = max(
+          versions,
+          key=lambda record: version_parts(
+              record.get("Version", record.get("version", "0"))
+          ),
+      )
+
+      version = latest.get("Version", latest.get("version"))
+      if version in (None, ""):
+          print("Latest version record has no Version value", file=sys.stderr)
+          sys.exit(2)
+
+      print(version)
+      PYTHON
+    executable: /bin/bash
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.content_view }}"
+  register: satellite_content_bootstrap_latest_cv_versions
+  changed_when: false
+  failed_when: >-
+    satellite_content_bootstrap_latest_cv_versions.rc != 0
+    or
+    (satellite_content_bootstrap_latest_cv_versions.stdout | trim | length) == 0
+
+- name: PHASE 8 | Promote latest content-view versions
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-view
+      - version
+      - promote
+      - --content-view
+      - "{{ item.item.content_view }}"
+      - --version
+      - "{{ item.stdout | trim }}"
+      - --to-lifecycle-environment
+      - "{{ satellite_lifecycle_environment }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  loop: "{{ satellite_content_bootstrap_latest_cv_versions.results }}"
+  loop_control:
+    label: "{{ item.item.content_view }} {{ item.stdout | trim }}"
+  register: satellite_content_bootstrap_cv_promotions
+  changed_when: satellite_content_bootstrap_cv_promotions.rc == 0
+  failed_when: >-
+    satellite_content_bootstrap_cv_promotions.rc != 0
+    and
+    'already exists' not in
+    (satellite_content_bootstrap_cv_promotions.stdout ~ satellite_content_bootstrap_cv_promotions.stderr)
+    and
+    'already promoted' not in
+    (satellite_content_bootstrap_cv_promotions.stdout ~ satellite_content_bootstrap_cv_promotions.stderr)

@@ -1,0 +1,34 @@
+---
+###############################################################################
+# PHASE 3 | Validate repository sets
+###############################################################################
+
+- name: PHASE 3 | Locate required Red Hat repository sets
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - repository-set
+      - list
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+      - --search
+      - 'name="{{ item.1.repository_set_name }}"'
+  loop: "{{ satellite_rhel_repository_definitions | subelements('repositories') }}"
+  loop_control:
+    label: "{{ item.1.repository_set_name }}"
+  register: satellite_content_bootstrap_repository_set_lookups
+  changed_when: false
+
+- name: PHASE 3 | Verify required repository sets are available
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json | length) == 1
+    fail_msg: >-
+      Repository set was not found or was ambiguous:
+      {{ item.item.1.repository_set_name }}. Confirm the imported manifest
+      provides RHEL {{ item.item.0.major }} content.
+  loop: "{{ satellite_content_bootstrap_repository_set_lookups.results }}"
+  loop_control:
+    label: "{{ item.item.1.repository_set_name }}"

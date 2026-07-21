@@ -7,13 +7,8 @@
 # Host targeting and safety
 ###############################################################################
 
-# Satellite servers are skipped by default.
 satellite_cleanup_include_satellite: false
-
-# Inventory group used to identify Satellite servers.
 satellite_cleanup_satellite_group: "satellite"
-
-# Optional host variable used to identify a Satellite server.
 satellite_cleanup_role_variable: "role"
 satellite_cleanup_satellite_role_value: "satellite"
 
@@ -21,32 +16,34 @@ satellite_cleanup_satellite_role_value: "satellite"
 # Subscription-manager cleanup
 ###############################################################################
 
-# Attempt to unregister the current consumer before cleaning local data.
 satellite_cleanup_unregister_existing_consumer: true
-
-# Tolerate unregister failures, including TLS failures to an old Satellite.
 satellite_cleanup_ignore_unregister_errors: true
-
-# Run subscription-manager clean to remove the local consumer identity.
 satellite_cleanup_subscription_manager_data: true
-
-# Verify subscription-manager is installed before running cleanup commands.
 satellite_cleanup_require_subscription_manager: true
+
+# Restore RHSM repository management. A prior image/build process can leave
+# manage_repos=0, which causes "Repositories disabled by configuration."
+satellite_cleanup_restore_manage_repos: true
+satellite_cleanup_manage_repos_value: "1"
+
+# Clear a release pin inherited from an earlier Satellite/content view.
+# The activation role sets the correct release after registration.
+satellite_cleanup_unset_release: true
+
+# Remove redhat.repo after cleanup. It is regenerated after registration.
+satellite_cleanup_remove_generated_redhat_repo: true
+satellite_cleanup_redhat_repo_path: "/etc/yum.repos.d/redhat.repo"
 
 ###############################################################################
 # RHSM certificate cleanup
 ###############################################################################
 
-# Remove local consumer and entitlement certificate directories.
 satellite_cleanup_remove_rhsm_certificates: true
-
 satellite_cleanup_rhsm_certificate_directories:
   - /etc/pki/consumer
   - /etc/pki/entitlement
 
-# Recreate the removed directories after cleanup.
 satellite_cleanup_recreate_rhsm_certificate_directories: true
-
 satellite_cleanup_rhsm_directory_owner: "root"
 satellite_cleanup_rhsm_directory_group: "root"
 satellite_cleanup_rhsm_directory_mode: "0755"
@@ -55,15 +52,9 @@ satellite_cleanup_rhsm_directory_mode: "0755"
 # Katello consumer package cleanup
 ###############################################################################
 
-# Remove stale Katello consumer packages from previous Satellite instances.
 satellite_cleanup_remove_katello_ca_packages: true
-
-# The package suffix contains the Satellite FQDN and changes between lab builds.
 satellite_cleanup_katello_package_pattern: "katello-ca-consumer*"
-
-# Remove stale Katello CA files after removing the package.
 satellite_cleanup_remove_katello_ca_files: true
-
 satellite_cleanup_katello_ca_files:
   - /etc/rhsm/ca/katello-default-ca.pem
   - /etc/rhsm/ca/katello-server-ca.pem
@@ -72,10 +63,8 @@ satellite_cleanup_katello_ca_files:
 # AWS RHUI cleanup
 ###############################################################################
 
-# Keep AWS RHUI packages by default so hosts retain package access until they
-# have been successfully registered with Satellite.
+# Keep RHUI packages until Satellite registration has been verified.
 satellite_cleanup_remove_rhui_client_packages: false
-
 satellite_cleanup_rhui_package_regex: >-
   ^(rh-amazon-rhui-client|rhui-client-config|rhui-.*-client)
 
@@ -83,18 +72,15 @@ satellite_cleanup_rhui_package_regex: >-
 # DNF cleanup
 ###############################################################################
 
-# Clean cached DNF metadata after removing subscription-related packages.
 satellite_cleanup_clean_dnf_metadata: true
+satellite_cleanup_remove_dnf_cache: true
+satellite_cleanup_dnf_cache_path: "/var/cache/dnf"
 
 ###############################################################################
 # Validation and reporting
 ###############################################################################
 
-# Verify that subscription-manager no longer reports a consumer identity.
 satellite_cleanup_verify_unregistered: true
-
-# Fail the host when a consumer identity remains after cleanup.
 satellite_cleanup_fail_if_still_registered: true
-
-# Display current identity, unregister output, and cleanup summary.
+satellite_cleanup_verify_manage_repos: true
 satellite_cleanup_display_status: true
