@@ -1,5 +1,74 @@
 ---
-# Move the corresponding PHASE tasks from the original playbook here.
+
+    ###########################################################################
+    # PHASE 9 | Validate Satellite services
+    ###########################################################################
+
+    - name: PHASE 9 | Wait for Satellite HTTPS service
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --location
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --connect-timeout
+          - "15"
+          - --max-time
+          - "60"
+          - "https://{{ satellite_fqdn }}/users/login"
+      register: satellite_https_health
+      retries: 40
+      delay: 30
+      until: >-
+        satellite_https_health.rc == 0
+        and
+        satellite_https_health.stdout | trim
+        in ['200', '301', '302', '401', '403', '422']
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 9 | Validate Satellite HTTPS service
+      ansible.builtin.assert:
+        that:
+          - satellite_https_health.rc == 0
+          - satellite_https_health.stdout | trim in ['200', '301', '302', '401', '403', '422']
+        fail_msg: >-
+          Satellite HTTPS service did not become available after 40 attempts.
+          URL: https://{{ satellite_fqdn }}/users/login
+          curl return code: {{ satellite_https_health.rc | default('unknown') }}
+          HTTP status: {{ satellite_https_health.stdout | default('') | trim }}
+          curl error: {{ satellite_https_health.stderr | default('') | trim }}
+        success_msg: >-
+          Satellite HTTPS service is available and returned HTTP
+          {{ satellite_https_health.stdout | trim }}.
+          
+    - name: PHASE 9 | Check Satellite service status
+      ansible.builtin.command:
+        argv:
+          - satellite-maintain
+          - service
+          - status
+      register: satellite_service_status
+      changed_when: false
+
+    - name: PHASE 9 | Test Hammer authentication
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - ping
+      register: satellite_hammer_ping
+      changed_when: false
+      no_log: true
+
+
     ###########################################################################
     # PHASE 9B | Configure IdM LDAP authentication
     ###########################################################################
