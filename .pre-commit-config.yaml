@@ -1,0 +1,11 @@
+repos:
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.88.5
+    hooks:
+      - id: trufflehog
+        name: TruffleHog (Local Secret Scan)
+        description: Prevents hardcoded secrets from being committed locally.
+        # Removed the --trust-local-git-config flag for backward compatibility
+        entry: trufflehog git file://. --since-commit HEAD --results=verified --fail
+        language: golang
+        pass_filenames: false
