@@ -115,25 +115,6 @@
       organization or server. Run satellite_subscription_cleanup first, or set
       satellite_activation_force_registration=true.
 
-- name: PHASE 2 | Download current Katello consumer CA package
-  ansible.builtin.command:
-    argv:
-      - curl
-      - --fail
-      - --location
-      - --silent
-      - --show-error
-      - --output
-      - "{{ satellite_activation_consumer_rpm_path }}"
-      - >-
-        {{ satellite_activation_scheme }}://
-        {{ satellite_activation_resolved_server_fqdn }}:
-        {{ satellite_activation_port }}/pub/katello-ca-consumer-latest.noarch.rpm
-  register: satellite_activation_consumer_download
-  changed_when: true
-  when:
-    - not satellite_activation_already_correct
-
 - name: PHASE 2 | Build Katello consumer package URL
   ansible.builtin.set_fact:
     satellite_activation_resolved_consumer_rpm_url: >-
@@ -145,6 +126,15 @@
         ~ (satellite_activation_port | string)
         ~ '/pub/katello-ca-consumer-latest.noarch.rpm'
       }}
+
+- name: PHASE 2 | Validate Katello consumer package URL
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_resolved_consumer_rpm_url | length > 0
+      - "' ' not in satellite_activation_resolved_consumer_rpm_url"
+    fail_msg: >-
+      Invalid Katello consumer package URL:
+      {{ satellite_activation_resolved_consumer_rpm_url }}
 
 - name: PHASE 2 | Display resolved Katello consumer package URL
   ansible.builtin.debug:
