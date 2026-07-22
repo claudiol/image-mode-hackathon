@@ -1672,22 +1672,36 @@ resource "aws_volume_attachment" "extra" {
   instance_id = aws_instance.server[each.key].id
 }
 
+############################################################
+# Elastic IPs For Selected Public Servers
+############################################################
+
 resource "aws_eip" "server" {
-  for_each = aws_instance.server
+  for_each = {
+    for name, instance in aws_instance.server :
+    name => instance
+    if contains(var.public_server_names, name)
+  }
 
   domain = "vpc"
 
   tags = {
     Name        = "${each.value.tags.Name}-eip"
+    ServerName  = each.key
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
+
+  depends_on = [
+    terraform_data.validate_public_servers
+  ]
 }
 
 resource "aws_eip_association" "server" {
-  for_each = aws_instance.server
+  for_each = aws_eip.server
 
-  instance_id   = each.value.id
-  allocation_id = aws_eip.server[each.key].id
+  instance_id   = aws_instance.server[each.key].id
+  allocation_id = each.value.id
 }
 
 ############################################################
