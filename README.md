@@ -244,7 +244,6 @@ Detailed per-service guides live alongside the code:
 | Quay install | `playbooks/README-quay-install.md` |
 | Pre-commit / secret scanning | `README-precommit.md` |
 
-> Two infrastructure stacks are present. **`infrastructure_v2/` is the current, self-bootstrapping stack** and is what these instructions target; `infrastructure/` is an earlier bastion-based layout kept for reference.
 
 ---
 
