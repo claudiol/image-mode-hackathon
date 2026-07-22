@@ -802,18 +802,18 @@ resource "aws_iam_role_policy" "aap_s3_read" {
 resource "aws_iam_role" "satellite" {
   name = "${var.environment_name}-satellite-role"
 
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
+        Sid    = "AllowEC2AssumeRole"
         Effect = "Allow"
+
         Principal = {
           Service = "ec2.amazonaws.com"
         }
+
         Action = "sts:AssumeRole"
       }
     ]
@@ -822,9 +822,19 @@ resource "aws_iam_role" "satellite" {
   tags = {
     Name        = "${var.environment_name}-satellite-role"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
     Purpose     = "Satellite server runtime access"
   }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 }
+
+
+############################################################
+# Satellite EC2 Host Secrets Manager Permissions
+############################################################
 
 resource "aws_iam_role_policy" "satellite_secrets_read" {
   name = "${var.environment_name}-satellite-secrets-read"
@@ -832,19 +842,29 @@ resource "aws_iam_role_policy" "satellite_secrets_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
         Sid    = "ReadLabSecrets"
         Effect = "Allow"
+
         Action = [
           "secretsmanager:DescribeSecret",
           "secretsmanager:GetSecretValue"
         ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/*"
+
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/*"
+        ]
       }
     ]
   })
 }
+
+
+############################################################
+# Satellite EC2 Host S3 Permissions
+############################################################
 
 resource "aws_iam_role_policy" "satellite_s3_read" {
   name = "${var.environment_name}-satellite-s3-read"
@@ -852,13 +872,16 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
         Sid    = "ReadSatelliteArtifacts"
         Effect = "Allow"
+
         Action = [
           "s3:GetObject"
         ]
+
         Resource = distinct([
           "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}",
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
@@ -867,9 +890,11 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
       {
         Sid    = "ReadSatelliteArtifactBucketMetadata"
         Effect = "Allow"
+
         Action = [
           "s3:GetBucketLocation"
         ]
+
         Resource = distinct([
           "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
@@ -878,13 +903,16 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
       {
         Sid    = "ListSatelliteArtifactKeys"
         Effect = "Allow"
+
         Action = [
           "s3:ListBucket"
         ]
+
         Resource = distinct([
           "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
         ])
+
         Condition = {
           StringLike = {
             "s3:prefix" = distinct([
@@ -898,9 +926,26 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
   })
 }
 
+
+############################################################
+# Satellite EC2 Instance Profile
+############################################################
+
 resource "aws_iam_instance_profile" "satellite" {
   name = "${var.environment_name}-satellite-instance-profile"
   role = aws_iam_role.satellite.name
+
+  tags = {
+    Name        = "${var.environment_name}-satellite-instance-profile"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Satellite server runtime instance profile"
+  }
+
+  depends_on = [
+    aws_iam_role_policy.satellite_secrets_read,
+    aws_iam_role_policy.satellite_s3_read
+  ]
 }
 
 
@@ -910,13 +955,24 @@ resource "aws_iam_instance_profile" "satellite" {
 
 resource "aws_iam_user" "satellite_provisioner" {
   name = "${var.environment_name}-satellite-provisioner"
+  path = "/"
 
   tags = {
     Name        = "${var.environment_name}-satellite-provisioner"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
     Purpose     = "Satellite EC2 compute resource provisioning"
   }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 }
+
+
+############################################################
+# Satellite AWS EC2 Provisioning Policy
+############################################################
 
 resource "aws_iam_user_policy" "satellite_provisioner" {
   name = "${var.environment_name}-satellite-ec2-provisioning"
@@ -932,14 +988,18 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
 
         Action = [
           "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
           "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeIamInstanceProfileAssociations",
           "ec2:DescribeImages",
           "ec2:DescribeInstanceAttribute",
           "ec2:DescribeInstances",
           "ec2:DescribeInstanceStatus",
           "ec2:DescribeInstanceTypes",
           "ec2:DescribeKeyPairs",
+          "ec2:DescribeNetworkInterfaces",
           "ec2:DescribeRegions",
+          "ec2:DescribeRouteTables",
           "ec2:DescribeSecurityGroups",
           "ec2:DescribeSnapshots",
           "ec2:DescribeSubnets",
@@ -973,6 +1033,18 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
         Resource = "*"
       },
       {
+        Sid    = "ManageIAMInstanceProfileAssociations"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:AssociateIamInstanceProfile",
+          "ec2:DisassociateIamInstanceProfile",
+          "ec2:ReplaceIamInstanceProfileAssociation"
+        ]
+
+        Resource = "*"
+      },
+      {
         Sid    = "DiscoverIAMInstanceProfiles"
         Effect = "Allow"
 
@@ -994,7 +1066,9 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
           "iam:PassRole"
         ]
 
-        Resource = aws_iam_role.gitlab_runtime.arn
+        Resource = [
+          aws_iam_role.gitlab_runtime.arn
+        ]
 
         Condition = {
           StringEquals = {
@@ -1004,7 +1078,18 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
       }
     ]
   })
+
+  depends_on = [
+    terraform_data.preflight_cleanup,
+    aws_iam_user.satellite_provisioner,
+    aws_iam_instance_profile.gitlab_runtime
+  ]
 }
+
+
+############################################################
+# Satellite AWS EC2 Provisioning Access Key
+############################################################
 
 resource "aws_iam_access_key" "satellite_provisioner" {
   user = aws_iam_user.satellite_provisioner.name
@@ -1014,38 +1099,96 @@ resource "aws_iam_access_key" "satellite_provisioner" {
   ]
 }
 
+
 ############################################################
-# Satellite Compute Resource Credentials
+# Satellite Compute Resource Access Key Secret
 ############################################################
 
 resource "aws_secretsmanager_secret" "satellite_aws_access_key_id" {
-  name                    = "${var.secret_prefix}/satellite/aws_access_key_id"
+  name = (
+    "${var.secret_prefix}/satellite/aws_access_key_id"
+  )
+
+  description = (
+    "AWS access-key ID used by the Satellite EC2 Compute Resource."
+  )
+
   recovery_window_in_days = 0
 
   tags = {
-    Name        = "${var.secret_prefix}/satellite/aws_access_key_id"
+    Name = (
+      "${var.secret_prefix}/satellite/aws_access_key_id"
+    )
+
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Satellite EC2 Compute Resource credential"
   }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 }
 
 resource "aws_secretsmanager_secret_version" "satellite_aws_access_key_id" {
-  secret_id     = aws_secretsmanager_secret.satellite_aws_access_key_id.id
-  secret_string = aws_iam_access_key.satellite_provisioner.id
+  secret_id = (
+    aws_secretsmanager_secret.satellite_aws_access_key_id.id
+  )
+
+  secret_string = (
+    aws_iam_access_key.satellite_provisioner.id
+  )
+
+  depends_on = [
+    aws_iam_access_key.satellite_provisioner,
+    aws_secretsmanager_secret.satellite_aws_access_key_id
+  ]
 }
 
+
+############################################################
+# Satellite Compute Resource Secret Access Key Secret
+############################################################
+
 resource "aws_secretsmanager_secret" "satellite_aws_secret_access_key" {
-  name                    = "${var.secret_prefix}/satellite/aws_secret_access_key"
+  name = (
+    "${var.secret_prefix}/satellite/aws_secret_access_key"
+  )
+
+  description = (
+    "AWS secret access key used by the Satellite EC2 Compute Resource."
+  )
+
   recovery_window_in_days = 0
 
   tags = {
-    Name        = "${var.secret_prefix}/satellite/aws_secret_access_key"
+    Name = (
+      "${var.secret_prefix}/satellite/aws_secret_access_key"
+    )
+
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Satellite EC2 Compute Resource credential"
   }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 }
 
 resource "aws_secretsmanager_secret_version" "satellite_aws_secret_access_key" {
-  secret_id     = aws_secretsmanager_secret.satellite_aws_secret_access_key.id
-  secret_string = aws_iam_access_key.satellite_provisioner.secret
+  secret_id = (
+    aws_secretsmanager_secret.satellite_aws_secret_access_key.id
+  )
+
+  secret_string = (
+    aws_iam_access_key.satellite_provisioner.secret
+  )
+
+  depends_on = [
+    aws_iam_access_key.satellite_provisioner,
+    aws_secretsmanager_secret.satellite_aws_secret_access_key
+  ]
 }
 
 
