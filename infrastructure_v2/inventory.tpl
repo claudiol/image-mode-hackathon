@@ -2,6 +2,7 @@
 ansible_user=ec2-user
 ansible_ssh_private_key_file=${ansible_ssh_private_key_file}
 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_python_interpreter=/usr/bin/python3.9
 
 ###############################################################################
 # AWS environment
@@ -72,7 +73,7 @@ idm_users=${jsonencode(idm_users)}
 [idm]
 %{ for name, s in servers ~}
 %{ if s.role == "idm" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
@@ -83,7 +84,7 @@ ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} 
 [satellite]
 %{ for name, s in servers ~}
 %{ if s.role == "satellite" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
@@ -94,7 +95,7 @@ ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} 
 [aap]
 %{ for name, s in servers ~}
 %{ if s.role == "aap" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
@@ -105,7 +106,7 @@ ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} 
 [quay]
 %{ for name, s in servers ~}
 %{ if s.role == "quay" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} quay_hostname=${s.fqdn} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} quay_hostname=${s.fqdn} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
@@ -116,7 +117,7 @@ ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} 
 [image_builder]
 %{ for name, s in servers ~}
 %{ if s.role == "image-builder" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
 
@@ -127,6 +128,6 @@ ${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} 
 [gitlab]
 %{ for name, s in servers ~}
 %{ if s.role == "gitlab" ~}
-${s.fqdn} ansible_host=${s.public_ip} private_ip=${s.private_ip} role=${s.role} gitlab_hostname=${s.fqdn} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} gitlab_hostname=${s.fqdn} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
 %{ endif ~}
 %{ endfor ~}
