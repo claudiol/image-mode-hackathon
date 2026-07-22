@@ -385,7 +385,7 @@
           - text
       register: gitlab_idm_admin_password_lookup
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: PHASE 2 | Store retrieved credentials
       ansible.builtin.set_fact:
