@@ -42,6 +42,7 @@
       - aap
       - quay
       - image_builder
+      - github
 
     ###########################################################################
     # Obsolete static hosts
