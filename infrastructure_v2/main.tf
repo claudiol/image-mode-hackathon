@@ -1250,19 +1250,72 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
+      #########################################################################
+      # GitLab Secrets Manager access
+      #########################################################################
+
       {
         Sid    = "ReadGitLabSecrets"
         Effect = "Allow"
+
         Action = [
           "secretsmanager:DescribeSecret",
           "secretsmanager:GetSecretValue"
         ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/gitlab/*"
+
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/gitlab/*"
+        ]
       },
+
+      #########################################################################
+      # IdM LDAP bind password
+      #########################################################################
+
+      {
+        Sid    = "ReadIdMLDAPBindPassword"
+        Effect = "Allow"
+
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+
+        Resource = [
+          aws_secretsmanager_secret.generated["idm/admin_password"].arn
+        ]
+      },
+
+      #########################################################################
+      # Export only the ACM certificate generated for GitLab servers
+      #########################################################################
+
+      {
+        Sid    = "DescribeAndExportGitLabCertificates"
+        Effect = "Allow"
+
+        Action = [
+          "acm:DescribeCertificate",
+          "acm:ExportCertificate"
+        ]
+
+        Resource = [
+          for server_name, certificate in aws_acm_certificate.server :
+          certificate.arn
+          if local.flattened_servers[server_name].role == "gitlab"
+        ]
+      },
+
+      #########################################################################
+      # AWS Systems Manager
+      #########################################################################
+
       {
         Sid    = "UseSystemsManager"
         Effect = "Allow"
+
         Action = [
           "ssm:DescribeAssociation",
           "ssm:GetDeployablePatchSnapshotForInstance",
@@ -1280,22 +1333,28 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
           "ssm:UpdateInstanceAssociationStatus",
           "ssm:UpdateInstanceInformation"
         ]
+
         Resource = "*"
       },
+
       {
         Sid    = "UseSSMMessages"
         Effect = "Allow"
+
         Action = [
           "ssmmessages:CreateControlChannel",
           "ssmmessages:CreateDataChannel",
           "ssmmessages:OpenControlChannel",
           "ssmmessages:OpenDataChannel"
         ]
+
         Resource = "*"
       },
+
       {
         Sid    = "UseEC2Messages"
         Effect = "Allow"
+
         Action = [
           "ec2messages:AcknowledgeMessage",
           "ec2messages:DeleteMessage",
@@ -1304,34 +1363,48 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
           "ec2messages:GetMessages",
           "ec2messages:SendReply"
         ]
+
         Resource = "*"
       },
+
+      #########################################################################
+      # CloudWatch
+      #########################################################################
+
       {
         Sid    = "PublishCloudWatchMetrics"
         Effect = "Allow"
+
         Action = [
           "cloudwatch:PutMetricData"
         ]
+
         Resource = "*"
       },
+
       {
         Sid    = "WriteCloudWatchLogs"
         Effect = "Allow"
+
         Action = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:DescribeLogStreams",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/image-mode-lab/gitlab*"
+
+        Resource = [
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/${var.environment_name}/gitlab*",
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/${var.environment_name}/gitlab*:*"
+        ]
       }
     ]
   })
-}
 
-resource "aws_iam_instance_profile" "gitlab_runtime" {
-  name = "${var.environment_name}-gitlab-instance-profile"
-  role = aws_iam_role.gitlab_runtime.name
+  depends_on = [
+    aws_acm_certificate.server,
+    aws_secretsmanager_secret.generated
+  ]
 }
 
 
