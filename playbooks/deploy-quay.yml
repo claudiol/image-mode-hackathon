@@ -2164,7 +2164,7 @@
         label: "{{ item.team }}"
       register: quay_synced_teams
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Show synchronized Quay team validation
       ansible.builtin.debug:
