@@ -169,10 +169,16 @@ output "ansible_inventory" {
         fqdn       = local.flattened_servers[name].hostname
         role       = instance.tags.Role
         private_ip = instance.private_ip
-
-        public_ip = try(
-          aws_eip.server[name].public_ip,
+        public_ip = coalesce(
+          try(aws_eip.server[name].public_ip, null),
+          instance.public_ip,
           ""
+        )
+
+        ansible_host = coalesce(
+          try(aws_eip.server[name].public_ip, null),
+          instance.public_ip,
+          instance.private_ip
         )
 
         acm_certificate_arn = try(
