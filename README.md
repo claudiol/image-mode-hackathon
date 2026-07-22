@@ -1,6 +1,9 @@
 # Image Mode Hackathon
 
-An end-to-end hack-a-thon lab that stands up a complete stack needed for hack-a-thon lab on AWS and wires it into an **Image Mode (bootc) CI/CD pipeline**. Terraform builds the infrastructure and bootstraps it; Ansible deploys and configures the services; Ansible Automation Platform (AAP) runs the build → publish → deploy → validate → rollback workflow for `rhel-bootc` images.
+An end-to-end hack-a-thon lab that stands up a complete stack needed for hack-a-thon lab on AWS and wires it into an **Image Mode (bootc) CI/CD pipeline**. 
+1. Terraform builds the infrastructure and bootstraps it;
+2. Ansible deploys and configures the services;
+3. Ansible Automation Platform (AAP) runs the build → publish → deploy → validate → rollback workflow for `rhel-bootc` images.
 
 ---
 
