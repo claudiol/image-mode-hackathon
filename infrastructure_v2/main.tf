@@ -294,18 +294,26 @@ locals {
 ############################################################
 # Preflight Cleanup For Lab Rebuilds
 ############################################################
-
 resource "terraform_data" "preflight_cleanup" {
   input = {
-    cleanup_version  = 2
+    cleanup_version  = 3
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
     aws_profile      = var.aws_profile
     key_pair_name    = "${var.environment_name}-ssh-key"
-    iam_role_name    = "${var.environment_name}-aap-role"
-    iam_profile_name = "${var.environment_name}-aap-instance-profile"
-    secrets          = local.all_lab_secret_names
+
+    aap_role_name    = "${var.environment_name}-aap-role"
+    aap_profile_name = "${var.environment_name}-aap-instance-profile"
+
+    satellite_role_name    = "${var.environment_name}-satellite-role"
+    satellite_profile_name = "${var.environment_name}-satellite-instance-profile"
+
+    gitlab_role_name    = "${var.environment_name}-gitlab-runtime-role"
+    gitlab_profile_name = "${var.environment_name}-gitlab-instance-profile"
+
+    satellite_provisioner_user_name = "${var.environment_name}-satellite-provisioner"
+    secrets                         = local.all_lab_secret_names
   }
 
   provisioner "local-exec" {
@@ -322,19 +330,79 @@ resource "terraform_data" "preflight_cleanup" {
       fi
 
       KEY_PAIR_NAME="${var.environment_name}-ssh-key"
-      IAM_ROLE_NAME="${var.environment_name}-aap-role"
-      IAM_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
+
+      AAP_ROLE_NAME="${var.environment_name}-aap-role"
+      AAP_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
+
+      SATELLITE_ROLE_NAME="${var.environment_name}-satellite-role"
+      SATELLITE_PROFILE_NAME="${var.environment_name}-satellite-instance-profile"
+
+      GITLAB_ROLE_NAME="${var.environment_name}-gitlab-runtime-role"
+      GITLAB_PROFILE_NAME="${var.environment_name}-gitlab-instance-profile"
+
+      SATELLITE_PROVISIONER_USER_NAME="${var.environment_name}-satellite-provisioner"
+      SATELLITE_PROVISIONER_POLICY_NAME="${var.environment_name}-satellite-ec2-provisioning"
 
       echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
 
       state_has() {
-        terraform state list 2>/dev/null | grep -q "^$1$"
+        terraform state list 2>/dev/null | grep -Fqx "$1"
+      }
+
+      cleanup_instance_profile() {
+        local state_address="$1"
+        local profile_name="$2"
+        local role_name="$3"
+
+        if state_has "$state_address"; then
+          echo "Skipping $profile_name because it is managed by Terraform state."
+          return
+        fi
+
+        aws iam remove-role-from-instance-profile \
+          --instance-profile-name "$profile_name" \
+          --role-name "$role_name" \
+          >/dev/null 2>&1 || true
+
+        aws iam delete-instance-profile \
+          --instance-profile-name "$profile_name" \
+          >/dev/null 2>&1 || true
+      }
+
+      cleanup_inline_role_policy() {
+        local state_address="$1"
+        local role_name="$2"
+        local policy_name="$3"
+
+        if state_has "$state_address"; then
+          echo "Skipping $policy_name because it is managed by Terraform state."
+          return
+        fi
+
+        aws iam delete-role-policy \
+          --role-name "$role_name" \
+          --policy-name "$policy_name" \
+          >/dev/null 2>&1 || true
+      }
+
+      cleanup_role() {
+        local state_address="$1"
+        local role_name="$2"
+
+        if state_has "$state_address"; then
+          echo "Skipping $role_name because it is managed by Terraform state."
+          return
+        fi
+
+        aws iam delete-role \
+          --role-name "$role_name" \
+          >/dev/null 2>&1 || true
       }
 
       echo "Checking EC2 key pair: $KEY_PAIR_NAME"
 
       if state_has 'aws_key_pair.lab'; then
-        echo "Skipping key pair cleanup because aws_key_pair.lab is already managed by Terraform state."
+        echo "Skipping key pair cleanup because aws_key_pair.lab is managed by Terraform state."
       else
         aws ec2 delete-key-pair \
           --key-name "$KEY_PAIR_NAME" \
@@ -343,77 +411,139 @@ resource "terraform_data" "preflight_cleanup" {
 
       echo "Checking Secrets Manager secrets"
 
-      if terraform state list 2>/dev/null | grep -q '^aws_secretsmanager_secret\.'; then
-        echo "Skipping Secrets Manager cleanup because secrets are already managed by Terraform state."
-      else
-        cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
+      cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
 %{ for secret_name in local.all_lab_secret_names ~}
 ${secret_name}
 %{ endfor ~}
 EOF_SECRETS
 
-        while IFS= read -r SECRET_NAME; do
-          [ -n "$SECRET_NAME" ] || continue
+      while IFS= read -r SECRET_NAME; do
+        [ -n "$SECRET_NAME" ] || continue
 
-          echo "Deleting unmanaged secret if it exists: $SECRET_NAME"
-
-          aws secretsmanager delete-secret \
-            --secret-id "$SECRET_NAME" \
-            --force-delete-without-recovery \
-            >/dev/null 2>&1 || true
-
-          for i in $(seq 1 30); do
-            if aws secretsmanager describe-secret \
-              --secret-id "$SECRET_NAME" \
-              >/dev/null 2>&1; then
-              sleep 2
-            else
-              break
+        case "$SECRET_NAME" in
+          "${var.secret_prefix}/satellite/aws_access_key_id")
+            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.satellite_aws_access_key_id'
+            ;;
+          "${var.secret_prefix}/satellite/aws_secret_access_key")
+            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.satellite_aws_secret_access_key'
+            ;;
+          "${local.lab_ssh_private_key_secret_name}")
+            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.ssh_private_key'
+            ;;
+          *)
+            # Generated/static/redhat secrets use for_each addresses. If any of
+            # those collections are already in state, Terraform owns them.
+            if terraform state list 2>/dev/null | grep -Eq '^aws_secretsmanager_secret\.(generated|static|redhat)\['; then
+              continue
             fi
-          done
-        done < /tmp/image-mode-lab-secret-names.txt
+            SECRET_STATE_ADDRESS=''
+            ;;
+        esac
 
-        rm -f /tmp/image-mode-lab-secret-names.txt
-      fi
+        if [ -n "$SECRET_STATE_ADDRESS" ] && state_has "$SECRET_STATE_ADDRESS"; then
+          echo "Skipping managed secret: $SECRET_NAME"
+          continue
+        fi
+
+        echo "Deleting unmanaged secret if it exists: $SECRET_NAME"
+
+        aws secretsmanager delete-secret \
+          --secret-id "$SECRET_NAME" \
+          --force-delete-without-recovery \
+          >/dev/null 2>&1 || true
+
+        for i in $(seq 1 30); do
+          if aws secretsmanager describe-secret \
+            --secret-id "$SECRET_NAME" \
+            >/dev/null 2>&1; then
+            sleep 2
+          else
+            break
+          fi
+        done
+      done < /tmp/image-mode-lab-secret-names.txt
+
+      rm -f /tmp/image-mode-lab-secret-names.txt
 
       echo "Checking AAP IAM resources"
+      cleanup_instance_profile \
+        'aws_iam_instance_profile.aap' \
+        "$AAP_PROFILE_NAME" \
+        "$AAP_ROLE_NAME"
 
-      if state_has 'aws_iam_instance_profile.aap'; then
-        echo "Skipping IAM instance profile cleanup because it is managed by Terraform state."
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.aap_secrets_read' \
+        "$AAP_ROLE_NAME" \
+        "${var.environment_name}-aap-secrets-read"
+
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.aap_s3_read' \
+        "$AAP_ROLE_NAME" \
+        "${var.environment_name}-aap-s3-read"
+
+      cleanup_role \
+        'aws_iam_role.aap' \
+        "$AAP_ROLE_NAME"
+
+      echo "Checking Satellite host IAM resources"
+      cleanup_instance_profile \
+        'aws_iam_instance_profile.satellite' \
+        "$SATELLITE_PROFILE_NAME" \
+        "$SATELLITE_ROLE_NAME"
+
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.satellite_secrets_read' \
+        "$SATELLITE_ROLE_NAME" \
+        "${var.environment_name}-satellite-secrets-read"
+
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.satellite_s3_read' \
+        "$SATELLITE_ROLE_NAME" \
+        "${var.environment_name}-satellite-s3-read"
+
+      cleanup_role \
+        'aws_iam_role.satellite' \
+        "$SATELLITE_ROLE_NAME"
+
+      echo "Checking GitLab runtime IAM resources"
+      cleanup_instance_profile \
+        'aws_iam_instance_profile.gitlab_runtime' \
+        "$GITLAB_PROFILE_NAME" \
+        "$GITLAB_ROLE_NAME"
+
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.gitlab_runtime' \
+        "$GITLAB_ROLE_NAME" \
+        "${var.environment_name}-gitlab-runtime"
+
+      cleanup_role \
+        'aws_iam_role.gitlab_runtime' \
+        "$GITLAB_ROLE_NAME"
+
+      echo "Checking Satellite provisioning IAM user"
+
+      if state_has 'aws_iam_user.satellite_provisioner'; then
+        echo "Skipping Satellite provisioner user because it is managed by Terraform state."
       else
-        aws iam remove-role-from-instance-profile \
-          --instance-profile-name "$IAM_PROFILE_NAME" \
-          --role-name "$IAM_ROLE_NAME" \
+        ACCESS_KEY_IDS=$(aws iam list-access-keys \
+          --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
+          --query 'AccessKeyMetadata[].AccessKeyId' \
+          --output text 2>/dev/null || true)
+
+        for ACCESS_KEY_ID in $ACCESS_KEY_IDS; do
+          aws iam delete-access-key \
+            --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
+            --access-key-id "$ACCESS_KEY_ID" \
+            >/dev/null 2>&1 || true
+        done
+
+        aws iam delete-user-policy \
+          --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
+          --policy-name "$SATELLITE_PROVISIONER_POLICY_NAME" \
           >/dev/null 2>&1 || true
 
-        aws iam delete-instance-profile \
-          --instance-profile-name "$IAM_PROFILE_NAME" \
-          >/dev/null 2>&1 || true
-      fi
-
-      if state_has 'aws_iam_role_policy.aap_secrets_read'; then
-        echo "Skipping AAP secrets-read policy cleanup because it is managed by Terraform state."
-      else
-        aws iam delete-role-policy \
-          --role-name "$IAM_ROLE_NAME" \
-          --policy-name "${var.environment_name}-aap-secrets-read" \
-          >/dev/null 2>&1 || true
-      fi
-
-      if state_has 'aws_iam_role_policy.aap_s3_read'; then
-        echo "Skipping AAP S3-read policy cleanup because it is managed by Terraform state."
-      else
-        aws iam delete-role-policy \
-          --role-name "$IAM_ROLE_NAME" \
-          --policy-name "${var.environment_name}-aap-s3-read" \
-          >/dev/null 2>&1 || true
-      fi
-
-      if state_has 'aws_iam_role.aap'; then
-        echo "Skipping AAP IAM role cleanup because it is managed by Terraform state."
-      else
-        aws iam delete-role \
-          --role-name "$IAM_ROLE_NAME" \
+        aws iam delete-user \
+          --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
           >/dev/null 2>&1 || true
       fi
 
@@ -421,6 +551,7 @@ EOF_SECRETS
     EOT
   }
 }
+
 
 resource "random_password" "generated" {
   for_each = local.generated_secret_names
@@ -663,6 +794,116 @@ resource "aws_iam_role_policy" "aap_s3_read" {
   })
 }
 
+
+############################################################
+# Satellite EC2 Host Role
+############################################################
+
+resource "aws_iam_role" "satellite" {
+  name = "${var.environment_name}-satellite-role"
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.environment_name}-satellite-role"
+    Environment = var.environment_name
+    Purpose     = "Satellite server runtime access"
+  }
+}
+
+resource "aws_iam_role_policy" "satellite_secrets_read" {
+  name = "${var.environment_name}-satellite-secrets-read"
+  role = aws_iam_role.satellite.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadLabSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "satellite_s3_read" {
+  name = "${var.environment_name}-satellite-s3-read"
+  role = aws_iam_role.satellite.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadSatelliteArtifacts"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject"
+        ]
+        Resource = distinct([
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
+        ])
+      },
+      {
+        Sid    = "ReadSatelliteArtifactBucketMetadata"
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketLocation"
+        ]
+        Resource = distinct([
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
+      },
+      {
+        Sid    = "ListSatelliteArtifactKeys"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = distinct([
+          "arn:aws:s3:::${var.satellite_iso_s3_bucket}",
+          "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
+        ])
+        Condition = {
+          StringLike = {
+            "s3:prefix" = distinct([
+              var.satellite_iso_s3_key,
+              var.satellite_manifest_s3_key
+            ])
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "satellite" {
+  name = "${var.environment_name}-satellite-instance-profile"
+  role = aws_iam_role.satellite.name
+}
+
+
 ############################################################
 # Satellite AWS EC2 Provisioning Identity
 ############################################################
@@ -808,13 +1049,126 @@ resource "aws_secretsmanager_secret_version" "satellite_aws_secret_access_key" {
 }
 
 
+############################################################
+# GitLab EC2 Runtime Role
+############################################################
 
+resource "aws_iam_role" "gitlab_runtime" {
+  name = "${var.environment_name}-gitlab-runtime-role"
 
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
 
+  tags = {
+    Name        = "${var.environment_name}-gitlab-runtime-role"
+    Environment = var.environment_name
+    Purpose     = "GitLab EC2 runtime access"
+  }
+}
 
+resource "aws_iam_role_policy" "gitlab_runtime" {
+  name = "${var.environment_name}-gitlab-runtime"
+  role = aws_iam_role.gitlab_runtime.id
 
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadGitLabSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_prefix}/gitlab/*"
+      },
+      {
+        Sid    = "UseSystemsManager"
+        Effect = "Allow"
+        Action = [
+          "ssm:DescribeAssociation",
+          "ssm:GetDeployablePatchSnapshotForInstance",
+          "ssm:GetDocument",
+          "ssm:DescribeDocument",
+          "ssm:GetManifest",
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:ListAssociations",
+          "ssm:ListInstanceAssociations",
+          "ssm:PutInventory",
+          "ssm:PutComplianceItems",
+          "ssm:PutConfigurePackageResult",
+          "ssm:UpdateAssociationStatus",
+          "ssm:UpdateInstanceAssociationStatus",
+          "ssm:UpdateInstanceInformation"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "UseSSMMessages"
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "UseEC2Messages"
+        Effect = "Allow"
+        Action = [
+          "ec2messages:AcknowledgeMessage",
+          "ec2messages:DeleteMessage",
+          "ec2messages:FailMessage",
+          "ec2messages:GetEndpoint",
+          "ec2messages:GetMessages",
+          "ec2messages:SendReply"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "PublishCloudWatchMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "WriteCloudWatchLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/image-mode-lab/gitlab*"
+      }
+    ]
+  })
+}
 
+resource "aws_iam_instance_profile" "gitlab_runtime" {
+  name = "${var.environment_name}-gitlab-instance-profile"
+  role = aws_iam_role.gitlab_runtime.name
+}
 
 
 ############################################################
@@ -976,6 +1330,47 @@ resource "aws_security_group" "image_builder" {
 }
 
 ############################################################
+# GitLab Security Group
+############################################################
+
+resource "aws_security_group" "gitlab" {
+  name        = "${var.environment_name}-gitlab-sg"
+  description = "Additional access for GitLab hosts"
+  vpc_id      = aws_vpc.lab.id
+
+  ingress {
+    description = "GitLab container registry"
+    from_port   = 5050
+    to_port     = 5050
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description      = "GitLab container registry IPv6"
+    from_port        = 5050
+    to_port          = 5050
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  egress {
+    description = "Outbound access"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.environment_name}-gitlab-sg"
+    Environment = var.environment_name
+  }
+}
+
+
+
+############################################################
 # EC2 Instances
 ############################################################
 
@@ -992,31 +1387,54 @@ resource "aws_instance" "server" {
     ],
     each.value.role == "image-builder" ? [
       aws_security_group.image_builder.id
+    ] : [],
+    each.value.role == "gitlab" ? [
+      aws_security_group.gitlab.id
     ] : []
   )
 
   key_name                    = aws_key_pair.lab.key_name
   associate_public_ip_address = false
 
-  iam_instance_profile = contains(
-    [
-      "aap",
-      "satellite"
-    ],
-    each.value.role
-  ) ? aws_iam_instance_profile.aap.name : null
+  iam_instance_profile = (
+    each.value.role == "aap"
+    ? aws_iam_instance_profile.aap.name
+    : each.value.role == "satellite"
+    ? aws_iam_instance_profile.satellite.name
+    : each.value.role == "gitlab"
+    ? aws_iam_instance_profile.gitlab_runtime.name
+    : null
+  )
 
   root_block_device {
     volume_size = each.value.root_volume
     volume_type = "gp3"
     encrypted   = true
+
+    tags = {
+      Name        = "${each.value.hostname}-root"
+      Role        = each.value.role
+      Environment = var.environment_name
+    }
   }
 
   user_data = <<-EOF
     #!/bin/bash
-    hostnamectl set-hostname ${each.value.hostname}
-    echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+    set -euo pipefail
+
+    hostnamectl set-hostname "${each.value.hostname}"
+
+    cat > /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg <<'CLOUD_CFG'
+    preserve_hostname: true
+    CLOUD_CFG
   EOF
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+    instance_metadata_tags      = "enabled"
+  }
 
   tags = {
     Name        = each.value.hostname
@@ -1027,15 +1445,32 @@ resource "aws_instance" "server" {
   depends_on = [
     terraform_data.validate_dns_discovery,
     terraform_data.validate_idm_server,
+
     aws_key_pair.lab,
     local_sensitive_file.lab_ssh_private_key,
+
     aws_iam_instance_profile.aap,
+    aws_iam_role_policy.aap_secrets_read,
     aws_iam_role_policy.aap_s3_read,
+
+    aws_iam_instance_profile.satellite,
+    aws_iam_role_policy.satellite_secrets_read,
+    aws_iam_role_policy.satellite_s3_read,
+
+    aws_iam_instance_profile.gitlab_runtime,
+    aws_iam_role_policy.gitlab_runtime,
+
+    aws_security_group.lab,
     aws_security_group.image_builder,
+    aws_security_group.gitlab,
+
     aws_secretsmanager_secret_version.ssh_private_key,
     aws_secretsmanager_secret_version.generated,
     aws_secretsmanager_secret_version.static,
-    aws_secretsmanager_secret_version.redhat
+    aws_secretsmanager_secret_version.redhat,
+
+    aws_secretsmanager_secret_version.satellite_aws_access_key_id,
+    aws_secretsmanager_secret_version.satellite_aws_secret_access_key
   ]
 }
 
@@ -1322,6 +1757,54 @@ resource "local_file" "ansible_inventory" {
     satellite_location_name = (
       var.satellite_location_name
     )
+
+
+    satellite_compute_resource_name = (
+      "${var.environment_name}-aws"
+    )
+
+    satellite_compute_profile_name = (
+      "AWS POC"
+    )
+
+    satellite_compute_region = (
+      var.aws_region
+    )
+
+    satellite_compute_availability_zone = (
+      aws_subnet.public.availability_zone
+    )
+
+    satellite_compute_subnet_id = (
+      aws_subnet.public.id
+    )
+
+    satellite_compute_vpc_id = (
+      aws_vpc.lab.id
+    )
+
+    satellite_compute_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.gitlab.id
+
+    ]
+
+    satellite_compute_key_pair = (
+      aws_key_pair.lab.key_name
+    )
+
+    satellite_gitlab_instance_profile = (
+      aws_iam_instance_profile.gitlab_runtime.name
+    )
+
+    satellite_aws_access_key_secret_name = (
+      aws_secretsmanager_secret.satellite_aws_access_key_id.name
+    )
+
+    satellite_aws_secret_key_secret_name = (
+      aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+    )
+
 
     lab_users = var.lab_users
     idm_users = var.idm_users
