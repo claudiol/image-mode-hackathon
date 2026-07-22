@@ -260,6 +260,4 @@ Detailed per-service guides live alongside the code:
 
 ---
 
-## Notes
-
-This project is intended as a **disposable hackathon / lab environment**, not a production reference architecture. Expect placeholder plays and commented-out job templates that are meant to be completed as part of the exercise. Costs accrue while the stack is running (5 EC2 instances plus large EBS volumes and Elastic IPs) — remember to `terraform destroy` when finished.
+## License
