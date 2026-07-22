@@ -3,7 +3,7 @@
 ############################################################
 
 output "servers" {
-  description = "Created lab servers with hostname, role, private IP, persistent Elastic IP, FQDN, and SSH command."
+  description = "Created lab servers with hostname, role, private IP, optional persistent Elastic IP, FQDN, and optional SSH command."
 
   value = {
     for name, instance in aws_instance.server :
@@ -12,10 +12,15 @@ output "servers" {
       fqdn       = local.flattened_servers[name].hostname
       role       = instance.tags.Role
       private_ip = instance.private_ip
-      public_ip  = aws_eip.server[name].public_ip
 
-      ssh = (
-        "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
+      ssh = try(
+        "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}",
+        ""
       )
     }
   }
@@ -164,7 +169,11 @@ output "ansible_inventory" {
         fqdn       = local.flattened_servers[name].hostname
         role       = instance.tags.Role
         private_ip = instance.private_ip
-        public_ip  = aws_eip.server[name].public_ip
+
+        public_ip = try(
+          aws_eip.server[name].public_ip,
+          ""
+        )
 
         acm_certificate_arn = try(
           aws_acm_certificate.server[name].arn,
@@ -289,8 +298,13 @@ output "idm_servers" {
     name => {
       hostname   = local.flattened_servers[name].hostname
       private_ip = instance.private_ip
-      public_ip  = aws_eip.server[name].public_ip
-      url        = "https://${local.flattened_servers[name].hostname}"
+
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
+      url = "https://${local.flattened_servers[name].hostname}"
     }
     if local.flattened_servers[name].role == "idm"
   }
@@ -304,8 +318,13 @@ output "aap_servers" {
     name => {
       hostname   = local.flattened_servers[name].hostname
       private_ip = instance.private_ip
-      public_ip  = aws_eip.server[name].public_ip
-      url        = "https://${local.flattened_servers[name].hostname}"
+
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
+      url = "https://${local.flattened_servers[name].hostname}"
     }
     if local.flattened_servers[name].role == "aap"
   }
@@ -319,8 +338,13 @@ output "quay_servers" {
     name => {
       hostname   = local.flattened_servers[name].hostname
       private_ip = instance.private_ip
-      public_ip  = aws_eip.server[name].public_ip
-      url        = "https://${local.flattened_servers[name].hostname}"
+
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
+      url = "https://${local.flattened_servers[name].hostname}"
     }
     if local.flattened_servers[name].role == "quay"
   }
@@ -334,23 +358,33 @@ output "satellite_servers" {
     name => {
       hostname   = local.flattened_servers[name].hostname
       private_ip = instance.private_ip
-      public_ip  = aws_eip.server[name].public_ip
-      url        = "https://${local.flattened_servers[name].hostname}"
+
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
+      url = "https://${local.flattened_servers[name].hostname}"
     }
     if local.flattened_servers[name].role == "satellite"
   }
 }
 
 output "image_builder_servers" {
-  description = "Created Image Builder servers."
+  description = "Created Image Builder servers. Public IP is blank when an Image Builder host is not included in public_server_names."
 
   value = {
     for name, instance in aws_instance.server :
     name => {
       hostname   = local.flattened_servers[name].hostname
       private_ip = instance.private_ip
-      public_ip  = aws_eip.server[name].public_ip
-      url        = "https://${local.flattened_servers[name].hostname}:9090"
+
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
+      url = "https://${local.flattened_servers[name].hostname}:9090"
     }
     if local.flattened_servers[name].role == "image-builder"
   }
@@ -362,9 +396,14 @@ output "gitlab_servers" {
   value = {
     for name, instance in aws_instance.server :
     name => {
-      hostname         = local.flattened_servers[name].hostname
-      private_ip       = instance.private_ip
-      public_ip        = aws_eip.server[name].public_ip
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+
+      public_ip = try(
+        aws_eip.server[name].public_ip,
+        ""
+      )
+
       url              = "${var.gitlab_external_url_scheme}://${local.flattened_servers[name].hostname}"
       registry_url     = "${local.flattened_servers[name].hostname}:${var.gitlab_registry_port}"
       instance_profile = aws_iam_instance_profile.gitlab_runtime.name
@@ -561,12 +600,12 @@ output "gitlab_secret_names" {
 ############################################################
 
 output "ssh_commands" {
-  description = "Quick SSH commands for created instances."
+  description = "Quick SSH commands for instances included in public_server_names and assigned Elastic IPs."
 
   value = {
-    for name, instance in aws_instance.server :
+    for name, eip in aws_eip.server :
     name => (
-      "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+      "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${eip.public_ip}"
     )
   }
 }
@@ -651,19 +690,19 @@ output "satellite_compute_resource" {
   description = "AWS details used to configure the Satellite EC2 Compute Resource."
 
   value = {
-    name                      = var.satellite_compute_resource_name
-    compute_profile           = var.satellite_compute_profile_name
-    gitlab_compute_profile    = var.satellite_gitlab_compute_profile_name
-    region                    = var.aws_region
-    availability_zone         = aws_subnet.public.availability_zone
-    vpc_id                    = aws_vpc.lab.id
-    subnet_id                 = aws_subnet.public.id
-    key_pair                  = aws_key_pair.lab.key_name
-    common_security_group_id  = aws_security_group.lab.id
-    gitlab_security_group_id  = aws_security_group.gitlab.id
-    gitlab_instance_profile   = aws_iam_instance_profile.gitlab_runtime.name
-    access_key_secret_name    = aws_secretsmanager_secret.satellite_aws_access_key_id.name
-    secret_key_secret_name    = aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+    name                     = var.satellite_compute_resource_name
+    compute_profile          = var.satellite_compute_profile_name
+    gitlab_compute_profile   = var.satellite_gitlab_compute_profile_name
+    region                   = var.aws_region
+    availability_zone        = aws_subnet.public.availability_zone
+    vpc_id                   = aws_vpc.lab.id
+    subnet_id                = aws_subnet.public.id
+    key_pair                 = aws_key_pair.lab.key_name
+    common_security_group_id = aws_security_group.lab.id
+    gitlab_security_group_id = aws_security_group.gitlab.id
+    gitlab_instance_profile  = aws_iam_instance_profile.gitlab_runtime.name
+    access_key_secret_name   = aws_secretsmanager_secret.satellite_aws_access_key_id.name
+    secret_key_secret_name   = aws_secretsmanager_secret.satellite_aws_secret_access_key.name
   }
 }
 
