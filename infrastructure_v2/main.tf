@@ -1558,7 +1558,7 @@ resource "aws_instance" "server" {
   )
 
   key_name                    = aws_key_pair.lab.key_name
-  associate_public_ip_address = false
+  associate_public_ip_address = true
 
   iam_instance_profile = (
     each.value.role == "aap"
@@ -1711,7 +1711,7 @@ resource "aws_eip_association" "server" {
 resource "aws_route53_record" "public_dns" {
   for_each = (
     var.create_public_dns_records
-    ? local.public_servers
+    ? local.flattened_servers
     : {}
   )
 
@@ -1723,7 +1723,10 @@ resource "aws_route53_record" "public_dns" {
   allow_overwrite = true
 
   records = [
-    aws_eip.server[each.key].public_ip
+    try(
+      aws_eip.server[each.key].public_ip,
+      aws_instance.server[each.key].public_ip
+    )
   ]
 
   depends_on = [
@@ -1731,6 +1734,7 @@ resource "aws_route53_record" "public_dns" {
     terraform_data.validate_dns_discovery
   ]
 }
+
 ############################################################
 # Publicly Trusted TLS Certificates
 ############################################################
@@ -2041,7 +2045,7 @@ resource "local_file" "ansible_inventory" {
         )
       }
     }
-    
+
   })
 
   depends_on = [
