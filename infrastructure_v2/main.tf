@@ -1711,7 +1711,7 @@ resource "aws_eip_association" "server" {
 resource "aws_route53_record" "public_dns" {
   for_each = (
     var.create_public_dns_records
-    ? local.flattened_servers
+    ? local.public_servers
     : {}
   )
 
@@ -1731,7 +1731,6 @@ resource "aws_route53_record" "public_dns" {
     terraform_data.validate_dns_discovery
   ]
 }
-
 ############################################################
 # Publicly Trusted TLS Certificates
 ############################################################
@@ -2019,13 +2018,12 @@ resource "local_file" "ansible_inventory" {
 
     lab_users = var.lab_users
     idm_users = var.idm_users
-
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
     idm_server_fqdn    = local.primary_idm_hostname
     idm_server_ip      = local.primary_idm_private_ip
-
+    
     servers = {
       for name, instance in aws_instance.server :
       name => {
@@ -2033,14 +2031,17 @@ resource "local_file" "ansible_inventory" {
         fqdn       = local.flattened_servers[name].hostname
         role       = instance.tags.Role
         private_ip = instance.private_ip
-        public_ip  = aws_eip.server[name].public_ip
-
+        public_ip = try(
+          aws_eip.server[name].public_ip,
+          ""
+        )
         acm_certificate_arn = try(
           aws_acm_certificate.server[name].arn,
           ""
         )
       }
     }
+    
   })
 
   depends_on = [
