@@ -1896,7 +1896,7 @@
           - 400
       loop: "{{ quay_team_syncs }}"
       register: quay_create_teams
-      no_log: true
+      no_log: false
 
     - name: Add bootstrap administrator to the owners team
       ansible.builtin.uri:
