@@ -560,29 +560,16 @@ variable "satellite_manifest_sha256" {
   }
 }
 
-############################################################
-# Servers Requiring Elastic IP Addresses
+#############################################################
+# Servers Requiring Stable Public Addresses
 ############################################################
 
 variable "public_server_names" {
   description = <<-EOT
-    Exact flattened Terraform server names that require:
+    Exact flattened server names that require an Elastic IP,
+    public Route53 record, and public ACM certificate.
 
-    - an Elastic IP address
-    - a public Route53 A record
-    - a publicly trusted ACM certificate
-
-    All other EC2 instances remain private and are represented in the
-    generated Ansible inventory with a blank public_ip value.
-
-    Names must match generated server keys such as:
-
-    - idm-1
-    - satellite-1
-    - aap-1
-    - quay-1
-    - image-builder-1
-    - gitlab-1
+    Servers not listed remain private-only.
   EOT
 
   type = set(string)
@@ -600,6 +587,6 @@ variable "public_server_names" {
       length(var.public_server_names) <= 5
     )
 
-    error_message = "public_server_names cannot contain more than five servers because this AWS environment has an Elastic IP quota of five."
+    error_message = "public_server_names cannot contain more than five servers because the current regional Elastic IP quota is five."
   }
 }
