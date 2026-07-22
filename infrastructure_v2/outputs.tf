@@ -14,7 +14,9 @@ output "servers" {
       private_ip = instance.private_ip
       public_ip  = aws_eip.server[name].public_ip
 
-      ssh = "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+      ssh = (
+        "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+      )
     }
   }
 }
@@ -93,20 +95,67 @@ output "ansible_inventory" {
       var.satellite_location_name
     )
 
+    satellite_compute_resource_name = (
+      var.satellite_compute_resource_name
+    )
+
+    satellite_compute_profile_name = (
+      var.satellite_compute_profile_name
+    )
+
+    satellite_gitlab_compute_profile_name = (
+      var.satellite_gitlab_compute_profile_name
+    )
+
+    satellite_compute_region = (
+      var.aws_region
+    )
+
+    satellite_compute_availability_zone = (
+      aws_subnet.public.availability_zone
+    )
+
+    satellite_compute_subnet_id = (
+      aws_subnet.public.id
+    )
+
+    satellite_compute_vpc_id = (
+      aws_vpc.lab.id
+    )
+
+    satellite_compute_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.gitlab.id
+    ]
+
+    satellite_compute_key_pair = (
+      aws_key_pair.lab.key_name
+    )
+
+    satellite_gitlab_instance_profile = (
+      aws_iam_instance_profile.gitlab_runtime.name
+    )
+
+    satellite_aws_access_key_secret_name = (
+      aws_secretsmanager_secret.satellite_aws_access_key_id.name
+    )
+
+    satellite_aws_secret_key_secret_name = (
+      aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+    )
+
+    gitlab_registry_port = (
+      var.gitlab_registry_port
+    )
+
     lab_users = var.lab_users
     idm_users = var.idm_users
 
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
-
-    idm_server_fqdn = local.flattened_servers[
-      local.primary_idm_key
-    ].hostname
-
-    idm_server_ip = aws_instance.server[
-      local.primary_idm_key
-    ].private_ip
+    idm_server_fqdn    = local.primary_idm_hostname
+    idm_server_ip      = local.primary_idm_private_ip
 
     servers = {
       for name, instance in aws_instance.server :
@@ -141,13 +190,18 @@ output "vpc_cidr" {
 }
 
 output "aws_dns_resolver" {
-  description = "AWS VPC DNS resolver address, normally VPC CIDR base + 2."
+  description = "AWS VPC DNS resolver address, normally the VPC CIDR base address plus 2."
   value       = local.aws_dns_resolver
 }
 
 output "public_subnet_id" {
-  description = "Created public subnet ID."
+  description = "Created main lab subnet ID."
   value       = aws_subnet.public.id
+}
+
+output "public_subnet_availability_zone" {
+  description = "Availability Zone containing the main lab subnet."
+  value       = aws_subnet.public.availability_zone
 }
 
 output "resolver_subnet_id" {
@@ -156,8 +210,18 @@ output "resolver_subnet_id" {
 }
 
 output "security_group_id" {
-  description = "Created lab security group ID."
+  description = "Common lab security group ID."
   value       = aws_security_group.lab.id
+}
+
+output "image_builder_security_group_id" {
+  description = "Additional security group used by Image Builder hosts."
+  value       = aws_security_group.image_builder.id
+}
+
+output "gitlab_security_group_id" {
+  description = "Additional security group used by GitLab hosts."
+  value       = aws_security_group.gitlab.id
 }
 
 ############################################################
@@ -201,12 +265,7 @@ output "route53_resolver_forward_domain" {
 
 output "route53_resolver_forward_target" {
   description = "Private IP of the selected primary IdM DNS server used as the Route53 Resolver forwarding target."
-
-  value = aws_instance.server[sort([
-    for name, server in local.flattened_servers :
-    name
-    if server.role == "idm"
-  ])[0]].private_ip
+  value       = local.primary_idm_private_ip
 }
 
 output "server_fqdns" {
@@ -283,7 +342,7 @@ output "satellite_servers" {
 }
 
 output "image_builder_servers" {
-  description = "Created image builder servers."
+  description = "Created Image Builder servers."
 
   value = {
     for name, instance in aws_instance.server :
@@ -291,9 +350,26 @@ output "image_builder_servers" {
       hostname   = local.flattened_servers[name].hostname
       private_ip = instance.private_ip
       public_ip  = aws_eip.server[name].public_ip
-      url        = "https://${local.flattened_servers[name].hostname}"
+      url        = "https://${local.flattened_servers[name].hostname}:9090"
     }
     if local.flattened_servers[name].role == "image-builder"
+  }
+}
+
+output "gitlab_servers" {
+  description = "Created GitLab servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname         = local.flattened_servers[name].hostname
+      private_ip       = instance.private_ip
+      public_ip        = aws_eip.server[name].public_ip
+      url              = "${var.gitlab_external_url_scheme}://${local.flattened_servers[name].hostname}"
+      registry_url     = "${local.flattened_servers[name].hostname}:${var.gitlab_registry_port}"
+      instance_profile = aws_iam_instance_profile.gitlab_runtime.name
+    }
+    if local.flattened_servers[name].role == "gitlab"
   }
 }
 
@@ -303,22 +379,12 @@ output "image_builder_servers" {
 
 output "primary_idm_fqdn" {
   description = "Primary IdM server FQDN selected dynamically."
-
-  value = local.flattened_servers[sort([
-    for name, server in local.flattened_servers :
-    name
-    if server.role == "idm"
-  ])[0]].hostname
+  value       = local.primary_idm_hostname
 }
 
 output "primary_idm_private_ip" {
   description = "Primary IdM server private IP selected dynamically."
-
-  value = aws_instance.server[sort([
-    for name, server in local.flattened_servers :
-    name
-    if server.role == "idm"
-  ])[0]].private_ip
+  value       = local.primary_idm_private_ip
 }
 
 output "aap_urls" {
@@ -352,12 +418,42 @@ output "satellite_urls" {
 }
 
 output "image_builder_fqdns" {
-  description = "Image builder FQDNs."
+  description = "Image Builder FQDNs."
 
   value = {
     for name, server in local.flattened_servers :
     name => server.hostname
     if server.role == "image-builder"
+  }
+}
+
+output "image_builder_urls" {
+  description = "Image Builder Cockpit URLs."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => "https://${server.hostname}:9090"
+    if server.role == "image-builder"
+  }
+}
+
+output "gitlab_urls" {
+  description = "GitLab web URLs."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => "${var.gitlab_external_url_scheme}://${server.hostname}"
+    if server.role == "gitlab"
+  }
+}
+
+output "gitlab_registry_urls" {
+  description = "GitLab container registry endpoints."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => "${server.hostname}:${var.gitlab_registry_port}"
+    if server.role == "gitlab"
   }
 }
 
@@ -369,15 +465,55 @@ output "quay_idm_ldap_settings" {
   description = "Derived IdM LDAP settings used by Quay."
 
   value = {
-    ldap_uri = "ldap://${local.flattened_servers[sort([
-      for name, server in local.flattened_servers :
-      name
-      if server.role == "idm"
-    ])[0]].hostname}:389"
+    ldap_uri = "ldap://${local.primary_idm_hostname}:389"
 
-    ldap_base_dn   = join(",", [for part in split(".", local.idm_domain_name) : "dc=${part}"])
-    ldap_bind_user = "uid=admin,cn=users,cn=accounts,${join(",", [for part in split(".", local.idm_domain_name) : "dc=${part}"])}"
-    admin_users    = var.idm_users
+    ldap_base_dn = join(
+      ",",
+      [
+        for part in split(".", local.idm_domain_name) :
+        "dc=${part}"
+      ]
+    )
+
+    ldap_bind_user = (
+      "uid=admin,cn=users,cn=accounts,${join(",", [
+        for part in split(".", local.idm_domain_name) :
+        "dc=${part}"
+      ])}"
+    )
+
+    admin_users = var.idm_users
+  }
+}
+
+############################################################
+# GitLab IdM LDAP Information
+############################################################
+
+output "gitlab_idm_ldap_settings" {
+  description = "Derived IdM LDAP settings available to the GitLab deployment."
+
+  value = {
+    ldap_host = local.primary_idm_hostname
+    ldap_port = 636
+    ldap_uri  = "ldaps://${local.primary_idm_hostname}:636"
+
+    ldap_base_dn = join(
+      ",",
+      [
+        for part in split(".", local.idm_domain_name) :
+        "dc=${part}"
+      ]
+    )
+
+    ldap_bind_user = (
+      "uid=admin,cn=users,cn=accounts,${join(",", [
+        for part in split(".", local.idm_domain_name) :
+        "dc=${part}"
+      ])}"
+    )
+
+    admin_users = var.idm_users
   }
 }
 
@@ -391,12 +527,32 @@ output "quay_secret_names" {
   value = {
     db_password        = "${var.secret_prefix}/quay/db_password"
     secret_key         = "${var.secret_prefix}/quay/secret_key"
+    database_secret    = "${var.secret_prefix}/quay/database_secret_key"
+    redis_password     = "${var.secret_prefix}/quay/redis_password"
     superuser          = "${var.secret_prefix}/quay/superuser"
     superuser_password = "${var.secret_prefix}/quay/superuser_password"
     admin_access_token = "${var.secret_prefix}/quay/admin_access_token"
     registry_username  = "${var.secret_prefix}/redhat/registry_username"
     registry_password  = "${var.secret_prefix}/redhat/registry_password"
     idm_admin_password = "${var.secret_prefix}/idm/admin_password"
+  }
+}
+
+output "gitlab_secret_names" {
+  description = "AWS Secrets Manager secret names used by the GitLab deployment."
+
+  value = {
+    root_username               = "${var.secret_prefix}/gitlab/root_username"
+    root_password               = "${var.secret_prefix}/gitlab/root_password"
+    postgresql_password         = "${var.secret_prefix}/gitlab/postgresql_password"
+    redis_password              = "${var.secret_prefix}/gitlab/redis_password"
+    runner_registration_token   = "${var.secret_prefix}/gitlab/runner_registration_token"
+    initial_shared_runner_token = "${var.secret_prefix}/gitlab/initial_shared_runner_token"
+    rails_secret                = "${var.secret_prefix}/gitlab/rails_secret"
+    otp_key_base                = "${var.secret_prefix}/gitlab/otp_key_base"
+    db_key_base                 = "${var.secret_prefix}/gitlab/db_key_base"
+    openid_client_secret        = "${var.secret_prefix}/gitlab/openid_connect_client_secret"
+    idm_admin_password          = "${var.secret_prefix}/idm/admin_password"
   }
 }
 
@@ -409,7 +565,9 @@ output "ssh_commands" {
 
   value = {
     for name, instance in aws_instance.server :
-    name => "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+    name => (
+      "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${aws_eip.server[name].public_ip}"
+    )
   }
 }
 
@@ -419,6 +577,7 @@ output "ssh_commands" {
 
 output "satellite_iso_s3_uri" {
   description = "S3 URI of the Satellite installation ISO."
+
   value = (
     "s3://${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
   )
@@ -426,8 +585,17 @@ output "satellite_iso_s3_uri" {
 
 output "satellite_iso_s3_object_arn" {
   description = "S3 object ARN permitted by the Satellite EC2 IAM role."
+
   value = (
     "arn:aws:s3:::${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+  )
+}
+
+output "satellite_manifest_s3_uri" {
+  description = "S3 URI of the Satellite subscription manifest."
+
+  value = (
+    "s3://${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
   )
 }
 
@@ -437,25 +605,109 @@ output "satellite_admin_password_secret_name" {
 }
 
 output "satellite_iam_role_name" {
-  description = "Shared IAM role used by the Satellite EC2 instance"
-  value       = aws_iam_role.aap.name
+  description = "IAM role used by the Satellite EC2 instance."
+  value       = aws_iam_role.satellite.name
+}
 
+output "satellite_iam_role_arn" {
+  description = "ARN of the IAM role used by the Satellite EC2 instance."
+  value       = aws_iam_role.satellite.arn
 }
 
 output "satellite_iam_instance_profile_name" {
-  description = "Shared IAM instance profile used by the Satellite EC2 instance"
-  value       = aws_iam_instance_profile.aap.name
+  description = "IAM instance profile used by the Satellite EC2 instance."
+  value       = aws_iam_instance_profile.satellite.name
+}
 
+output "satellite_iam_instance_profile_arn" {
+  description = "ARN of the IAM instance profile used by the Satellite EC2 instance."
+  value       = aws_iam_instance_profile.satellite.arn
 }
 
 output "satellite_installation_settings" {
   description = "Non-sensitive Satellite installation settings."
 
   value = {
-    iso_s3_uri    = "s3://${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+    iso_s3_uri = (
+      "s3://${var.satellite_iso_s3_bucket}/${var.satellite_iso_s3_key}"
+    )
+
+    manifest_s3_uri = (
+      "s3://${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
+    )
+
     admin_user    = var.satellite_initial_admin_username
     organization  = var.satellite_organization_name
     location      = var.satellite_location_name
     password_path = "${var.secret_prefix}/satellite/admin_password"
   }
+}
+
+############################################################
+# Satellite AWS Compute Resource Information
+############################################################
+
+output "satellite_compute_resource" {
+  description = "AWS details used to configure the Satellite EC2 Compute Resource."
+
+  value = {
+    name                      = var.satellite_compute_resource_name
+    compute_profile           = var.satellite_compute_profile_name
+    gitlab_compute_profile    = var.satellite_gitlab_compute_profile_name
+    region                    = var.aws_region
+    availability_zone         = aws_subnet.public.availability_zone
+    vpc_id                    = aws_vpc.lab.id
+    subnet_id                 = aws_subnet.public.id
+    key_pair                  = aws_key_pair.lab.key_name
+    common_security_group_id  = aws_security_group.lab.id
+    gitlab_security_group_id  = aws_security_group.gitlab.id
+    gitlab_instance_profile   = aws_iam_instance_profile.gitlab_runtime.name
+    access_key_secret_name    = aws_secretsmanager_secret.satellite_aws_access_key_id.name
+    secret_key_secret_name    = aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+  }
+}
+
+output "satellite_provisioner_iam_user_name" {
+  description = "IAM user used by Satellite to provision EC2 instances."
+  value       = aws_iam_user.satellite_provisioner.name
+}
+
+output "satellite_provisioner_access_key_id" {
+  description = "Access-key ID used by the Satellite EC2 Compute Resource. The secret access key is not exposed."
+  value       = aws_iam_access_key.satellite_provisioner.id
+  sensitive   = true
+}
+
+output "satellite_aws_access_key_secret_name" {
+  description = "Secrets Manager secret containing the Satellite AWS access-key ID."
+  value       = aws_secretsmanager_secret.satellite_aws_access_key_id.name
+}
+
+output "satellite_aws_secret_access_key_secret_name" {
+  description = "Secrets Manager secret containing the Satellite AWS secret access key."
+  value       = aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+}
+
+############################################################
+# GitLab Runtime IAM Information
+############################################################
+
+output "gitlab_iam_role_name" {
+  description = "IAM role used by Terraform-created and Satellite-created GitLab EC2 instances."
+  value       = aws_iam_role.gitlab_runtime.name
+}
+
+output "gitlab_iam_role_arn" {
+  description = "ARN of the GitLab runtime IAM role."
+  value       = aws_iam_role.gitlab_runtime.arn
+}
+
+output "gitlab_iam_instance_profile_name" {
+  description = "IAM instance profile assigned to GitLab EC2 instances."
+  value       = aws_iam_instance_profile.gitlab_runtime.name
+}
+
+output "gitlab_iam_instance_profile_arn" {
+  description = "ARN of the IAM instance profile assigned to GitLab EC2 instances."
+  value       = aws_iam_instance_profile.gitlab_runtime.arn
 }
