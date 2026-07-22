@@ -11,7 +11,7 @@ An end-to-end hack-a-thon lab that stands up a complete stack needed for hack-a-
 
 RHEL **Image Mode** delivers the operating system as a bootable container image (`bootc`), so servers are updated by switching to a new image and rebooting rather than by patching packages in place. This repository is a self-contained hackathon environment for practicing that model at scale, backed by the supporting Red Hat platform services:
 
-- **Red Hat Identity Management (IdM / FreeIPA)** — DNS, Kerberos, and centralized identity
+- **Red Hat Identity Management (IdM )** — DNS, Kerberos, and centralized identity
 - **Red Hat Satellite** — content, lifecycle environments, content views, activation keys
 - **Red Hat Ansible Automation Platform (AAP)** — the CI/CD control plane (containerized 2.7)
 - **Red Hat Quay** — the container registry for published bootc images
