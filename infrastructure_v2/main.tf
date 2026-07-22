@@ -113,6 +113,27 @@ locals {
     }
   ]...)
 
+  ##########################################################
+  # Public server selection
+  ##########################################################
+
+  public_servers = {
+    for name, server in local.flattened_servers :
+    name => server
+    if contains(var.public_server_names, name)
+  }
+
+  private_servers = {
+    for name, server in local.flattened_servers :
+    name => server
+    if !contains(var.public_server_names, name)
+  }
+
+  invalid_public_server_names = setsubtract(
+    var.public_server_names,
+    toset(keys(local.flattened_servers))
+  )
+
   idm_server_keys = sort([
     for name, server in local.flattened_servers :
     name
@@ -1839,6 +1860,39 @@ resource "aws_route53_resolver_rule" "idm_forward" {
     terraform_data.validate_idm_server
   ]
 }
+
+resource "terraform_data" "validate_public_servers" {
+  input = {
+    requested = sort(tolist(var.public_server_names))
+    available = sort(keys(local.flattened_servers))
+  }
+
+  lifecycle {
+    precondition {
+      condition = (
+        length(local.invalid_public_server_names) == 0
+      )
+
+      error_message = format(
+        "public_server_names contains unknown server names: %s. Available names are: %s.",
+        join(", ", sort(tolist(local.invalid_public_server_names))),
+        join(", ", sort(keys(local.flattened_servers)))
+      )
+    }
+
+    precondition {
+      condition = (
+        length(local.public_servers) <= 5
+      )
+
+      error_message = format(
+        "This AWS environment permits no more than five Elastic IP addresses, but %d public servers were selected.",
+        length(local.public_servers)
+      )
+    }
+  }
+}
+
 
 resource "aws_route53_resolver_rule_association" "idm_forward" {
   resolver_rule_id = aws_route53_resolver_rule.idm_forward.id
