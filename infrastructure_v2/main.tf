@@ -242,7 +242,17 @@ locals {
     "quay/secret_key",
     "quay/database_secret_key",
     "quay/superuser_password",
-    "quay/redis_password"
+    "quay/redis_password",
+    "gitlab/root_password",
+    "gitlab/postgresql_password",
+    "gitlab/redis_password",
+    "gitlab/runner_registration_token",
+    "gitlab/initial_shared_runner_token",
+    "gitlab/rails_secret",
+    "gitlab/otp_key_base",
+    "gitlab/db_key_base",
+    "gitlab/openid_connect_client_secret"
+
   ])
 
   static_secret_values = {
@@ -250,6 +260,9 @@ locals {
     "quay/superuser"             = "quayadmin"
     "quay/admin_access_token"    = "CHANGE_ME_AFTER_QUAY_DEPLOYMENT"
     "idm/default_user_password"  = var.idm_default_user_password
+    # GitLab
+    "gitlab/root_username" = "root"
+
   }
 
   redhat_secret_values = {
@@ -649,6 +662,160 @@ resource "aws_iam_role_policy" "aap_s3_read" {
     ]
   })
 }
+
+############################################################
+# Satellite AWS EC2 Provisioning Identity
+############################################################
+
+resource "aws_iam_user" "satellite_provisioner" {
+  name = "${var.environment_name}-satellite-provisioner"
+
+  tags = {
+    Name        = "${var.environment_name}-satellite-provisioner"
+    Environment = var.environment_name
+    Purpose     = "Satellite EC2 compute resource provisioning"
+  }
+}
+
+resource "aws_iam_user_policy" "satellite_provisioner" {
+  name = "${var.environment_name}-satellite-ec2-provisioning"
+  user = aws_iam_user.satellite_provisioner.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "DiscoverEC2Resources"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstanceAttribute",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeKeyPairs",
+          "ec2:DescribeRegions",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeTags",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeVolumeStatus",
+          "ec2:DescribeVpcs"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Sid    = "ManageSatelliteProvisionedInstances"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:AttachVolume",
+          "ec2:CreateTags",
+          "ec2:CreateVolume",
+          "ec2:DeleteVolume",
+          "ec2:DetachVolume",
+          "ec2:ModifyInstanceAttribute",
+          "ec2:ModifyVolume",
+          "ec2:RebootInstances",
+          "ec2:RunInstances",
+          "ec2:StartInstances",
+          "ec2:StopInstances",
+          "ec2:TerminateInstances"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Sid    = "DiscoverIAMInstanceProfiles"
+        Effect = "Allow"
+
+        Action = [
+          "iam:GetInstanceProfile",
+          "iam:GetRole",
+          "iam:ListInstanceProfiles",
+          "iam:ListInstanceProfilesForRole",
+          "iam:ListRoles"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Sid    = "PassApprovedGitLabRuntimeRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:PassRole"
+        ]
+
+        Resource = aws_iam_role.gitlab_runtime.arn
+
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ec2.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_access_key" "satellite_provisioner" {
+  user = aws_iam_user.satellite_provisioner.name
+
+  depends_on = [
+    aws_iam_user_policy.satellite_provisioner
+  ]
+}
+
+############################################################
+# Satellite Compute Resource Credentials
+############################################################
+
+resource "aws_secretsmanager_secret" "satellite_aws_access_key_id" {
+  name                    = "${var.secret_prefix}/satellite/aws_access_key_id"
+  recovery_window_in_days = 0
+
+  tags = {
+    Name        = "${var.secret_prefix}/satellite/aws_access_key_id"
+    Environment = var.environment_name
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "satellite_aws_access_key_id" {
+  secret_id     = aws_secretsmanager_secret.satellite_aws_access_key_id.id
+  secret_string = aws_iam_access_key.satellite_provisioner.id
+}
+
+resource "aws_secretsmanager_secret" "satellite_aws_secret_access_key" {
+  name                    = "${var.secret_prefix}/satellite/aws_secret_access_key"
+  recovery_window_in_days = 0
+
+  tags = {
+    Name        = "${var.secret_prefix}/satellite/aws_secret_access_key"
+    Environment = var.environment_name
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "satellite_aws_secret_access_key" {
+  secret_id     = aws_secretsmanager_secret.satellite_aws_secret_access_key.id
+  secret_string = aws_iam_access_key.satellite_provisioner.secret
+}
+
+
+
+
+
+
+
+
+
+
 
 ############################################################
 # Networking
