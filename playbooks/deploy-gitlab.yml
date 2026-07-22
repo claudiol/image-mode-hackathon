@@ -89,6 +89,16 @@
     gitlab_repository_script_path: >-
       /var/tmp/gitlab-ee-repository.sh
 
+
+
+    # Use the Terraform/AAP value when supplied; otherwise default to 5050.
+    gitlab_registry_effective_port: >-
+      {{
+        gitlab_registry_port
+        | default(5050, true)
+        | int
+      }}
+
     ###########################################################################
     # AWS Secrets Manager
     ###########################################################################
