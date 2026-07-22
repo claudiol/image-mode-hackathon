@@ -1,50 +1,45 @@
 ---
 ###############################################################################
-# Deploy GitLab on the Terraform-created EC2 instance
+# Deploy GitLab EE on the Terraform-created EC2 instance
 #
-# Configures:
+# Integrations:
 #
-# - GitLab EE Linux package
-# - HTTPS using certificates staged by Terraform
-# - Red Hat IdM LDAP authentication
-# - Automatic creation of normal GitLab users from IdM
-# - GitLab administrator assignment for the IdM idm-admins group
+# - Terraform-generated public DNS and exportable ACM certificate
+# - AWS Secrets Manager
+# - Red Hat IdM LDAP over LDAPS
+# - GitLab container registry
 #
-# Expected inventory group:
+# Expected Terraform inventory variables:
 #
-# [gitlab]
-# gitlab-1.lab.example.com ...
+#   aws_region
+#   secret_prefix
+#   idm_domain_name
+#   idm_realm_name
+#   idm_server_fqdn
+#   idm_server_ip
+#   gitlab_hostname
+#   public_tls_fqdn
+#   acm_certificate_arn
+#   gitlab_registry_port
 #
-# Terraform-generated inventory variables:
+# Expected AWS Secrets Manager secrets:
 #
-# aws_region
-# secret_prefix
-# idm_domain_name
-# idm_realm_name
-# idm_server_fqdn
-# idm_server_ip
-# gitlab_hostname
-# public_tls_fqdn
-# gitlab_registry_port
+#   <secret_prefix>/gitlab/root_password
+#   <secret_prefix>/idm/admin_password
 #
-# Required AWS Secrets Manager secret:
+# Required GitLab EC2 IAM permissions:
 #
-# <secret_prefix>/idm/admin_password
+#   acm:DescribeCertificate
+#   acm:ExportCertificate
+#   secretsmanager:DescribeSecret
+#   secretsmanager:GetSecretValue
 #
 # Required collection:
 #
-# ansible-galaxy collection install ansible.posix
-#
-# GitLab licensing:
-#
-# LDAP authentication:
-#   GitLab Free, Premium, or Ultimate
-#
-# LDAP group synchronization and admin_group:
-#   GitLab Premium or Ultimate
+#   ansible-galaxy collection install ansible.posix
 ###############################################################################
 
-- name: Deploy GitLab and configure Red Hat IdM authentication
+- name: Deploy GitLab with ACM TLS and Red Hat IdM authentication
   hosts: gitlab
   become: true
   gather_facts: true
@@ -58,11 +53,8 @@
 
   vars:
     ###########################################################################
-    # GitLab installation
+    # GitLab identity
     ###########################################################################
-
-    gitlab_package_name: "gitlab-ee"
-    gitlab_package_state: "present"
 
     gitlab_fqdn: >-
       {{
@@ -71,7 +63,25 @@
         | default(inventory_hostname, true)
       }}
 
+    gitlab_public_tls_fqdn: >-
+      {{
+        public_tls_fqdn
+        | default(gitlab_fqdn, true)
+      }}
+
     gitlab_external_url: "https://{{ gitlab_fqdn }}"
+
+    gitlab_registry_enabled: true
+
+    gitlab_registry_external_url: >-
+      https://{{ gitlab_fqdn }}:{{ gitlab_registry_port }}
+
+    ###########################################################################
+    # GitLab package
+    ###########################################################################
+
+    gitlab_package_name: "gitlab-ee"
+    gitlab_package_state: "present"
 
     gitlab_repository_script_url: >-
       https://packages.gitlab.com/install/repositories/gitlab/gitlab-ee/script.rpm.sh
@@ -80,37 +90,77 @@
       /var/tmp/gitlab-ee-repository.sh
 
     ###########################################################################
-    # GitLab TLS
-    #
-    # Terraform or a certificate-staging playbook should place these files on
-    # the GitLab EC2 instance before this playbook runs.
+    # AWS Secrets Manager
     ###########################################################################
 
-    gitlab_tls_enabled: true
+    gitlab_root_password_secret_name: >-
+      {{ secret_prefix }}/gitlab/root_password
 
-    gitlab_staged_certificate: >-
-      /opt/gitlab/certs/gitlab-leaf.crt
+    gitlab_idm_admin_password_secret_name: >-
+      {{ secret_prefix }}/idm/admin_password
 
-    gitlab_staged_certificate_chain: >-
-      /opt/gitlab/certs/gitlab-chain.crt
+    ###########################################################################
+    # ACM public certificate
+    ###########################################################################
 
-    gitlab_staged_private_key: >-
-      /opt/gitlab/certs/gitlab.key
+    gitlab_acm_certificate_arn: >-
+      {{
+        acm_certificate_arn
+        | default('', true)
+      }}
+
+    gitlab_acm_certificate_minimum_validity_seconds: 1209600
+    gitlab_acm_export_passphrase_bytes: 48
+    gitlab_force_public_tls_install: false
+
+    ###########################################################################
+    # ACM certificate staging
+    ###########################################################################
+
+    gitlab_tls_root: "/opt/gitlab/certs"
+    gitlab_tls_directory: "{{ gitlab_tls_root }}"
+
+    gitlab_tls_certificate_path: >-
+      {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}.crt
+
+    gitlab_tls_chain_path: >-
+      {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}-chain.crt
+
+    gitlab_tls_fullchain_path: >-
+      {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}-fullchain.crt
+
+    gitlab_tls_encrypted_private_key_path: >-
+      {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}-encrypted.key
+
+    gitlab_tls_private_key_path: >-
+      {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}.key
+
+    gitlab_tls_export_json_path: >-
+      {{ gitlab_tls_directory }}/acm-export.json
+
+    gitlab_tls_passphrase_path: >-
+      {{ gitlab_tls_directory }}/.acm-export-passphrase
+
+    gitlab_tls_backup_directory: >-
+      {{ gitlab_tls_directory }}/backup
+
+    ###########################################################################
+    # GitLab certificate installation
+    ###########################################################################
 
     gitlab_ssl_directory: "/etc/gitlab/ssl"
 
-    gitlab_ssl_certificate: >-
-      {{ gitlab_ssl_directory }}/{{ gitlab_fqdn }}.crt
+    gitlab_ssl_certificate_path: >-
+      {{ gitlab_ssl_directory }}/{{ gitlab_public_tls_fqdn }}.crt
 
-    gitlab_ssl_private_key: >-
-      {{ gitlab_ssl_directory }}/{{ gitlab_fqdn }}.key
+    gitlab_ssl_private_key_path: >-
+      {{ gitlab_ssl_directory }}/{{ gitlab_public_tls_fqdn }}.key
 
     ###########################################################################
     # Red Hat IdM LDAP
     ###########################################################################
 
     gitlab_ldap_label: "Red Hat IdM"
-
     gitlab_ldap_host: "{{ idm_server_fqdn }}"
     gitlab_ldap_port: 636
     gitlab_ldap_encryption: "simple_tls"
@@ -130,61 +180,30 @@
     gitlab_ldap_group_base: >-
       cn=groups,cn=accounts,{{ gitlab_idm_base_dn }}
 
-    ###########################################################################
-    # LDAP bind account
-    #
-    # This uses the existing IdM admin account for the lab.
-    #
-    # For a production deployment, replace this with a dedicated read-only
-    # IdM LDAP service account.
-    ###########################################################################
-
+    # Lab implementation. A dedicated read-only LDAP bind account is preferable
+    # for production.
     gitlab_ldap_bind_dn: >-
       uid=admin,cn=users,cn=accounts,{{ gitlab_idm_base_dn }}
 
-    gitlab_idm_admin_password_secret_name: >-
-      {{ secret_prefix }}/idm/admin_password
-
-    ###########################################################################
-    # GitLab administrator mapping
-    #
-    # This must be the IdM group CN, not its complete DN.
-    ###########################################################################
-
+    # GitLab expects the CN, not the complete group DN.
     gitlab_ldap_admin_group_cn: "idm-admins"
 
-    ###########################################################################
-    # LDAP user behavior
-    ###########################################################################
-
-    # Permit all normal IdM person entries to authenticate.
+    # Every normal IdM person entry may authenticate.
     gitlab_ldap_user_filter: "(objectClass=person)"
 
     gitlab_ldap_lowercase_usernames: true
     gitlab_ldap_allow_username_or_email_login: true
-
-    # false means a valid LDAP user is automatically activated when signing in.
     gitlab_ldap_block_auto_created_users: false
 
     ###########################################################################
-    # Standard GitLab account defaults
+    # Normal GitLab user defaults
     ###########################################################################
 
-    # These settings apply to normal IdM users who are not IdM administrators.
     gitlab_default_projects_limit: 10
     gitlab_default_can_create_group: false
 
     ###########################################################################
-    # Container registry
-    ###########################################################################
-
-    gitlab_registry_enabled: true
-
-    gitlab_registry_external_url: >-
-      https://{{ gitlab_fqdn }}:{{ gitlab_registry_port }}
-
-    ###########################################################################
-    # Firewall
+    # Firewall and readiness
     ###########################################################################
 
     gitlab_firewall_services:
@@ -192,13 +211,7 @@
       - http
       - https
 
-    ###########################################################################
-    # Readiness
-    ###########################################################################
-
-    gitlab_health_url: >-
-      https://{{ gitlab_fqdn }}/-/health
-
+    gitlab_health_url: "https://{{ gitlab_fqdn }}/-/health"
     gitlab_readiness_retries: 60
     gitlab_readiness_delay: 20
 
@@ -213,7 +226,7 @@
 
   pre_tasks:
     ###########################################################################
-    # PHASE 0 | Validate target
+    # PHASE 0 | Validate deployment inputs
     ###########################################################################
 
     - name: PHASE 0 | Verify supported operating system
@@ -237,18 +250,16 @@
           - idm_server_fqdn is defined
           - idm_server_fqdn | length > 0
           - gitlab_fqdn | length > 0
-        fail_msg: >-
-          The Terraform-generated inventory must define aws_region,
-          secret_prefix, idm_domain_name, idm_server_fqdn, and the GitLab FQDN.
-
-    - name: PHASE 0 | Validate GitLab registry port
-      ansible.builtin.assert:
-        that:
+          - gitlab_public_tls_fqdn | length > 0
+          - gitlab_acm_certificate_arn | length > 0
+          - gitlab_acm_certificate_arn is match('^arn:aws[a-zA-Z-]*:acm:')
           - gitlab_registry_port is defined
           - gitlab_registry_port | int > 0
           - gitlab_registry_port | int < 65536
         fail_msg: >-
-          gitlab_registry_port must be a valid TCP port.
+          The Terraform inventory must provide aws_region, secret_prefix,
+          idm_domain_name, idm_server_fqdn, gitlab_hostname/public_tls_fqdn,
+          acm_certificate_arn, and gitlab_registry_port.
 
     - name: PHASE 0 | Verify IdM hostname resolves
       ansible.builtin.command:
@@ -256,7 +267,6 @@
           - getent
           - ahostsv4
           - "{{ gitlab_ldap_host }}"
-      register: gitlab_idm_resolution
       changed_when: false
 
     - name: PHASE 0 | Verify GitLab hostname resolves
@@ -265,21 +275,22 @@
           - getent
           - ahostsv4
           - "{{ gitlab_fqdn }}"
-      register: gitlab_hostname_resolution
       changed_when: false
 
   tasks:
     ###########################################################################
-    # PHASE 1 | Base operating system
+    # PHASE 1 | Install operating-system prerequisites
     ###########################################################################
 
-    - name: PHASE 1 | Install required operating-system packages
+    - name: PHASE 1 | Install required packages
       ansible.builtin.dnf:
         name:
           - awscli2
           - ca-certificates
           - curl
           - firewalld
+          - jq
+          - openldap-clients
           - openssh-server
           - openssl
           - policycoreutils-python-utils
@@ -305,7 +316,7 @@
         state: enabled
       loop: "{{ gitlab_firewall_services }}"
 
-    - name: PHASE 1 | Open GitLab container registry port
+    - name: PHASE 1 | Open GitLab registry port
       ansible.posix.firewalld:
         port: "{{ gitlab_registry_port }}/tcp"
         permanent: true
@@ -314,62 +325,10 @@
       when: gitlab_registry_enabled | bool
 
     ###########################################################################
-    # PHASE 2 | Trust the IdM certificate authority
+    # PHASE 2 | Validate AWS instance identity and retrieve secrets
     ###########################################################################
 
-    - name: PHASE 2 | Inspect IdM CA certificate
-      ansible.builtin.stat:
-        path: /etc/ipa/ca.crt
-      register: gitlab_idm_ca
-
-    - name: PHASE 2 | Require GitLab host to be enrolled in IdM
-      ansible.builtin.assert:
-        that:
-          - gitlab_idm_ca.stat.exists
-          - gitlab_idm_ca.stat.isreg
-        fail_msg: >-
-          /etc/ipa/ca.crt was not found. The GitLab EC2 instance must be
-          enrolled in IdM before this playbook runs.
-
-    - name: PHASE 2 | Install IdM CA in system trust store
-      ansible.builtin.copy:
-        src: /etc/ipa/ca.crt
-        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
-        remote_src: true
-        owner: root
-        group: root
-        mode: "0644"
-      register: gitlab_idm_ca_install
-
-    - name: PHASE 2 | Refresh system certificate trust
-      ansible.builtin.command:
-        argv:
-          - update-ca-trust
-          - extract
-      when: gitlab_idm_ca_install.changed
-      changed_when: true
-
-    - name: PHASE 2 | Verify IdM LDAPS certificate
-      ansible.builtin.shell: |
-        set -o pipefail
-
-        timeout 20 openssl s_client \
-          -connect {{ gitlab_ldap_host | quote }}:{{ gitlab_ldap_port }} \
-          -servername {{ gitlab_ldap_host | quote }} \
-          -CAfile /etc/pki/tls/certs/ca-bundle.crt \
-          -verify_return_error \
-          </dev/null 2>&1 |
-        grep -q "Verify return code: 0"
-      args:
-        executable: /bin/bash
-      register: gitlab_idm_ldaps_check
-      changed_when: false
-
-    ###########################################################################
-    # PHASE 3 | Retrieve IdM LDAP bind credential
-    ###########################################################################
-
-    - name: PHASE 3 | Verify EC2 instance role identity
+    - name: PHASE 2 | Verify GitLab EC2 instance role identity
       ansible.builtin.command:
         argv:
           - aws
@@ -377,10 +336,30 @@
           - get-caller-identity
           - --region
           - "{{ aws_region }}"
+          - --output
+          - json
       register: gitlab_aws_caller_identity
       changed_when: false
 
-    - name: PHASE 3 | Retrieve IdM admin password
+    - name: PHASE 2 | Retrieve GitLab root password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ gitlab_root_password_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: gitlab_root_password_lookup
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 2 | Retrieve IdM LDAP bind password
       ansible.builtin.command:
         argv:
           - aws
@@ -398,27 +377,78 @@
       changed_when: false
       no_log: true
 
-    - name: PHASE 3 | Store LDAP bind password
+    - name: PHASE 2 | Store retrieved credentials
       ansible.builtin.set_fact:
+        gitlab_initial_root_password: >-
+          {{ gitlab_root_password_lookup.stdout | trim }}
         gitlab_ldap_bind_password: >-
           {{ gitlab_idm_admin_password_lookup.stdout | trim }}
       no_log: true
 
-    - name: PHASE 3 | Validate LDAP bind password
+    - name: PHASE 2 | Validate retrieved credentials
       ansible.builtin.assert:
         that:
+          - gitlab_initial_root_password | length > 0
+          - gitlab_initial_root_password not in ["None", "null"]
           - gitlab_ldap_bind_password | length > 0
-          - gitlab_ldap_bind_password != "None"
-          - gitlab_ldap_bind_password != "null"
+          - gitlab_ldap_bind_password not in ["None", "null"]
         fail_msg: >-
-          AWS Secrets Manager returned an empty IdM administrator password.
+          AWS Secrets Manager returned an empty GitLab root password or IdM
+          LDAP bind password.
       no_log: true
 
     ###########################################################################
-    # PHASE 4 | Validate the IdM administrator group
+    # PHASE 3 | Trust and validate Red Hat IdM LDAPS
     ###########################################################################
 
-    - name: PHASE 4 | Verify IdM admin group exists
+    - name: PHASE 3 | Inspect IdM CA certificate
+      ansible.builtin.stat:
+        path: /etc/ipa/ca.crt
+      register: gitlab_idm_ca
+
+    - name: PHASE 3 | Require the GitLab host to be enrolled in IdM
+      ansible.builtin.assert:
+        that:
+          - gitlab_idm_ca.stat.exists
+          - gitlab_idm_ca.stat.isreg
+        fail_msg: >-
+          /etc/ipa/ca.crt was not found. Enroll the GitLab EC2 host into IdM
+          before running this playbook.
+
+    - name: PHASE 3 | Install IdM CA into system trust
+      ansible.builtin.copy:
+        src: /etc/ipa/ca.crt
+        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      register: gitlab_idm_ca_install
+
+    - name: PHASE 3 | Refresh system CA trust
+      ansible.builtin.command:
+        argv:
+          - update-ca-trust
+          - extract
+      when: gitlab_idm_ca_install.changed
+      changed_when: true
+
+    - name: PHASE 3 | Verify IdM LDAPS certificate
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        timeout 20 openssl s_client \
+          -connect {{ gitlab_ldap_host | quote }}:{{ gitlab_ldap_port }} \
+          -servername {{ gitlab_ldap_host | quote }} \
+          -CAfile /etc/pki/tls/certs/ca-bundle.crt \
+          -verify_return_error \
+          </dev/null 2>&1 |
+        grep -q "Verify return code: 0"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: PHASE 3 | Verify IdM administrator group exists
       ansible.builtin.command:
         argv:
           - ldapsearch
@@ -439,26 +469,336 @@
       changed_when: false
       no_log: true
 
-    - name: PHASE 4 | Assert IdM admin group exists
+    - name: PHASE 3 | Assert IdM administrator group exists
       ansible.builtin.assert:
         that:
           - >-
-            (
-              'cn=' ~ gitlab_ldap_admin_group_cn | lower
-            )
+            ('cn=' ~ gitlab_ldap_admin_group_cn | lower)
             in
-            (
-              gitlab_idm_admin_group_lookup.stdout | lower
-            )
+            (gitlab_idm_admin_group_lookup.stdout | lower)
         fail_msg: >-
-          IdM group {{ gitlab_ldap_admin_group_cn }} was not found beneath
+          IdM group {{ gitlab_ldap_admin_group_cn }} was not found under
           {{ gitlab_ldap_group_base }}.
 
     ###########################################################################
-    # PHASE 5 | Configure GitLab repository
+    # PHASE 4 | Validate and export Terraform-created ACM certificate
     ###########################################################################
 
-    - name: PHASE 5 | Download official GitLab repository installer
+    - name: PHASE 4 | Describe GitLab ACM certificate
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - describe-certificate
+          - --certificate-arn
+          - "{{ gitlab_acm_certificate_arn }}"
+          - --region
+          - "{{ aws_region }}"
+          - --output
+          - json
+      register: gitlab_acm_description
+      changed_when: false
+
+    - name: PHASE 4 | Parse GitLab ACM certificate description
+      ansible.builtin.set_fact:
+        gitlab_acm_certificate_data: >-
+          {{
+            (
+              gitlab_acm_description.stdout
+              | from_json
+            ).Certificate
+          }}
+
+    - name: PHASE 4 | Validate GitLab ACM certificate
+      ansible.builtin.assert:
+        that:
+          - gitlab_acm_certificate_data.Status == "ISSUED"
+          - >-
+            gitlab_public_tls_fqdn
+            in
+            (
+              gitlab_acm_certificate_data.SubjectAlternativeNames
+              | default([])
+            )
+            or
+            gitlab_acm_certificate_data.DomainName
+            == gitlab_public_tls_fqdn
+        fail_msg: >-
+          ACM certificate {{ gitlab_acm_certificate_arn }} must be ISSUED and
+          cover {{ gitlab_public_tls_fqdn }}.
+
+    - name: PHASE 4 | Create GitLab TLS directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ gitlab_tls_directory }}"
+          mode: "0700"
+        - path: "{{ gitlab_tls_backup_directory }}"
+          mode: "0700"
+        - path: "{{ gitlab_ssl_directory }}"
+          mode: "0700"
+
+    - name: PHASE 4 | Generate temporary ACM export passphrase
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+
+        openssl rand \
+          -base64 \
+          {{ gitlab_acm_export_passphrase_bytes | int }} \
+          > {{ gitlab_tls_passphrase_path | quote }}
+      args:
+        executable: /bin/bash
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 4 | Export GitLab certificate from ACM
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+
+        aws acm export-certificate \
+          --certificate-arn {{ gitlab_acm_certificate_arn | quote }} \
+          --passphrase fileb://{{ gitlab_tls_passphrase_path | quote }} \
+          --region {{ aws_region | quote }} \
+          --output json \
+          > {{ gitlab_tls_export_json_path | quote }}
+
+        chmod 0600 {{ gitlab_tls_export_json_path | quote }}
+      args:
+        executable: /bin/bash
+      changed_when: true
+      no_log: true
+
+    - name: PHASE 4 | Extract ACM certificate components
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+
+        jq -r '.Certificate' \
+          {{ gitlab_tls_export_json_path | quote }} \
+          > {{ gitlab_tls_certificate_path | quote }}
+
+        jq -r '.CertificateChain' \
+          {{ gitlab_tls_export_json_path | quote }} \
+          > {{ gitlab_tls_chain_path | quote }}
+
+        jq -r '.PrivateKey' \
+          {{ gitlab_tls_export_json_path | quote }} \
+          > {{ gitlab_tls_encrypted_private_key_path | quote }}
+
+        chmod 0644 \
+          {{ gitlab_tls_certificate_path | quote }} \
+          {{ gitlab_tls_chain_path | quote }}
+
+        chmod 0600 \
+          {{ gitlab_tls_encrypted_private_key_path | quote }}
+      args:
+        executable: /bin/bash
+      changed_when: true
+      no_log: true
+
+    - name: PHASE 4 | Decrypt ACM private key
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -in
+          - "{{ gitlab_tls_encrypted_private_key_path }}"
+          - -passin
+          - "file:{{ gitlab_tls_passphrase_path }}"
+          - -out
+          - "{{ gitlab_tls_private_key_path }}"
+      changed_when: true
+      no_log: true
+
+    - name: PHASE 4 | Set decrypted private-key permissions
+      ansible.builtin.file:
+        path: "{{ gitlab_tls_private_key_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: PHASE 4 | Build full certificate chain
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        temporary_fullchain="$(mktemp)"
+
+        cat \
+          {{ gitlab_tls_certificate_path | quote }} \
+          {{ gitlab_tls_chain_path | quote }} \
+          > "$temporary_fullchain"
+
+        install \
+          -o root \
+          -g root \
+          -m 0644 \
+          "$temporary_fullchain" \
+          {{ gitlab_tls_fullchain_path | quote }}
+
+        rm -f "$temporary_fullchain"
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    ###########################################################################
+    # PHASE 5 | Validate the exported certificate and private key
+    ###########################################################################
+
+    - name: PHASE 5 | Validate certificate hostname
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ gitlab_tls_certificate_path }}"
+          - -noout
+          - -checkhost
+          - "{{ gitlab_public_tls_fqdn }}"
+      changed_when: false
+
+    - name: PHASE 5 | Validate minimum certificate lifetime
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ gitlab_tls_certificate_path }}"
+          - -checkend
+          - "{{ gitlab_acm_certificate_minimum_validity_seconds | string }}"
+          - -noout
+      changed_when: false
+
+    - name: PHASE 5 | Read certificate public-key digest
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl x509 \
+          -in {{ gitlab_tls_certificate_path | quote }} \
+          -pubkey \
+          -noout |
+        openssl pkey \
+          -pubin \
+          -outform DER |
+        openssl sha256
+      args:
+        executable: /bin/bash
+      register: gitlab_certificate_public_key_digest
+      changed_when: false
+
+    - name: PHASE 5 | Read private-key public-key digest
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl pkey \
+          -in {{ gitlab_tls_private_key_path | quote }} \
+          -pubout \
+          -outform DER |
+        openssl sha256
+      args:
+        executable: /bin/bash
+      register: gitlab_private_key_public_key_digest
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 5 | Assert certificate and private key match
+      ansible.builtin.assert:
+        that:
+          - >-
+            gitlab_certificate_public_key_digest.stdout | trim
+            ==
+            gitlab_private_key_public_key_digest.stdout | trim
+        fail_msg: >-
+          The private key exported from ACM does not match the GitLab
+          certificate.
+      no_log: true
+
+    ###########################################################################
+    # PHASE 6 | Install GitLab certificate and key
+    ###########################################################################
+
+    - name: PHASE 6 | Inspect existing GitLab certificate
+      ansible.builtin.stat:
+        path: "{{ gitlab_ssl_certificate_path }}"
+      register: gitlab_existing_ssl_certificate
+
+    - name: PHASE 6 | Back up existing GitLab certificate
+      ansible.builtin.copy:
+        src: "{{ gitlab_ssl_certificate_path }}"
+        dest: >-
+          {{ gitlab_tls_backup_directory }}/{{
+            gitlab_public_tls_fqdn
+          }}-{{ ansible_date_time.iso8601_basic_short }}.crt
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - gitlab_existing_ssl_certificate.stat.exists
+        - gitlab_force_public_tls_install | bool
+
+    - name: PHASE 6 | Inspect existing GitLab private key
+      ansible.builtin.stat:
+        path: "{{ gitlab_ssl_private_key_path }}"
+      register: gitlab_existing_ssl_private_key
+
+    - name: PHASE 6 | Back up existing GitLab private key
+      ansible.builtin.copy:
+        src: "{{ gitlab_ssl_private_key_path }}"
+        dest: >-
+          {{ gitlab_tls_backup_directory }}/{{
+            gitlab_public_tls_fqdn
+          }}-{{ ansible_date_time.iso8601_basic_short }}.key
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - gitlab_existing_ssl_private_key.stat.exists
+        - gitlab_force_public_tls_install | bool
+      no_log: true
+
+    - name: PHASE 6 | Install GitLab full-chain certificate
+      ansible.builtin.copy:
+        src: "{{ gitlab_tls_fullchain_path }}"
+        dest: "{{ gitlab_ssl_certificate_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reconfigure GitLab
+
+    - name: PHASE 6 | Install GitLab private key
+      ansible.builtin.copy:
+        src: "{{ gitlab_tls_private_key_path }}"
+        dest: "{{ gitlab_ssl_private_key_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      notify: Reconfigure GitLab
+
+    - name: PHASE 6 | Remove temporary ACM export artifacts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ gitlab_tls_export_json_path }}"
+        - "{{ gitlab_tls_passphrase_path }}"
+        - "{{ gitlab_tls_encrypted_private_key_path }}"
+      no_log: true
+
+    ###########################################################################
+    # PHASE 7 | Configure GitLab package repository
+    ###########################################################################
+
+    - name: PHASE 7 | Download official GitLab repository installer
       ansible.builtin.get_url:
         url: "{{ gitlab_repository_script_url }}"
         dest: "{{ gitlab_repository_script_path }}"
@@ -466,12 +806,12 @@
         group: root
         mode: "0700"
 
-    - name: PHASE 5 | Check whether GitLab repository exists
+    - name: PHASE 7 | Check whether GitLab repository is configured
       ansible.builtin.stat:
         path: /etc/yum.repos.d/gitlab_gitlab-ee.repo
       register: gitlab_repository_file
 
-    - name: PHASE 5 | Configure GitLab package repository
+    - name: PHASE 7 | Configure GitLab package repository
       ansible.builtin.command:
         argv:
           - "{{ gitlab_repository_script_path }}"
@@ -479,133 +819,24 @@
       changed_when: true
 
     ###########################################################################
-    # PHASE 6 | Install GitLab package
+    # PHASE 8 | Install GitLab
     ###########################################################################
 
-    - name: PHASE 6 | Install GitLab EE
+    - name: PHASE 8 | Install GitLab EE
       ansible.builtin.dnf:
         name: "{{ gitlab_package_name }}"
         state: "{{ gitlab_package_state }}"
       environment:
         EXTERNAL_URL: "{{ gitlab_external_url }}"
+        GITLAB_ROOT_PASSWORD: "{{ gitlab_initial_root_password }}"
       register: gitlab_package_install
+      no_log: true
 
     ###########################################################################
-    # PHASE 7 | Install TLS certificate
+    # PHASE 9 | Configure GitLab, registry, TLS, and IdM LDAP
     ###########################################################################
 
-    - name: PHASE 7 | Inspect staged GitLab TLS files
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - "{{ gitlab_staged_certificate }}"
-        - "{{ gitlab_staged_certificate_chain }}"
-        - "{{ gitlab_staged_private_key }}"
-      register: gitlab_staged_tls_files
-      when: gitlab_tls_enabled | bool
-
-    - name: PHASE 7 | Validate staged GitLab TLS files
-      ansible.builtin.assert:
-        that:
-          - gitlab_staged_tls_files.results | length == 3
-          - gitlab_staged_tls_files.results[0].stat.exists
-          - gitlab_staged_tls_files.results[0].stat.isreg
-          - gitlab_staged_tls_files.results[1].stat.exists
-          - gitlab_staged_tls_files.results[1].stat.isreg
-          - gitlab_staged_tls_files.results[2].stat.exists
-          - gitlab_staged_tls_files.results[2].stat.isreg
-        fail_msg: >-
-          GitLab TLS files must be staged at:
-
-          {{ gitlab_staged_certificate }}
-          {{ gitlab_staged_certificate_chain }}
-          {{ gitlab_staged_private_key }}
-      when: gitlab_tls_enabled | bool
-
-    - name: PHASE 7 | Create GitLab SSL directory
-      ansible.builtin.file:
-        path: "{{ gitlab_ssl_directory }}"
-        state: directory
-        owner: root
-        group: root
-        mode: "0700"
-      when: gitlab_tls_enabled | bool
-
-    - name: PHASE 7 | Build GitLab full certificate chain
-      ansible.builtin.shell: |
-        set -euo pipefail
-
-        temporary_certificate="$(mktemp)"
-
-        cat \
-          {{ gitlab_staged_certificate | quote }} \
-          {{ gitlab_staged_certificate_chain | quote }} \
-          > "$temporary_certificate"
-
-        if ! cmp -s \
-          "$temporary_certificate" \
-          {{ gitlab_ssl_certificate | quote }}; then
-
-          install \
-            -o root \
-            -g root \
-            -m 0644 \
-            "$temporary_certificate" \
-            {{ gitlab_ssl_certificate | quote }}
-
-          echo CHANGED
-        fi
-
-        rm -f "$temporary_certificate"
-      args:
-        executable: /bin/bash
-      register: gitlab_certificate_install
-      changed_when: >-
-        'CHANGED' in gitlab_certificate_install.stdout
-      when: gitlab_tls_enabled | bool
-      notify: Reconfigure GitLab
-
-    - name: PHASE 7 | Install GitLab private key
-      ansible.builtin.copy:
-        src: "{{ gitlab_staged_private_key }}"
-        dest: "{{ gitlab_ssl_private_key }}"
-        remote_src: true
-        owner: root
-        group: root
-        mode: "0600"
-      when: gitlab_tls_enabled | bool
-      notify: Reconfigure GitLab
-
-    - name: PHASE 7 | Validate GitLab TLS certificate and key match
-      ansible.builtin.shell: |
-        set -euo pipefail
-
-        certificate_public_key="$(
-          openssl x509 \
-            -in {{ gitlab_ssl_certificate | quote }} \
-            -pubkey \
-            -noout |
-          openssl sha256
-        )"
-
-        private_key_public_key="$(
-          openssl pkey \
-            -in {{ gitlab_ssl_private_key | quote }} \
-            -pubout |
-          openssl sha256
-        )"
-
-        test "$certificate_public_key" = "$private_key_public_key"
-      args:
-        executable: /bin/bash
-      changed_when: false
-      when: gitlab_tls_enabled | bool
-
-    ###########################################################################
-    # PHASE 8 | Configure GitLab and IdM LDAP
-    ###########################################################################
-
-    - name: PHASE 8 | Configure GitLab and Red Hat IdM LDAP
+    - name: PHASE 9 | Render GitLab configuration
       ansible.builtin.copy:
         dest: /etc/gitlab/gitlab.rb
         owner: root
@@ -626,11 +857,11 @@
           letsencrypt['enable'] = false
 
           nginx['redirect_http_to_https'] = true
-          nginx['ssl_certificate'] = {{ gitlab_ssl_certificate | to_json }}
-          nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key | to_json }}
+          nginx['ssl_certificate'] = {{ gitlab_ssl_certificate_path | to_json }}
+          nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key_path | to_json }}
 
           ############################################################################
-          # Normal GitLab user defaults
+          # Normal user defaults
           ############################################################################
 
           gitlab_rails['gitlab_default_projects_limit'] = {{ gitlab_default_projects_limit | int }}
@@ -678,10 +909,6 @@
             }
           }
 
-          ############################################################################
-          # Automatic LDAP user creation
-          ############################################################################
-
           gitlab_rails['omniauth_allow_single_sign_on'] = ['ldapmain']
           gitlab_rails['omniauth_block_auto_created_users'] = false
 
@@ -693,19 +920,19 @@
 
           gitlab_rails['registry_enabled'] = {{ gitlab_registry_enabled | bool | lower }}
 
-          registry_nginx['ssl_certificate'] = {{ gitlab_ssl_certificate | to_json }}
-          registry_nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key | to_json }}
+          registry_nginx['ssl_certificate'] = {{ gitlab_ssl_certificate_path | to_json }}
+          registry_nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key_path | to_json }}
       no_log: true
       notify: Reconfigure GitLab
 
-    - name: PHASE 8 | Apply pending GitLab configuration
+    - name: PHASE 9 | Apply GitLab configuration
       ansible.builtin.meta: flush_handlers
 
     ###########################################################################
-    # PHASE 9 | Validate GitLab services
+    # PHASE 10 | Validate GitLab services and LDAP
     ###########################################################################
 
-    - name: PHASE 9 | Check GitLab service status
+    - name: PHASE 10 | Check GitLab service status
       ansible.builtin.command:
         argv:
           - gitlab-ctl
@@ -713,7 +940,7 @@
       register: gitlab_service_status
       changed_when: false
 
-    - name: PHASE 9 | Run GitLab application check
+    - name: PHASE 10 | Run GitLab application check
       ansible.builtin.command:
         argv:
           - gitlab-rake
@@ -721,10 +948,6 @@
           - SANITIZE=true
       register: gitlab_application_check
       changed_when: false
-
-    ###########################################################################
-    # PHASE 10 | Validate LDAP
-    ###########################################################################
 
     - name: PHASE 10 | Run GitLab LDAP connectivity check
       ansible.builtin.command:
@@ -745,7 +968,7 @@
       no_log: true
 
     ###########################################################################
-    # PHASE 11 | Wait for GitLab
+    # PHASE 11 | Validate public endpoints
     ###########################################################################
 
     - name: PHASE 11 | Wait for GitLab HTTPS endpoint
@@ -772,17 +995,55 @@
         - gitlab_https_health.stdout | trim in ["200", "302"]
       changed_when: false
 
+    - name: PHASE 11 | Verify certificate presented by GitLab
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl s_client \
+          -connect {{ gitlab_public_tls_fqdn | quote }}:443 \
+          -servername {{ gitlab_public_tls_fqdn | quote }} \
+          -verify_return_error \
+          </dev/null 2>&1 |
+        grep -q "Verify return code: 0"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: PHASE 11 | Wait for GitLab registry HTTPS endpoint
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --connect-timeout
+          - "10"
+          - --max-time
+          - "30"
+          - "https://{{ gitlab_fqdn }}:{{ gitlab_registry_port }}/v2/"
+      register: gitlab_registry_health
+      retries: 30
+      delay: 10
+      until:
+        - gitlab_registry_health.rc == 0
+        - gitlab_registry_health.stdout | trim in ["200", "401"]
+      changed_when: false
+
     ###########################################################################
     # PHASE 12 | Report
     ###########################################################################
 
-    - name: PHASE 12 | Display GitLab deployment result
+    - name: PHASE 12 | Display deployment result
       ansible.builtin.debug:
         msg:
           - "GitLab URL: {{ gitlab_external_url }}"
           - "GitLab registry: {{ gitlab_registry_external_url }}"
+          - "ACM certificate: {{ gitlab_acm_certificate_arn }}"
+          - "Staged certificate: {{ gitlab_tls_fullchain_path }}"
+          - "Installed certificate: {{ gitlab_ssl_certificate_path }}"
           - "LDAP server: {{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
-          - "LDAP user base: {{ gitlab_ldap_user_base }}"
-          - "LDAP group base: {{ gitlab_ldap_group_base }}"
-          - "GitLab administrator IdM group: {{ gitlab_ldap_admin_group_cn }}"
-          - "Other matching IdM users receive normal GitLab accounts."
+          - "LDAP administrator group: {{ gitlab_ldap_admin_group_cn }}"
+          - "Other matching IdM users receive standard GitLab accounts."
