@@ -128,7 +128,7 @@ Under the hood the deploy/rollback steps use native bootc operations:
 ## Prerequisites
 
 - An AWS account with permission to create VPCs, EC2, EIPs, Route 53 records, IAM roles, and Secrets Manager entries
-- A Route 53 hosted zone for your sandbox domain
+- A Route 53 hosted zone for sandbox domain
 - Terraform and the AWS CLI installed locally
 - Ansible with the required collections:
 
