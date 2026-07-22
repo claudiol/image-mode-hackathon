@@ -263,12 +263,12 @@
           - gitlab_public_tls_fqdn | length > 0
           - gitlab_acm_certificate_arn | length > 0
           - gitlab_acm_certificate_arn is match('^arn:aws[a-zA-Z-]*:acm:')
-          - gitlab_registry_port | int > 0
-          - gitlab_registry_port | int < 65536
+          - gitlab_registry_effective_port | int > 0
+          - gitlab_registry_effective_port | int < 65536
         fail_msg: >-
           The Terraform inventory must provide aws_region, secret_prefix,
           idm_domain_name, idm_server_fqdn, gitlab_hostname/public_tls_fqdn,
-          acm_certificate_arn. gitlab_registry_port is optional and
+          and acm_certificate_arn. gitlab_registry_port is optional and
           defaults to 5050.
 
     - name: PHASE 0 | Verify IdM hostname resolves
