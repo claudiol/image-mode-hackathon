@@ -1220,18 +1220,18 @@ resource "aws_secretsmanager_secret_version" "satellite_aws_secret_access_key" {
 resource "aws_iam_role" "gitlab_runtime" {
   name = "${var.environment_name}-gitlab-runtime-role"
 
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
+        Sid    = "AllowEC2AssumeRole"
         Effect = "Allow"
+
         Principal = {
           Service = "ec2.amazonaws.com"
         }
+
         Action = "sts:AssumeRole"
       }
     ]
@@ -1240,9 +1240,19 @@ resource "aws_iam_role" "gitlab_runtime" {
   tags = {
     Name        = "${var.environment_name}-gitlab-runtime-role"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
     Purpose     = "GitLab EC2 runtime access"
   }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 }
+
+
+############################################################
+# GitLab EC2 Runtime Policy
+############################################################
 
 resource "aws_iam_role_policy" "gitlab_runtime" {
   name = "${var.environment_name}-gitlab-runtime"
@@ -1289,7 +1299,10 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
       },
 
       #########################################################################
-      # Export only the ACM certificate generated for GitLab servers
+      # Export Terraform-generated GitLab ACM certificates
+      #
+      # Do not reference aws_acm_certificate.server here. The wildcard ARN,
+      # combined with certificate tags, avoids a Terraform dependency cycle.
       #########################################################################
 
       {
@@ -1297,19 +1310,19 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
         Effect = "Allow"
 
         Action = [
-            "acm:DescribeCertificate",
-            "acm:ExportCertificate"
+          "acm:DescribeCertificate",
+          "acm:ExportCertificate"
         ]
 
-        Resource = (
-            "arn:aws:acm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:certificate/*"
-        )
+        Resource = [
+          "arn:aws:acm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:certificate/*"
+        ]
 
         Condition = {
-            StringEquals = {
-                "aws:ResourceTag/Role"        = "gitlab"
-                "aws:ResourceTag/Environment" = var.environment_name
-            }
+          StringEquals = {
+            "aws:ResourceTag/Role"        = "gitlab"
+            "aws:ResourceTag/Environment" = var.environment_name
+          }
         }
       },
 
@@ -1405,10 +1418,26 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
       }
     ]
   })
+}
+
+
+############################################################
+# GitLab EC2 Instance Profile
+############################################################
+
+resource "aws_iam_instance_profile" "gitlab_runtime" {
+  name = "${var.environment_name}-gitlab-instance-profile"
+  role = aws_iam_role.gitlab_runtime.name
+
+  tags = {
+    Name        = "${var.environment_name}-gitlab-instance-profile"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "GitLab EC2 runtime instance profile"
+  }
 
   depends_on = [
-    aws_acm_certificate.server,
-    aws_secretsmanager_secret.generated
+    aws_iam_role_policy.gitlab_runtime
   ]
 }
 
