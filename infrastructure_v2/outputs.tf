@@ -756,3 +756,32 @@ output "gitlab_iam_instance_profile_arn" {
   description = "ARN of the IAM instance profile assigned to GitLab EC2 instances."
   value       = aws_iam_instance_profile.gitlab_runtime.arn
 }
+
+############################################################
+# Image Mode AWS Workflow Outputs
+############################################################
+
+output "image_mode_artifact_bucket_name" {
+  description = "Shared S3 bucket for Image Mode artifacts."
+  value       = aws_s3_bucket.image_mode_artifacts.id
+}
+
+output "image_builder_instance_profile_name" {
+  description = "Instance profile assigned to Image Builder hosts."
+  value       = aws_iam_instance_profile.image_builder.name
+}
+
+output "rhel_iam_user_name" {
+  description = "Image Mode automation IAM username."
+  value       = aws_iam_user.rhel_iam.name
+}
+
+output "rhel_iam_credentials_secret_name" {
+  description = "Secrets Manager secret containing rhel-iam access credentials."
+  value       = aws_secretsmanager_secret.rhel_iam_credentials.name
+}
+
+output "vmimport_role_name" {
+  description = "AWS VM Import/Export service role."
+  value       = aws_iam_role.vmimport.name
+}
