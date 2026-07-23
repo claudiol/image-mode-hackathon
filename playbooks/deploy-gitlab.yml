@@ -477,7 +477,7 @@
           - cn
       register: gitlab_idm_admin_group_lookup
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: PHASE 3 | Assert IdM administrator group exists
       ansible.builtin.assert:
