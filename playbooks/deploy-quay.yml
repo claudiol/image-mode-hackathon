@@ -66,9 +66,23 @@
 
     redhat_registry_host: registry.redhat.io
 
-    # Preserve database and registry data on normal reruns.
-    # Set true only when intentionally destroying and rebuilding the deployment.
-    quay_force_clean_rebuild: false
+    ###############################################################################
+    # Existing deployment handling
+    ###############################################################################
+
+    # When true, an existing Quay installation is destroyed and recreated.
+    #
+    # This removes:
+    #   - PostgreSQL data
+    #   - Redis data
+    #   - Quay configuration
+    #   - Registry repositories and image layers
+    #   - Cached bootstrap tokens
+    #   - Installed Quay TLS files
+    #
+    # IdM users, IdM groups, and AWS Secrets Manager secrets are preserved.
+    quay_rebuild_existing_installation: true
+
 
     ###########################################################################
     # IdM LDAP directory structure
@@ -331,50 +345,6 @@
           {{ quay_required_secrets.idm_admin_password }}
       no_log: true
 
-    - name: Read optional Quay API token from AWS Secrets Manager
-      ansible.builtin.command:
-        argv:
-          - aws
-          - secretsmanager
-          - get-secret-value
-          - --secret-id
-          - "{{ secret_prefix }}/quay/admin_access_token"
-          - --region
-          - "{{ aws_region }}"
-          - --query
-          - SecretString
-          - --output
-          - text
-      register: quay_admin_token_result
-      delegate_to: localhost
-      become: false
-      changed_when: false
-      failed_when: false
-      no_log: true
-      environment: >-
-        {{
-          {'AWS_PROFILE': aws_profile}
-          if (
-            aws_profile is defined
-            and aws_profile | string | length > 0
-          )
-          else {}
-        }}
-
-    - name: Normalize optional Quay API token
-      ansible.builtin.set_fact:
-        quay_admin_access_token: >-
-          {{
-            ''
-            if (
-              quay_admin_token_result.rc != 0
-              or quay_admin_token_result.stdout | default('') | trim == ''
-              or quay_admin_token_result.stdout | default('') | trim
-                 == 'CHANGE_ME_AFTER_QUAY_DEPLOYMENT'
-            )
-            else quay_admin_token_result.stdout | trim
-          }}
-      no_log: true
 
     ###########################################################################
     # Dedicated Quay LDAP user credential
@@ -614,27 +584,6 @@
           - openldap-clients
         state: present
 
-    - name: Stop old generated Quay systemd service if present
-      ansible.builtin.systemd:
-        name: pod-quay-pod.service
-        state: stopped
-        enabled: false
-      failed_when: false
-
-    - name: Remove old generated systemd units if present
-      ansible.builtin.file:
-        path: "/etc/systemd/system/{{ item }}"
-        state: absent
-      loop:
-        - pod-quay-pod.service
-        - container-quay-postgres.service
-        - container-quay-redis.service
-        - container-quay-registry.service
-
-    - name: Reload systemd after removing old units
-      ansible.builtin.systemd:
-        daemon_reload: true
-
     - name: Enable firewalld
       ansible.builtin.service:
         name: firewalld
@@ -676,17 +625,164 @@
         - "{{ quay_image }}"
         - "{{ postgres_image }}"
         - "{{ redis_image }}"
+    ###########################################################################
+    # Detect an existing Quay installation
+    ###########################################################################
 
-    - name: Stop and remove existing Quay pod before reconciliation
+    - name: Check for an existing Quay configuration
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/config/config.yaml"
+      register: quay_existing_config
+
+    - name: Check for an existing Quay PostgreSQL database
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/postgres"
+      register: quay_existing_postgres
+
+    - name: Check for existing Quay registry storage
+      ansible.builtin.stat:
+        path: "{{ quay_root }}/storage"
+      register: quay_existing_storage
+
+    - name: Inspect existing Quay pod
+      ansible.builtin.command:
+        argv:
+          - podman
+          - pod
+          - exists
+          - quay-pod
+      register: quay_existing_pod
+      changed_when: false
+      failed_when: false
+
+    - name: Determine whether Quay is already installed
+      ansible.builtin.set_fact:
+        quay_existing_installation: >-
+          {{
+            quay_existing_config.stat.exists
+            or quay_existing_postgres.stat.exists
+            or quay_existing_storage.stat.exists
+            or quay_existing_pod.rc == 0
+          }}
+
+    - name: Display existing Quay installation status
+      ansible.builtin.debug:
+        msg: >-
+          Existing Quay installation detected. The deployment will be
+          completely removed and rebuilt because
+          quay_rebuild_existing_installation is enabled.
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Refuse to continue when an existing installation cannot be rebuilt
+      ansible.builtin.fail:
+        msg: >-
+          An existing Quay installation was detected beneath
+          {{ quay_root }}, but quay_rebuild_existing_installation is false.
+          Enable quay_rebuild_existing_installation or remove the existing
+          deployment manually.
+      when:
+        - quay_existing_installation | bool
+        - not quay_rebuild_existing_installation | bool
+
+
+
+    ###########################################################################
+    # Destroy an existing Quay installation
+    ###########################################################################
+
+    - name: Stop existing Quay registry container
+      containers.podman.podman_container:
+        name: quay-registry
+        state: stopped
+      failed_when: false
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Remove existing Quay registry container
+      containers.podman.podman_container:
+        name: quay-registry
+        state: absent
+      failed_when: false
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Remove existing PostgreSQL container
+      containers.podman.podman_container:
+        name: quay-postgres
+        state: absent
+      failed_when: false
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Remove existing Redis container
+      containers.podman.podman_container:
+        name: quay-redis
+        state: absent
+      failed_when: false
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Remove existing Quay pod
       containers.podman.podman_pod:
         name: quay-pod
         state: absent
+      failed_when: false
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
 
-    - name: Remove persistent Quay data when clean rebuild is requested
+    - name: Remove existing generated Quay systemd units
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ item }}"
+        state: absent
+      loop:
+        - pod-quay-pod.service
+        - container-quay-postgres.service
+        - container-quay-redis.service
+        - container-quay-registry.service
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Reload systemd after removing Quay units
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Remove all persistent Quay installation data
       ansible.builtin.file:
         path: "{{ quay_root }}"
         state: absent
-      when: quay_force_clean_rebuild | bool
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Verify existing Quay installation directory was removed
+      ansible.builtin.stat:
+        path: "{{ quay_root }}"
+      register: quay_removed_root
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
+
+    - name: Assert existing Quay installation was removed
+      ansible.builtin.assert:
+        that:
+          - not quay_removed_root.stat.exists
+        fail_msg: >-
+          The existing Quay installation directory {{ quay_root }}
+          could not be completely removed.
+      when:
+        - quay_existing_installation | bool
+        - quay_rebuild_existing_installation | bool
 
     - name: Create Quay root directory
       ansible.builtin.file:
@@ -1733,81 +1829,32 @@
         status_code:
           - 200
           - 201
-          - 400
+        return_content: true
       register: quay_init_user
       no_log: true
-      failed_when: false
 
-    - name: Select newly generated or previously stored Quay API token
+    - name: Capture newly generated Quay bootstrap API token
       ansible.builtin.set_fact:
         quay_api_token: >-
           {{
             quay_init_user.json.access_token
-            | default(quay_admin_access_token, true)
+            | default('')
+            | string
+            | trim
           }}
       no_log: true
 
-    - name: Read locally cached bootstrap token when needed
-      ansible.builtin.slurp:
-        src: "{{ quay_root }}/config/bootstrap-token"
-      register: local_bootstrap_token
-      failed_when: false
-      no_log: true
-      when: quay_api_token | default('') | length == 0
-
-    - name: Use locally cached bootstrap token
-      ansible.builtin.set_fact:
-        quay_api_token: >-
-          {{ local_bootstrap_token.content | b64decode | trim }}
-      no_log: true
-      when:
-        - quay_api_token | default('') | length == 0
-        - local_bootstrap_token is defined
-        - local_bootstrap_token.content is defined
-
-    - name: Fail when no Quay API token is available
-      ansible.builtin.fail:
-        msg: >-
-          No Quay API token is available. For a new database,
-          /api/v1/user/initialize must return one. For an existing
-          database, store a valid token at
-          {{ secret_prefix }}/quay/admin_access_token.
-      when: quay_api_token | default('') | length == 0
-
-    - name: Cache Quay API token on the Quay server
-      ansible.builtin.copy:
-        dest: "{{ quay_root }}/config/bootstrap-token"
-        owner: root
-        group: root
-        mode: "0600"
-        content: "{{ quay_api_token }}"
+    - name: Assert Quay administrator initialization succeeded
+      ansible.builtin.assert:
+        that:
+          - quay_init_user.status | int in [200, 201]
+          - quay_api_token | length > 0
+        fail_msg: >-
+          The clean Quay database did not return a new bootstrap API token.
+          The /api/v1/user/initialize request returned HTTP
+          {{ quay_init_user.status | default('unknown') }}.
       no_log: true
 
-    - name: Store Quay API token in AWS Secrets Manager
-      ansible.builtin.command:
-        argv:
-          - aws
-          - secretsmanager
-          - put-secret-value
-          - --secret-id
-          - "{{ secret_prefix }}/quay/admin_access_token"
-          - --region
-          - "{{ aws_region }}"
-          - --secret-string
-          - "{{ quay_api_token }}"
-      delegate_to: localhost
-      become: false
-      changed_when: true
-      no_log: true
-      environment: >-
-        {{
-          {'AWS_PROFILE': aws_profile}
-          if (
-            aws_profile is defined
-            and aws_profile | string | length > 0
-          )
-          else {}
-        }}
 
     - name: Verify that the bootstrap administrator exists and mark email as verified
       ansible.builtin.command:
@@ -1896,7 +1943,7 @@
           - 400
       loop: "{{ quay_team_syncs }}"
       register: quay_create_teams
-      no_log: true
+      no_log: false
 
     - name: Add bootstrap administrator to the owners team
       ansible.builtin.uri:
@@ -2164,7 +2211,7 @@
         label: "{{ item.team }}"
       register: quay_synced_teams
       changed_when: false
-      no_log: true
+      no_log: false
 
     - name: Show synchronized Quay team validation
       ansible.builtin.debug:
