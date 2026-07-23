@@ -1297,15 +1297,20 @@ resource "aws_iam_role_policy" "gitlab_runtime" {
         Effect = "Allow"
 
         Action = [
-          "acm:DescribeCertificate",
-          "acm:ExportCertificate"
+            "acm:DescribeCertificate",
+            "acm:ExportCertificate"
         ]
 
-        Resource = [
-          for server_name, certificate in aws_acm_certificate.server :
-          certificate.arn
-          if local.flattened_servers[server_name].role == "gitlab"
-        ]
+        Resource = (
+            "arn:aws:acm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:certificate/*"
+        )
+
+        Condition = {
+            StringEquals = {
+                "aws:ResourceTag/Role"        = "gitlab"
+                "aws:ResourceTag/Environment" = var.environment_name
+            }
+        }
       },
 
       #########################################################################
