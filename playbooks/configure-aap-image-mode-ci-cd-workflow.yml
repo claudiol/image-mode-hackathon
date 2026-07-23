@@ -189,6 +189,12 @@
           - aws_region | string | trim | length > 0
           - aws_profile is defined
           - aws_profile | string | trim | length > 0
+          - rhel_iam_credentials_secret_name_resolved is defined
+          - >-
+            rhel_iam_credentials_secret_name_resolved
+            | string
+            | trim
+            | length > 0
           - groups['aap'] is defined
           - groups['aap'] | length > 0
           - groups['quay'] is defined
@@ -197,8 +203,9 @@
           - groups['image_builder'] | length > 0
         fail_msg: >-
           The Terraform-generated inventory must define secret_prefix,
-          aws_region, aws_profile, and nonempty [aap], [quay], and
-          [image_builder] groups.
+          aws_region, aws_profile, the AWS IAM service-account credentials
+          secret name, and nonempty [aap], [quay], and [image_builder]
+          groups.
 
     - name: Normalize AWS configuration
       ansible.builtin.set_fact:
