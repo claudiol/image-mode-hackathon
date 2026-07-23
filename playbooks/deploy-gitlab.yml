@@ -74,7 +74,7 @@
     gitlab_registry_enabled: true
 
     gitlab_registry_external_url: >-
-      https://{{ gitlab_fqdn }}:{{ gitlab_registry_port }}
+      https://{{ gitlab_fqdn }}:{{ gitlab_registry_effective_port }}
 
     ###########################################################################
     # GitLab package
@@ -179,8 +179,10 @@
 
     gitlab_idm_base_dn: >-
       {{
-        idm_domain_name.split('.')
-        | map('regex_replace', '^(.*)$', 'dc=\\1')
+        idm_domain_name
+        | lower
+        | split('.')
+        | map('regex_replace', '^', 'dc=')
         | join(',')
       }}
 
@@ -265,11 +267,17 @@
           - gitlab_acm_certificate_arn is match('^arn:aws[a-zA-Z-]*:acm:')
           - gitlab_registry_effective_port | int > 0
           - gitlab_registry_effective_port | int < 65536
+          - gitlab_idm_base_dn | length > 0
+          - "'\\\\1' not in gitlab_idm_base_dn"
+          - gitlab_idm_base_dn is match('^dc=[^,]+(?:,dc=[^,]+)+$')
+          - "'\\\\1' not in gitlab_ldap_bind_dn"
+          - "'\\\\1' not in gitlab_ldap_group_base"
         fail_msg: >-
           The Terraform inventory must provide aws_region, secret_prefix,
           idm_domain_name, idm_server_fqdn, gitlab_hostname/public_tls_fqdn,
           and acm_certificate_arn. gitlab_registry_port is optional and
-          defaults to 5050.
+          defaults to 5050. The generated IdM LDAP distinguished names must
+          also be valid.
 
     - name: PHASE 0 | Verify IdM hostname resolves
       ansible.builtin.command:
@@ -385,7 +393,7 @@
           - text
       register: gitlab_idm_admin_password_lookup
       changed_when: false
-      no_log: false
+      no_log: true
 
     - name: PHASE 2 | Store retrieved credentials
       ansible.builtin.set_fact:
@@ -458,37 +466,89 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: PHASE 3 | Verify IdM administrator group exists
-      ansible.builtin.command:
-        argv:
-          - ldapsearch
-          - -LLL
-          - -x
-          - -H
-          - "ldaps://{{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
-          - -D
-          - "{{ gitlab_ldap_bind_dn }}"
-          - -w
-          - "{{ gitlab_ldap_bind_password }}"
-          - -b
-          - "{{ gitlab_ldap_group_base }}"
-          - "(cn={{ gitlab_ldap_admin_group_cn }})"
-          - dn
-          - cn
-      register: gitlab_idm_admin_group_lookup
-      changed_when: false
-      no_log: false
-
-    - name: PHASE 3 | Assert IdM administrator group exists
+    - name: PHASE 3 | Validate generated LDAP distinguished names
       ansible.builtin.assert:
         that:
-          - >-
-            ('cn=' ~ gitlab_ldap_admin_group_cn | lower)
-            in
-            (gitlab_idm_admin_group_lookup.stdout | lower)
+          - gitlab_idm_base_dn is match('^dc=[^,]+(?:,dc=[^,]+)+$')
+          - gitlab_ldap_bind_dn is match(
+              '^uid=[^,]+,cn=users,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+            )
+          - gitlab_ldap_group_base is match(
+              '^cn=groups,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+            )
+          - "'\\\\1' not in gitlab_idm_base_dn"
+          - "'\\\\1' not in gitlab_ldap_bind_dn"
+          - "'\\\\1' not in gitlab_ldap_group_base"
         fail_msg: >-
-          IdM group {{ gitlab_ldap_admin_group_cn }} was not found under
-          {{ gitlab_ldap_group_base }}.
+          Invalid LDAP distinguished names were generated from
+          idm_domain_name={{ idm_domain_name }}. Generated base DN:
+          {{ gitlab_idm_base_dn }}.
+
+    - name: PHASE 3 | Create temporary LDAP bind-password file
+      ansible.builtin.tempfile:
+        state: file
+        path: /run
+        prefix: gitlab-ldap-bind-
+      register: gitlab_ldap_bind_password_file
+      no_log: true
+
+    - name: PHASE 3 | Store LDAP bind password securely
+      ansible.builtin.copy:
+        content: "{{ gitlab_ldap_bind_password }}"
+        dest: "{{ gitlab_ldap_bind_password_file.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: PHASE 3 | Verify IdM administrator group exists
+      block:
+        - name: PHASE 3 | Query IdM administrator group
+          ansible.builtin.command:
+            argv:
+              - ldapsearch
+              - -LLL
+              - -x
+              - -H
+              - "ldaps://{{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
+              - -D
+              - "{{ gitlab_ldap_bind_dn }}"
+              - -y
+              - "{{ gitlab_ldap_bind_password_file.path }}"
+              - -b
+              - "{{ gitlab_ldap_group_base }}"
+              - -s
+              - sub
+              - "(cn={{ gitlab_ldap_admin_group_cn }})"
+              - dn
+              - cn
+          register: gitlab_idm_admin_group_lookup
+          changed_when: false
+          no_log: true
+
+        - name: PHASE 3 | Assert IdM administrator group exists
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  'cn=' ~ gitlab_ldap_admin_group_cn | lower
+                )
+                in
+                (
+                  gitlab_idm_admin_group_lookup.stdout | lower
+                )
+            fail_msg: >-
+              IdM group {{ gitlab_ldap_admin_group_cn }} was not found under
+              {{ gitlab_ldap_group_base }}.
+      always:
+        - name: PHASE 3 | Remove temporary LDAP bind-password file
+          ansible.builtin.file:
+            path: "{{ gitlab_ldap_bind_password_file.path }}"
+            state: absent
+          when:
+            - gitlab_ldap_bind_password_file is defined
+            - gitlab_ldap_bind_password_file.path is defined
+          no_log: true
 
     ###########################################################################
     # PHASE 4 | Validate and export Terraform-created ACM certificate
@@ -1033,7 +1093,7 @@
           - "10"
           - --max-time
           - "30"
-          - "https://{{ gitlab_fqdn }}:{{ gitlab_registry_port }}/v2/"
+          - "https://{{ gitlab_fqdn }}:{{ gitlab_registry_effective_port }}/v2/"
       register: gitlab_registry_health
       retries: 30
       delay: 10
