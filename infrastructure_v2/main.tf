@@ -1868,7 +1868,7 @@ resource "aws_iam_instance_profile" "gitlab_runtime" {
 ############################################################
 
 resource "aws_s3_bucket" "image_mode_artifacts" {
-  
+
   bucket = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
   force_destroy = true
@@ -2915,6 +2915,26 @@ resource "local_file" "ansible_inventory" {
       local.lab_ssh_private_key_secret_name
     )
 
+    ###########################################################################
+    # Image Mode AWS workflow
+    ###########################################################################
+
+    image_mode_artifact_bucket = (
+      aws_s3_bucket.image_mode_artifacts.bucket
+    )
+
+    rhel_iam_credentials_secret_name = (
+      aws_secretsmanager_secret.rhel_iam_credentials.name
+    )
+
+    vmimport_role_name = (
+      aws_iam_role.vmimport.name
+    )
+
+    ###########################################################################
+    # Satellite installation artifacts
+    ###########################################################################
+
     satellite_iso_s3_bucket = (
       var.satellite_iso_s3_bucket
     )
@@ -2951,13 +2971,28 @@ resource "local_file" "ansible_inventory" {
       var.satellite_location_name
     )
 
+    ###########################################################################
+    # Satellite AWS Compute Resource
+    ###########################################################################
 
     satellite_compute_resource_name = (
-      "${var.environment_name}-aws"
+      var.satellite_compute_resource_name
     )
 
     satellite_compute_profile_name = (
-      "AWS POC"
+      var.satellite_compute_profile_name
+    )
+
+    satellite_default_compute_profile_name = (
+      var.satellite_default_compute_profile_name
+    )
+
+    satellite_gitlab_compute_profile_name = (
+      var.satellite_gitlab_compute_profile_name
+    )
+
+    satellite_image_builder_compute_profile_name = (
+      var.satellite_image_builder_compute_profile_name
     )
 
     satellite_compute_region = (
@@ -2976,19 +3011,47 @@ resource "local_file" "ansible_inventory" {
       aws_vpc.lab.id
     )
 
-    satellite_compute_security_group_ids = [
-      aws_security_group.lab.id,
-      aws_security_group.gitlab.id
-
-    ]
-
     satellite_compute_key_pair = (
       aws_key_pair.lab.key_name
+    )
+
+    ###########################################################################
+    # Satellite EC2 instance profiles
+    ###########################################################################
+
+    satellite_default_instance_profile = (
+      aws_iam_instance_profile.lab_ec2_default.name
     )
 
     satellite_gitlab_instance_profile = (
       aws_iam_instance_profile.gitlab_runtime.name
     )
+
+    satellite_image_builder_instance_profile = (
+      aws_iam_instance_profile.image_builder.name
+    )
+
+    ###########################################################################
+    # Satellite EC2 security groups
+    ###########################################################################
+
+    satellite_compute_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.gitlab.id
+    ]
+
+    satellite_default_security_group_ids = [
+      aws_security_group.lab.id
+    ]
+
+    satellite_image_builder_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.image_builder.id
+    ]
+
+    ###########################################################################
+    # Satellite AWS credentials
+    ###########################################################################
 
     satellite_aws_access_key_secret_name = (
       aws_secretsmanager_secret.satellite_aws_access_key_id.name
@@ -2998,15 +3061,34 @@ resource "local_file" "ansible_inventory" {
       aws_secretsmanager_secret.satellite_aws_secret_access_key.name
     )
 
+    ###########################################################################
+    # Service ports
+    ###########################################################################
 
-    lab_users = var.lab_users
-    idm_users = var.idm_users
+    gitlab_registry_port = (
+      var.gitlab_registry_port
+    )
+
+    image_builder_cockpit_port = (
+      var.image_builder_cockpit_port
+    )
+
+    ###########################################################################
+    # Lab identities and IdM
+    ###########################################################################
+
+    lab_users          = var.lab_users
+    idm_users          = var.idm_users
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
     idm_server_fqdn    = local.primary_idm_hostname
     idm_server_ip      = local.primary_idm_private_ip
-    
+
+    ###########################################################################
+    # Terraform-managed servers
+    ###########################################################################
+
     servers = {
       for name, instance in aws_instance.server :
       name => {
@@ -3027,27 +3109,25 @@ resource "local_file" "ansible_inventory" {
           instance.private_ip
         )
 
+        iam_instance_profile = (
+          local.flattened_servers[name].role == "aap"
+          ? aws_iam_instance_profile.aap.name
+          : local.flattened_servers[name].role == "satellite"
+          ? aws_iam_instance_profile.satellite.name
+          : local.flattened_servers[name].role == "gitlab"
+          ? aws_iam_instance_profile.gitlab_runtime.name
+          : local.flattened_servers[name].role == "image-builder"
+          ? aws_iam_instance_profile.image_builder.name
+          : aws_iam_instance_profile.lab_ec2_default.name
+        )
+
         acm_certificate_arn = try(
           aws_acm_certificate.server[name].arn,
-      ""
+          ""
         )
       }
     }
   })
-
-  depends_on = [
-    aws_eip_association.server,
-    aws_route53_record.public_dns,
-    aws_acm_certificate_validation.server,
-    aws_route53_resolver_rule_association.idm_forward,
-    terraform_data.validate_dns_discovery,
-    terraform_data.validate_idm_server,
-    local_sensitive_file.lab_ssh_private_key,
-    aws_secretsmanager_secret_version.ssh_private_key,
-    aws_secretsmanager_secret_version.generated,
-    aws_secretsmanager_secret_version.static,
-    aws_secretsmanager_secret_version.redhat
-  ]
 }
 
 ############################################################
