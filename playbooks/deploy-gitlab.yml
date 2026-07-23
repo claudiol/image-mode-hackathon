@@ -205,6 +205,36 @@
     gitlab_ldap_allow_username_or_email_login: true
     gitlab_ldap_block_auto_created_users: false
 
+
+    # Complete DN for the IdM group whose members should become GitLab
+    # instance administrators.
+    gitlab_ldap_admin_group_dn: >-
+      cn={{ gitlab_ldap_admin_group_cn }},{{ gitlab_ldap_group_base }}
+
+    ###########################################################################
+    # GitLab administrator bootstrap from IdM
+    ###########################################################################
+
+    # This is an Ansible-managed alternative to licensed LDAP Group Sync.
+    gitlab_idm_admin_bootstrap_enabled: true
+
+    # When true, fail the playbook if an IdM administrator has not yet signed
+    # into GitLab and therefore does not yet have a GitLab account.
+    #
+    # Leave false for initial deployment. After each IdM admin signs in once,
+    # rerun the playbook to promote the account.
+    gitlab_idm_admin_require_existing_gitlab_accounts: false
+
+    # Remove GitLab administrator access from existing LDAP users who are no
+    # longer members of the configured IdM administrator group.
+    #
+    # This intentionally excludes the local GitLab root account.
+    gitlab_idm_admin_reconcile_removals: true
+
+    # LDAP provider generated from the ldap_servers key named "main".
+    gitlab_ldap_provider: "ldapmain"
+
+
     ###########################################################################
     # Normal GitLab user defaults
     ###########################################################################
@@ -270,6 +300,12 @@
           - gitlab_idm_base_dn is match('^dc=[^,]+(?:,dc=[^,]+)+$')
           - "'\\\\1' not in gitlab_ldap_bind_dn"
           - "'\\\\1' not in gitlab_ldap_group_base"
+          - gitlab_ldap_admin_group_cn | length > 0
+          - gitlab_ldap_admin_group_dn | length > 0
+          - gitlab_ldap_admin_group_dn is match(
+              '^cn=[^,]+,cn=groups,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+            )
+          - gitlab_ldap_provider | length > 0
         fail_msg: >-
           The Terraform inventory must provide aws_region, secret_prefix,
           idm_domain_name, idm_server_fqdn, gitlab_hostname/public_tls_fqdn,
@@ -1101,6 +1137,13 @@
 
           ############################################################################
           # Red Hat IdM LDAP
+          #
+          # LDAP authentication and just-in-time account creation are enabled.
+          # IdM administrator promotion is handled separately by PHASE 10.
+          #
+          # Do not configure admin_group or run gitlab:ldap:group_sync unless
+          # this GitLab instance has an active license supporting LDAP Group
+          # Sync.
           ############################################################################
 
           gitlab_rails['ldap_enabled'] = true
@@ -1128,9 +1171,6 @@
               'base' => {{ gitlab_ldap_user_base | to_json }},
               'user_filter' => {{ gitlab_ldap_user_filter | to_json }},
 
-              'group_base' => {{ gitlab_ldap_group_base | to_json }},
-              'admin_group' => {{ gitlab_ldap_admin_group_cn | to_json }},
-
               'attributes' => {
                 'username' => ['uid'],
                 'email' => ['mail'],
@@ -1140,6 +1180,13 @@
               }
             }
           }
+
+          ############################################################################
+          # LDAP account provisioning
+          #
+          # IdM users matching the LDAP user filter may sign in. GitLab creates
+          # and links the account during the user's first successful LDAP login.
+          ############################################################################
 
           gitlab_rails['omniauth_allow_single_sign_on'] = ['ldapmain']
           gitlab_rails['omniauth_block_auto_created_users'] = false
@@ -1154,14 +1201,63 @@
 
           registry_nginx['ssl_certificate'] = {{ gitlab_ssl_certificate_path | to_json }}
           registry_nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key_path | to_json }}
+      register: gitlab_configuration
       no_log: true
       notify: Reconfigure GitLab
 
     - name: PHASE 9 | Apply GitLab configuration
       ansible.builtin.meta: flush_handlers
 
+    - name: PHASE 9 | Validate rendered GitLab configuration
+      ansible.builtin.command:
+        argv:
+          - gitlab-ctl
+          - show-config
+      register: gitlab_rendered_configuration
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9 | Verify LDAP configuration is present
+      ansible.builtin.assert:
+        that:
+          - >-
+            'ldap_enabled'
+            in
+            (
+              gitlab_rendered_configuration.stdout
+              | default('')
+            )
+          - >-
+            gitlab_ldap_host
+            in
+            (
+              gitlab_rendered_configuration.stdout
+              | default('')
+            )
+        fail_msg: >-
+          GitLab reconfiguration completed, but the rendered configuration
+          does not contain the expected Red Hat IdM LDAP settings.
+      no_log: true
+
+    - name: PHASE 9 | Verify GitLab configuration file permissions
+      ansible.builtin.stat:
+        path: /etc/gitlab/gitlab.rb
+      register: gitlab_configuration_file
+
+    - name: PHASE 9 | Assert GitLab configuration is protected
+      ansible.builtin.assert:
+        that:
+          - gitlab_configuration_file.stat.exists
+          - gitlab_configuration_file.stat.isreg
+          - gitlab_configuration_file.stat.pw_name == "root"
+          - gitlab_configuration_file.stat.gr_name == "root"
+          - gitlab_configuration_file.stat.mode == "0600"
+        fail_msg: >-
+          /etc/gitlab/gitlab.rb must exist, be owned by root:root, and have
+          mode 0600 because it contains the LDAP bind password.
+
     ###########################################################################
-    # PHASE 10 | Validate GitLab services and LDAP
+    # PHASE 10 | Validate GitLab and bootstrap administrators from IdM
     ###########################################################################
 
     - name: PHASE 10 | Check GitLab service status
@@ -1190,47 +1286,394 @@
       changed_when: false
       no_log: true
 
-    - name: PHASE 10 | Run initial LDAP group synchronization
-    - name: PHASE 10 | Run initial LDAP group synchronization
-      ansible.builtin.command:
-        argv:
-          - gitlab-rake
-          - gitlab:ldap:group_sync
-      register: gitlab_ldap_group_sync
-      changed_when: false
-      failed_when:
-        - gitlab_ldap_group_sync.rc != 0
-        - >-
-          'LDAP GroupSync is not enabled.'
-          not in gitlab_ldap_group_sync.stdout
-      when: gitlab_ldap_group_sync_enabled | bool
-      no_log: true
+    - name: PHASE 10 | Bootstrap GitLab administrators from IdM
+      when: gitlab_idm_admin_bootstrap_enabled | bool
+      block:
+        #######################################################################
+        # Query IdM administrator membership
+        #######################################################################
 
-    - name: PHASE 10 | Report unavailable LDAP group synchronization
+        - name: PHASE 10 | Create temporary LDAP bind-password file
+          ansible.builtin.tempfile:
+            state: file
+            path: /run
+            prefix: gitlab-admin-bootstrap-ldap-
+          register: gitlab_admin_bootstrap_password_file
+          no_log: true
+
+        - name: PHASE 10 | Store LDAP bind password securely
+          ansible.builtin.copy:
+            content: "{{ gitlab_ldap_bind_password }}"
+            dest: "{{ gitlab_admin_bootstrap_password_file.path }}"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: PHASE 10 | Query IdM administrator group members
+          ansible.builtin.command:
+            argv:
+              - ldapsearch
+              - -LLL
+              - -o
+              - ldif-wrap=no
+              - -x
+              - -H
+              - "ldaps://{{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
+              - -D
+              - "{{ gitlab_ldap_bind_dn }}"
+              - -y
+              - "{{ gitlab_admin_bootstrap_password_file.path }}"
+              - -b
+              - "{{ gitlab_ldap_admin_group_dn }}"
+              - -s
+              - base
+              - "(objectClass=*)"
+              - cn
+              - member
+          register: gitlab_idm_admin_group_members
+          changed_when: false
+          no_log: true
+
+        - name: PHASE 10 | Extract IdM administrator user DNs
+          ansible.builtin.set_fact:
+            gitlab_idm_admin_member_dns: >-
+              {{
+                gitlab_idm_admin_group_members.stdout_lines
+                | select('match', '^member: ')
+                | map('regex_replace', '^member: ', '')
+                | select(
+                    'match',
+                    '^uid=[^,]+,cn=users,cn=accounts,'
+                  )
+                | list
+                | unique
+                | sort
+              }}
+          no_log: true
+
+        - name: PHASE 10 | Extract IdM administrator usernames
+          ansible.builtin.set_fact:
+            gitlab_idm_admin_usernames: >-
+              {{
+                gitlab_idm_admin_member_dns
+                | map(
+                    'regex_replace',
+                    '^uid=([^,]+),.*$',
+                    '\1'
+                  )
+                | map('lower')
+                | list
+                | unique
+                | sort
+              }}
+          no_log: true
+
+        - name: PHASE 10 | Validate IdM administrator membership
+          ansible.builtin.assert:
+            that:
+              - gitlab_idm_admin_usernames | length > 0
+            fail_msg: >-
+              IdM group {{ gitlab_ldap_admin_group_dn }} exists but no direct
+              user members were found. Add user entries directly to the group,
+              or update the membership query if the group contains only nested
+              groups.
+
+        #######################################################################
+        # Promote existing GitLab LDAP users and reconcile removed members
+        #######################################################################
+
+        - name: PHASE 10 | Reconcile GitLab administrators with IdM
+          ansible.builtin.command:
+            argv:
+              - gitlab-rails
+              - runner
+              - |
+                require 'json'
+
+                expected_usernames =
+                  JSON.parse(ENV.fetch('IDM_ADMIN_USERNAMES_JSON'))
+                      .map { |value| value.to_s.downcase }
+                      .uniq
+                      .sort
+
+                ldap_provider = ENV.fetch('GITLAB_LDAP_PROVIDER')
+                reconcile_removals =
+                  ENV.fetch('RECONCILE_ADMIN_REMOVALS', 'false') == 'true'
+
+                promoted = []
+                already_admin = []
+                pending = []
+                demoted = []
+
+                expected_usernames.each do |username|
+                  user = User.find_by('lower(username) = ?', username)
+
+                  if user.nil?
+                    pending << username
+                    next
+                  end
+
+                  ldap_identity = user.identities.find_by(provider: ldap_provider)
+
+                  if ldap_identity.nil?
+                    pending << username
+                    next
+                  end
+
+                  if user.admin?
+                    already_admin << username
+                  else
+                    user.admin = true
+                    user.save!
+                    promoted << username
+                  end
+                end
+
+                if reconcile_removals
+                  User
+                    .joins(:identities)
+                    .where(identities: { provider: ldap_provider })
+                    .where(admin: true)
+                    .where.not(username: expected_usernames)
+                    .find_each do |user|
+                      next if user.username == 'root'
+
+                      user.admin = false
+                      user.save!
+                      demoted << user.username
+                    end
+                end
+
+                result = {
+                  expected: expected_usernames,
+                  promoted: promoted.sort,
+                  already_admin: already_admin.sort,
+                  pending_first_login: pending.sort,
+                  demoted: demoted.sort
+                }
+
+                puts "GITLAB_IDM_ADMIN_RESULT=#{JSON.generate(result)}"
+          environment:
+            IDM_ADMIN_USERNAMES_JSON: >-
+              {{ gitlab_idm_admin_usernames | to_json }}
+            GITLAB_LDAP_PROVIDER: "{{ gitlab_ldap_provider }}"
+            RECONCILE_ADMIN_REMOVALS: >-
+              {{ gitlab_idm_admin_reconcile_removals | bool | lower }}
+          register: gitlab_idm_admin_reconciliation
+          changed_when: >-
+            (
+              gitlab_idm_admin_reconciliation.stdout
+              | regex_search(
+                  '"promoted":\s*\[(?!\])'
+                )
+            )
+            is not none
+            or
+            (
+              gitlab_idm_admin_reconciliation.stdout
+              | regex_search(
+                  '"demoted":\s*\[(?!\])'
+                )
+            )
+            is not none
+
+        - name: PHASE 10 | Extract GitLab IdM administrator result
+          ansible.builtin.set_fact:
+            gitlab_idm_admin_result: >-
+              {{
+                (
+                  gitlab_idm_admin_reconciliation.stdout_lines
+                  | select(
+                      'match',
+                      '^GITLAB_IDM_ADMIN_RESULT='
+                    )
+                  | map(
+                      'regex_replace',
+                      '^GITLAB_IDM_ADMIN_RESULT=',
+                      ''
+                    )
+                  | first
+                )
+                | from_json
+              }}
+
+        - name: PHASE 10 | Validate GitLab administrator reconciliation result
+          ansible.builtin.assert:
+            that:
+              - gitlab_idm_admin_result.expected is defined
+              - gitlab_idm_admin_result.promoted is defined
+              - gitlab_idm_admin_result.already_admin is defined
+              - gitlab_idm_admin_result.pending_first_login is defined
+              - gitlab_idm_admin_result.demoted is defined
+            fail_msg: >-
+              GitLab administrator reconciliation did not return the expected
+              structured result.
+
+        - name: PHASE 10 | Report IdM administrators awaiting first login
+          ansible.builtin.debug:
+            msg:
+              - >-
+                The following IdM administrators do not yet have a linked
+                GitLab LDAP account:
+                {{
+                  gitlab_idm_admin_result.pending_first_login
+                  | join(', ')
+                }}
+              - >-
+                Each pending user must sign in to
+                {{ gitlab_external_url }} once using Red Hat IdM credentials.
+              - >-
+                Rerun this playbook after first login to grant GitLab
+                administrator access.
+          when:
+            - gitlab_idm_admin_result.pending_first_login | length > 0
+
+        - name: PHASE 10 | Require GitLab accounts for all IdM administrators
+          ansible.builtin.assert:
+            that:
+              - gitlab_idm_admin_result.pending_first_login | length == 0
+            fail_msg: >-
+              One or more IdM administrators have not signed in to GitLab:
+              {{
+                gitlab_idm_admin_result.pending_first_login
+                | join(', ')
+              }}. They must sign in once through LDAP before this playbook can
+              promote their linked GitLab accounts.
+          when:
+            - gitlab_idm_admin_require_existing_gitlab_accounts | bool
+
+        - name: PHASE 10 | Verify expected GitLab administrators
+          ansible.builtin.command:
+            argv:
+              - gitlab-rails
+              - runner
+              - |
+                require 'json'
+
+                expected =
+                  JSON.parse(ENV.fetch('IDM_ADMIN_USERNAMES_JSON'))
+                      .map { |value| value.to_s.downcase }
+                      .uniq
+                      .sort
+
+                verified = []
+                missing = []
+
+                expected.each do |username|
+                  user = User.find_by('lower(username) = ?', username)
+
+                  if user&.admin?
+                    verified << username
+                  else
+                    missing << username
+                  end
+                end
+
+                puts(
+                  "GITLAB_IDM_ADMIN_VERIFICATION=" +
+                  JSON.generate(
+                    {
+                      verified: verified.sort,
+                      missing_or_not_admin: missing.sort
+                    }
+                  )
+                )
+          environment:
+            IDM_ADMIN_USERNAMES_JSON: >-
+              {{ gitlab_idm_admin_usernames | to_json }}
+          register: gitlab_idm_admin_verification_command
+          changed_when: false
+
+        - name: PHASE 10 | Extract GitLab administrator verification
+          ansible.builtin.set_fact:
+            gitlab_idm_admin_verification: >-
+              {{
+                (
+                  gitlab_idm_admin_verification_command.stdout_lines
+                  | select(
+                      'match',
+                      '^GITLAB_IDM_ADMIN_VERIFICATION='
+                    )
+                  | map(
+                      'regex_replace',
+                      '^GITLAB_IDM_ADMIN_VERIFICATION=',
+                      ''
+                    )
+                  | first
+                )
+                | from_json
+              }}
+
+        - name: PHASE 10 | Report GitLab administrator bootstrap
+          ansible.builtin.debug:
+            msg:
+              - >-
+                IdM administrator group:
+                {{ gitlab_ldap_admin_group_dn }}
+              - >-
+                Expected IdM administrators:
+                {{
+                  gitlab_idm_admin_result.expected
+                  | join(', ')
+                }}
+              - >-
+                Promoted during this run:
+                {{
+                  gitlab_idm_admin_result.promoted
+                  | default([])
+                  | join(', ')
+                  | default('none', true)
+                }}
+              - >-
+                Already GitLab administrators:
+                {{
+                  gitlab_idm_admin_result.already_admin
+                  | default([])
+                  | join(', ')
+                  | default('none', true)
+                }}
+              - >-
+                Awaiting first LDAP login:
+                {{
+                  gitlab_idm_admin_result.pending_first_login
+                  | default([])
+                  | join(', ')
+                  | default('none', true)
+                }}
+              - >-
+                Administrator access removed:
+                {{
+                  gitlab_idm_admin_result.demoted
+                  | default([])
+                  | join(', ')
+                  | default('none', true)
+                }}
+              - >-
+                Verified GitLab administrators:
+                {{
+                  gitlab_idm_admin_verification.verified
+                  | default([])
+                  | join(', ')
+                  | default('none', true)
+                }}
+
+      always:
+        - name: PHASE 10 | Remove temporary LDAP bind-password file
+          ansible.builtin.file:
+            path: "{{ gitlab_admin_bootstrap_password_file.path }}"
+            state: absent
+          when:
+            - gitlab_admin_bootstrap_password_file is defined
+            - gitlab_admin_bootstrap_password_file.path is defined
+          no_log: true
+
+    - name: PHASE 10 | Report disabled IdM administrator bootstrap
       ansible.builtin.debug:
         msg: >-
-          GitLab reported that LDAP GroupSync is not enabled. LDAP user
-          authentication remains enabled, but automatic IdM-to-GitLab group
-          membership and administrator synchronization require an active
-          GitLab Premium or Ultimate license.
-      when:
-        - gitlab_ldap_group_sync_enabled | bool
-        - gitlab_ldap_group_sync is defined
-        - >-
-          'LDAP GroupSync is not enabled.'
-          in
-          (
-            gitlab_ldap_group_sync.stdout
-            | default('')
-          )
-
-    - name: PHASE 10 | Report intentionally skipped LDAP group synchronization
-      ansible.builtin.debug:
-        msg: >-
-          LDAP group synchronization is disabled by
-          gitlab_ldap_group_sync_enabled=false. IdM users can still
-          authenticate and receive normal GitLab accounts.
-      when: not gitlab_ldap_group_sync_enabled | bool
+          GitLab administrator bootstrap from IdM is disabled by
+          gitlab_idm_admin_bootstrap_enabled=false.
+      when: not gitlab_idm_admin_bootstrap_enabled | bool
 
     ###########################################################################
     # PHASE 11 | Validate public endpoints
