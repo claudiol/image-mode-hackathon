@@ -1,15 +1,23 @@
 ############################################################
-# terraform.tfvars
+# terraform.tfvars.example
 #
 # Image Mode Hackathon Lab Configuration
 #
-# This file controls the AWS lab deployment.
+# Copy this file to:
 #
-# Do not store sensitive production credentials here.
+#   terraform.tfvars
 #
-# Pass sensitive values using TF_VAR_* environment variables,
-# a secure CI/CD credential store, or another protected secret
-# injection mechanism.
+# before running Terraform.
+#
+# This file controls the AWS infrastructure and the values
+# exported into the Terraform-generated Ansible inventory.
+#
+# Do not store sensitive production credentials in source
+# control.
+#
+# Supply sensitive values with TF_VAR_* environment
+# variables, a protected CI/CD credential store, or another
+# secure secret-injection mechanism.
 ############################################################
 
 
@@ -21,12 +29,12 @@
 #
 # Example:
 #
-# aws configure --profile image-mode-lab
+#   aws configure --profile image-mode-lab
 
 aws_profile = "image-mode-lab"
 
 
-# AWS region where the lab will be deployed.
+# AWS region where the lab is deployed.
 
 aws_region = "us-east-2"
 
@@ -39,10 +47,10 @@ aws_region = "us-east-2"
 #
 # - AWS resource names
 # - AWS resource tags
-# - IAM users and roles
-# - IAM instance profiles
+# - IAM roles and instance profiles
 # - Security groups
 # - EC2 key pairs
+# - Secrets Manager paths
 
 environment_name = "image-mode-lab"
 
@@ -53,14 +61,15 @@ environment_name = "image-mode-lab"
 
 # Prefix used for generated and static secrets.
 #
-# Example generated secrets:
+# Example secret paths:
 #
 # image-mode-lab/aws/ssh_private_key
 # image-mode-lab/idm/admin_password
-# image-mode-lab/aap/controller_admin_password
-# image-mode-lab/satellite/aws_access_key_id
-# image-mode-lab/satellite/aws_secret_access_key
+# image-mode-lab/idm/directory_manager_password
+# image-mode-lab/aap/gateway_admin_password
+# image-mode-lab/quay/superuser_password
 # image-mode-lab/gitlab/root_password
+# image-mode-lab/gitlab/ldap_bind_password
 
 secret_prefix = "image-mode-lab"
 
@@ -69,42 +78,30 @@ secret_prefix = "image-mode-lab"
 # DNS Settings
 ############################################################
 
-# Leave blank to auto-discover an OpenTLC public Route53 zone.
+# Leave blank to auto-discover an OpenTLC public Route53
+# hosted zone.
 #
-# Example discovered parent zone:
+# Example discovered parent domain:
 #
 # sandbox1234.opentlc.com
 #
-# Terraform creates the IdM-managed subdomain:
+# Terraform creates the IdM-managed lab subdomain:
 #
 # lab.sandbox1234.opentlc.com
 
 domain_name = ""
 
 
-# Domain suffix used when automatically discovering OpenTLC
-# public hosted zones.
-
-opentlc_domain_suffix = "opentlc.com"
-
-
-# Optional Route53 hosted zone ID.
+# Optional Route53 public hosted-zone ID.
 #
 # Leave blank for automatic discovery.
 
 route53_zone_id = ""
 
 
-# Create public DNS records for lab servers.
+# Create public DNS records for selected lab servers.
 #
-# Examples:
-#
-# idm-1.lab.sandbox1234.opentlc.com
-# satellite-1.lab.sandbox1234.opentlc.com
-# aap-1.lab.sandbox1234.opentlc.com
-# quay-1.lab.sandbox1234.opentlc.com
-# image-builder-1.lab.sandbox1234.opentlc.com
-# gitlab-1.lab.sandbox1234.opentlc.com
+# Public records are controlled by public_server_names.
 
 create_public_dns_records = true
 
@@ -118,12 +115,13 @@ create_public_dns_records = true
 vpc_cidr = "10.20.0.0/16"
 
 
-# Main subnet where lab EC2 instances are deployed.
+# Main subnet where the initial lab EC2 instances are
+# deployed.
 
 public_subnet_cidr = "10.20.1.0/24"
 
 
-# Second subnet required by the Route53 Resolver outbound
+# Second subnet used by the Route53 Resolver outbound
 # endpoint.
 
 resolver_subnet_cidr = "10.20.2.0/24"
@@ -133,16 +131,16 @@ resolver_subnet_cidr = "10.20.2.0/24"
 # Access
 ############################################################
 
-# Public IPv4 address or CIDR allowed to SSH into lab systems
-# during bootstrap.
+# Public IPv4 CIDR allowed to SSH into the lab during
+# bootstrap.
 #
-# Find your public IP:
+# Determine the current public IPv4 address with:
 #
-# curl ifconfig.me
+#   curl -4 ifconfig.me
 #
 # Example:
 #
-# ssh_allowed_cidr = "1.2.3.4/32"
+# ssh_allowed_cidr = "203.0.113.10/32"
 
 ssh_allowed_cidr = "YOUR_PUBLIC_IP/32"
 
@@ -151,14 +149,15 @@ ssh_allowed_cidr = "YOUR_PUBLIC_IP/32"
 # AMI Settings
 ############################################################
 
-# Optional RHEL AMI ID used for Terraform-created lab hosts.
+# Optional RHEL AMI ID for Terraform-created infrastructure
+# hosts.
 #
-# Leave blank to let Terraform discover the latest matching
-# RHEL 9 x86_64 AMI owned by Red Hat.
+# Leave blank to allow Terraform to discover the configured
+# Red Hat-owned RHEL AMI.
 #
 # This AMI is used for the initial infrastructure hosts.
-# A separate Image Mode GitLab AMI can later be selected in
-# the Satellite host or provisioning template.
+# Image Mode application AMIs can later be provisioned by
+# Satellite through its AWS Compute Resource.
 
 ami_id = ""
 
@@ -167,20 +166,21 @@ ami_id = ""
 # Server Definitions
 ############################################################
 
-# Defines which initial lab servers Terraform creates.
+# Defines the initial EC2 instances created directly by
+# Terraform.
 #
 # count:
-#   Number of EC2 instances for the role.
+#   Number of instances created for the role.
 #
 # instance_type:
 #   AWS EC2 instance type.
 #
 # root_volume:
-#   Root operating-system volume size in GiB.
+#   Root EBS volume size in GiB.
 #
 # extra_volume:
-#   Additional persistent EBS data volume size in GiB.
-#   Use 0 when no additional volume is required.
+#   Additional persistent EBS volume size in GiB.
+#   Use 0 when no extra volume is required.
 
 servers = {
 
@@ -248,17 +248,21 @@ servers = {
   # GitLab
   ##########################################################
 
-  # This Terraform-created GitLab instance can be used as the
-  # initial development or validation target.
+  # This GitLab host is created directly by Terraform and
+  # configured by the deploy-gitlab.yml playbook.
   #
-  # Future Image Mode GitLab instances can be provisioned by
-  # Satellite using:
+  # The deployment configures:
   #
-  # - The GitLab Image Mode AMI
-  # - The Satellite AWS Compute Resource
-  # - The GitLab runtime IAM instance profile
-  # - The GitLab security groups
-  # - The generated EC2 key pair
+  # - GitLab HTTPS
+  # - GitLab Container Registry
+  # - Red Hat IdM LDAP authentication
+  # - IdM CA trust
+  # - IdM administrator bootstrap
+  # - redhat-consulting group
+  # - image-mode group
+  #
+  # Future immutable GitLab instances can be deployed by
+  # Satellite from a GitLab Image Mode AMI.
 
   gitlab = {
     count         = 1
@@ -270,94 +274,205 @@ servers = {
 
 
 ############################################################
+# Public Servers
+############################################################
+
+# Server names that receive public DNS records and any
+# Terraform-managed public-address resources associated with
+# the public-server workflow.
+#
+# Names must match the generated server keys:
+#
+# <role>-<zero-based or one-based index used by Terraform>
+#
+# Keep Image Builder private unless direct public access is
+# required.
+#Servers here will be assigned elastic IPs, max of 5 per AWS account
+
+
+public_server_names = [
+  "idm-1",
+  "satellite-1",
+  "aap-1",
+  "quay-1",
+  "gitlab-1"
+]
+
+
+############################################################
 # GitLab Settings
 ############################################################
 
-# TCP port used by the GitLab container registry.
+# Public URL scheme used for GitLab-generated links.
+
+gitlab_external_url_scheme = "https"
+
+
+# TCP port used by the integrated GitLab Container Registry.
 
 gitlab_registry_port = 5050
 
 
-# IPv4 CIDR blocks allowed to connect to the GitLab
-# container registry.
+# IPv4 CIDRs allowed to connect to the GitLab Container
+# Registry.
 #
-# For an unrestricted hackathon environment:
-#
-# gitlab_registry_allowed_cidrs = ["0.0.0.0/0"]
-#
-# A more restrictive configuration can allow only:
-#
-# - The lab VPC
-# - The operator's public IP
-#
-# Example:
+# A restricted configuration is recommended:
 #
 # gitlab_registry_allowed_cidrs = [
 #   "10.20.0.0/16",
-#   "1.2.3.4/32"
+#   "203.0.113.10/32"
 # ]
+#
+# The example below permits access from any IPv4 source and
+# is appropriate only for a temporary hackathon lab.
 
 gitlab_registry_allowed_cidrs = [
   "0.0.0.0/0"
 ]
 
 
-# Public URL scheme used for GitLab-generated URLs.
-
-gitlab_external_url_scheme = "https"
-
-
 ############################################################
-# Satellite AWS Compute Resource Settings
+# Lab Users
 ############################################################
 
-# Name assigned to the EC2 Compute Resource in Satellite.
+# Structured users created in Red Hat IdM.
 #
-# This represents the connection between Satellite and the
-# AWS account.
-
-satellite_compute_resource_name = "AWS Image Mode"
-
-
-# General Satellite compute profile used for AWS proof-of-
-# concept deployments.
+# Each user supports:
 #
-# This profile can define common EC2 settings such as:
+# - first_name
+# - last_name
+# - groups
 #
-# - Region
-# - Availability Zone
-# - Subnet
-# - Security groups
-# - EC2 instance type
-# - EBS volume settings
-# - Key pair
-# - IAM instance profile
-
-satellite_compute_profile_name = "AWS POC"
-
-
-# GitLab-specific Satellite compute-profile configuration.
+# Add "gitlab-users" when the IdM deployment uses that group
+# to control GitLab LDAP access.
 #
-# Use this profile for hosts deployed from the GitLab Image
-# Mode AMI.
+# Add "quay-users" when users require Quay access.
+#
+# Membership in these IdM groups does not automatically grant
+# GitLab group membership unless the GitLab deployment or a
+# later automation explicitly maps that membership.
 
-satellite_gitlab_compute_profile_name = "GitLab Image Mode"
+lab_users = {
+  user01 = {
+    first_name = "User"
+    last_name  = "01"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user02 = {
+    first_name = "User"
+    last_name  = "02"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user03 = {
+    first_name = "User"
+    last_name  = "03"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user04 = {
+    first_name = "User"
+    last_name  = "04"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user05 = {
+    first_name = "User"
+    last_name  = "05"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user06 = {
+    first_name = "User"
+    last_name  = "06"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user07 = {
+    first_name = "User"
+    last_name  = "07"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user08 = {
+    first_name = "User"
+    last_name  = "08"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user09 = {
+    first_name = "User"
+    last_name  = "09"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+
+  user10 = {
+    first_name = "User"
+    last_name  = "10"
+
+    groups = [
+      "quay-users",
+      "gitlab-users"
+    ]
+  }
+}
 
 
 ############################################################
 # IdM Administrative Users
 ############################################################
 
-# These users are created in Red Hat IdM.
+# These users are created in Red Hat IdM and added to the
+# environment's administrative groups.
 #
-# They can receive administrative access such as:
+# The GitLab deployment queries the configured IdM GitLab
+# administrator group and initializes its current members as:
 #
-# - Linux sudo access
-# - IdM administration
-# - AAP administration
-# - Satellite administration
-# - Quay administration
-# - GitLab administration
+# - GitLab LDAP-linked users
+# - GitLab instance administrators
+# - Owners of redhat-consulting
+# - Owners of image-mode
+#
+# The usernames listed here must align with the IdM bootstrap
+# logic and group assignments defined by the Terraform and
+# Ansible implementation.
 
 idm_users = [
   "claudiol",
@@ -367,48 +482,18 @@ idm_users = [
 ]
 
 
-############################################################
-# Structured Lab Users
-############################################################
+# Default initial password assigned to newly created IdM lab
+# users.
+#
+# Do not commit a real password in terraform.tfvars.
+#
+# Recommended:
+#
+#   export TF_VAR_idm_default_user_password='...'
+#
+# Keep the placeholder here only to document the variable.
 
-# Optional override for structured IdM lab users.
-#
-# The defaults from variables.tf are used when this block is
-# omitted.
-#
-# Each user supports:
-#
-# - first_name
-# - last_name
-# - groups
-#
-# Uncomment to override the defaults.
-#
-# lab_users = {
-#   student01 = {
-#     first_name = "Student"
-#     last_name  = "One"
-#
-#     groups = [
-#       "developers",
-#       "quay-users",
-#       "gitlab-users"
-#     ]
-#   }
-#
-#   instructor01 = {
-#     first_name = "Instructor"
-#     last_name  = "One"
-#
-#     groups = [
-#       "linux-admins",
-#       "aap-admins",
-#       "satellite-admins",
-#       "quay-admins",
-#       "gitlab-admins"
-#     ]
-#   }
-# }
+
 
 
 ############################################################
@@ -439,15 +524,19 @@ satellite_initial_admin_username = "admin"
 
 # Initial Satellite organization name.
 #
-# Keep this aligned with the connected-content bootstrap role
-# and its AAP survey defaults.
+# Keep this aligned with:
+#
+# - The Satellite installation playbook
+# - The Satellite content-bootstrap role
+# - AAP survey defaults
+# - Activation-key configuration
 
 satellite_organization_name = "Image Mode Lab"
 
 
 # Initial Satellite location name.
 
-satellite_location_name = "AWS"
+satellite_location_name = "AWS Region - us-east-2"
 
 
 ############################################################
@@ -459,7 +548,7 @@ satellite_location_name = "AWS"
 satellite_manifest_s3_bucket = "aap-containerized-installers"
 
 
-# S3 object key containing the Satellite subscription manifest.
+# S3 object key containing the Satellite manifest.
 
 satellite_manifest_s3_key = "manifest_Satellite.zip"
 
@@ -472,10 +561,32 @@ satellite_manifest_sha256 = ""
 
 
 ############################################################
+# Satellite AWS Compute Resource Settings
+############################################################
+
+# Name assigned to the AWS EC2 Compute Resource configured in
+# Satellite.
+
+satellite_compute_resource_name = "AWS Image Mode"
+
+
+# General compute profile used for AWS proof-of-concept
+# deployments.
+
+satellite_compute_profile_name = "AWS POC"
+
+
+# GitLab-specific compute profile intended for immutable
+# GitLab Image Mode hosts deployed from Satellite.
+
+satellite_gitlab_compute_profile_name = "GitLab Image Mode"
+
+
+############################################################
 # Sensitive Values
 ############################################################
 
-# Do not place the values below directly in this file.
+# Do not commit sensitive values in terraform.tfvars.
 #
 # Export them before running Terraform:
 #
@@ -485,9 +596,13 @@ satellite_manifest_sha256 = ""
 # export TF_VAR_redhat_registry_password='...'
 # export TF_VAR_idm_default_user_password='...'
 #
+# Additional sensitive variables may be required by the
+# current variables.tf implementation.
+#
 # Then run:
 #
 # terraform init
+# terraform fmt -check
 # terraform validate
 # terraform plan
 # terraform apply
