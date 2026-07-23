@@ -1,0 +1,329 @@
+---
+- containers.podman
+
+rs:
+###########################################################################
+# Image Mode workspace
+###########################################################################
+
+image_mode_root: /var/lib/image-mode
+
+image_mode_source_directory: "{{ image_mode_root }}/sources"
+image_mode_containerfiles_directory: "{{ image_mode_root }}/containerfiles"
+image_mode_blueprints_directory: "{{ image_mode_root }}/blueprints"
+image_mode_build_directory: "{{ image_mode_root }}/builds"
+image_mode_output_directory: "{{ image_mode_root }}/output"
+image_mode_artifacts_directory: "{{ image_mode_root }}/artifacts"
+image_mode_cache_directory: "{{ image_mode_root }}/cache"
+image_mode_registry_auth_directory: "{{ image_mode_root }}/registry-auth"
+image_mode_logs_directory: "{{ image_mode_root }}/logs"
+image_mode_tmp_directory: "{{ image_mode_root }}/tmp"
+
+# Local group that owns the shared Image Mode development workspace.
+image_mode_group: image-builders
+
+# IdM's built-in ipausers group includes every current and future IdM
+# account, but ipausers is non-POSIX and cannot own a Unix socket. This
+# playbook therefore creates one POSIX IdM group and nests ipausers in it.
+# The commands run locally from this already-enrolled Image Builder host;
+# no IdM host is required in the Ansible inventory.
+idm_all_users_group: ipausers
+image_builder_access_group: image-builder-users
+image_mode_manage_idm_access_group: true
+idm_admin_principal: admin
+
+idm_admin_password: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'IDM_ADMIN_PASSWORD'
+    )
+    | default('', true)
+  }}
+
+###########################################################################
+# Bootc Image Builder
+###########################################################################
+
+bootc_image_builder_rhel9_image: >-
+  registry.redhat.io/rhel9/bootc-image-builder:latest
+
+bootc_image_builder_rhel10_image: >-
+  registry.redhat.io/rhel10/bootc-image-builder:latest
+
+image_mode_pull_bootc_image_builder: true
+
+###########################################################################
+# Red Hat registry authentication
+###########################################################################
+
+redhat_registry_host: registry.redhat.io
+
+redhat_registry_username: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_REGISTRY_USERNAME'
+    )
+    | default('', true)
+  }}
+
+redhat_registry_password: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_REGISTRY_PASSWORD'
+    )
+    | default('', true)
+  }}
+
+# When true, registry credentials must be supplied.
+#
+# When false, credentials are used when available. Otherwise, the
+# playbook attempts to use existing Podman authentication on the host.
+image_mode_require_redhat_registry_login: false
+
+###########################################################################
+# Optional Quay registry authentication
+###########################################################################
+
+quay_registry_host: >-
+  {{
+    quay_hostname
+    | default('', true)
+  }}
+
+quay_registry_username: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'QUAY_REGISTRY_USERNAME'
+    )
+    | default('', true)
+  }}
+
+quay_registry_password: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'QUAY_REGISTRY_PASSWORD'
+    )
+    | default('', true)
+  }}
+
+image_mode_configure_quay_login: >-
+  {{
+    (quay_registry_host | length > 0)
+    and (quay_registry_username | length > 0)
+    and (quay_registry_password | length > 0)
+  }}
+
+# Set this to true after installing a certificate trusted by the builder.
+quay_registry_tls_verify: false
+
+###########################################################################
+# Red Hat Insights
+###########################################################################
+
+image_mode_register_with_insights: true
+
+redhat_insights_activation_key: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_INSIGHTS_ACTIVATION_KEY'
+    )
+    | default('', true)
+  }}
+
+redhat_insights_organization_id: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_INSIGHTS_ORGANIZATION_ID'
+    )
+    | default('', true)
+  }}
+
+image_mode_have_insights_activation_credentials: >-
+  {{
+    (redhat_insights_activation_key | length > 0)
+    and (redhat_insights_organization_id | length > 0)
+  }}
+
+###########################################################################
+# Cockpit and firewall
+###########################################################################
+
+cockpit_port: 9090
+cockpit_firewall_zone: public
+
+image_mode_firewall_ports:
+  - 80/tcp
+  - 443/tcp
+  - "{{ cockpit_port }}/tcp"
+
+###########################################################################
+# Staged Cockpit TLS certificate
+#
+# The certificate staging playbook must populate these files before this
+# AAP-managed configuration playbook runs.
+###########################################################################
+
+cockpit_public_tls_fqdn: >-
+  {{
+    public_tls_fqdn
+    | default(inventory_hostname, true)
+  }}
+
+cockpit_tls_root: /opt/image-builder
+cockpit_tls_directory: "{{ cockpit_tls_root }}/certs"
+
+cockpit_tls_leaf_certificate_path: >-
+  {{ cockpit_tls_directory }}/cockpit-leaf.crt
+
+cockpit_tls_chain_path: >-
+  {{ cockpit_tls_directory }}/cockpit-chain.crt
+
+cockpit_tls_private_key_path: >-
+  {{ cockpit_tls_directory }}/cockpit.key
+
+cockpit_tls_fullchain_path: >-
+  {{ cockpit_tls_directory }}/cockpit-fullchain.crt
+
+cockpit_tls_metadata_path: >-
+  {{ cockpit_tls_directory }}/certificate-metadata.json
+
+cockpit_ws_certificate_directory: /etc/cockpit/ws-certs.d
+
+cockpit_ws_certificate_path: >-
+  {{ cockpit_ws_certificate_directory }}/99-image-builder-acm.cert
+
+cockpit_tls_minimum_validity_seconds: 1209600
+
+###########################################################################
+# Python yq installation
+#
+# The Python yq package provides the yq command and uses jq internally.
+# jq is installed through DNF, while yq is installed through pip.
+###########################################################################
+
+image_mode_install_yq: true
+image_mode_yq_pip_package: yq
+image_mode_yq_command: /usr/local/bin/yq
+
+###########################################################################
+# Podman authentication
+###########################################################################
+
+root_container_auth_directory: /root/.config/containers
+root_container_auth_file: /root/.config/containers/auth.json
+
+###########################################################################
+# Package sets
+###########################################################################
+
+image_mode_core_packages:
+  # Container and Image Mode tools
+  - podman
+  - buildah
+  - skopeo
+  - bootc
+
+  # RHEL Image Builder CLI and services
+  - osbuild-composer
+  - composer-cli
+
+  # Cockpit and Image Builder web interfaces
+  - cockpit
+  - cockpit-system
+  - cockpit-composer
+  - cockpit-podman
+  - cockpit-storaged
+  - cockpit-packagekit
+
+  # Red Hat registration and Insights
+  - insights-client
+  - rhc
+  - subscription-manager
+  - freeipa-client
+  - krb5-workstation
+
+  # Python and pip
+  - python3
+  - python3-pip
+
+  # Development and source control
+  - git
+  - git-lfs
+  - make
+  - jq
+  - rsync
+  - tar
+  - gzip
+  - unzip
+  - wget
+  - curl
+  - vim-enhanced
+  - bash-completion
+  - tree
+  - tmux
+
+  # Image and filesystem utilities
+  - acl
+  - qemu-img
+  - xz
+  - squashfs-tools
+  - policycoreutils-python-utils
+  - openssl
+
+  # Networking and diagnostics
+  - firewalld
+  - bind-utils
+  - iproute
+  - net-tools
+  - lsof
+
+###########################################################################
+# Workspace directory definitions
+###########################################################################
+
+image_mode_workspace_directories:
+  - path: "{{ image_mode_source_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_containerfiles_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_blueprints_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_build_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_output_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_artifacts_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_cache_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_registry_auth_directory }}"
+    mode: "2770"
+
+  - path: "{{ image_mode_logs_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_tmp_directory }}"
+
+
+###############################################################################
+# AWS CLI
+###############################################################################
+image_mode_install_aws_cli: true
+
+# Set to true when the role should rerun the AWS installer and update an
+# existing AWS CLI v2 installation.
+image_mode_update_aws_cli: false

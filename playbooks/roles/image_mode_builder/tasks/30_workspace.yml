@@ -1,0 +1,148 @@
+---
+# Workspace directories
+###########################################################################
+
+- name: Create Image Mode workspace root
+  ansible.builtin.file:
+    path: "{{ image_mode_root }}"
+    state: directory
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "2775"
+
+- name: Create organized Image Mode development directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ image_mode_workspace_directories }}"
+
+- name: Configure active ACL on Image Mode workspace
+  ansible.posix.acl:
+    path: "{{ image_mode_root }}"
+    entity: "{{ image_mode_group }}"
+    etype: group
+    permissions: rwx
+    recursive: true
+    state: present
+
+- name: Configure default ACL on Image Mode workspace root
+  ansible.posix.acl:
+    path: "{{ image_mode_root }}"
+    entity: "{{ image_mode_group }}"
+    etype: group
+    permissions: rwx
+    default: true
+    state: present
+
+- name: Configure default ACL on Image Mode directories
+  ansible.posix.acl:
+    path: "{{ item.path }}"
+    entity: "{{ image_mode_group }}"
+    etype: group
+    permissions: rwx
+    default: true
+    state: present
+  loop: "{{ image_mode_workspace_directories }}"
+
+- name: Create workspace README
+  ansible.builtin.copy:
+    dest: "{{ image_mode_root }}/README.md"
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "0664"
+    content: |
+      # Image Mode Builder Workspace
+
+      This host is configured for building RHEL Image Mode container
+      images and bootable operating system artifacts.
+
+      ## Builder host
+
+      `{{ inventory_hostname }}`
+
+      ## Directories
+
+      | Directory | Purpose |
+      |---|---|
+      | `{{ image_mode_source_directory }}` | Cloned Git repositories and source trees |
+      | `{{ image_mode_containerfiles_directory }}` | Shared Containerfiles |
+      | `{{ image_mode_blueprints_directory }}` | RHEL Image Builder TOML blueprints |
+      | `{{ image_mode_build_directory }}` | Active build workspaces |
+      | `{{ image_mode_output_directory }}` | Bootc Image Builder output |
+      | `{{ image_mode_artifacts_directory }}` | Completed images and deliverables |
+      | `{{ image_mode_cache_directory }}` | Build and download cache |
+      | `{{ image_mode_registry_auth_directory }}` | Protected registry authentication data |
+      | `{{ image_mode_logs_directory }}` | Build logs |
+      | `{{ image_mode_tmp_directory }}` | Temporary build data |
+
+      ## Container image tools
+
+      ```bash
+      podman --version
+      buildah --version
+      skopeo --version
+      bootc --version
+      ```
+
+      ## YAML processing
+
+      The Python yq implementation uses jq syntax:
+
+      ```bash
+      yq --version
+      yq '.name' example.yaml
+      ```
+
+      ## Build a bootable disk image
+
+      ```bash
+      sudo image-mode-build \
+        --image quay.example.com/example/rhel-bootc:latest \
+        --type qcow2
+      ```
+
+      ## Build a bootable ISO
+
+      ```bash
+      sudo image-mode-build \
+        --image quay.example.com/example/rhel-bootc:latest \
+        --type anaconda-iso
+      ```
+
+      ## Copy a container image between registries
+
+      ```bash
+      sudo image-mode-registry-copy \
+        docker://registry.redhat.io/rhel9/rhel-bootc:latest \
+        docker://quay.example.com/image-mode/rhel-bootc:latest
+      ```
+
+      ## RHEL Image Builder CLI
+
+      ```bash
+      composer-cli status show
+      composer-cli blueprints list
+      composer-cli compose status
+      ```
+
+      ## Web interface
+
+      Cockpit and RHEL Image Builder are available at:
+
+      ```text
+      https://{{ cockpit_public_tls_fqdn }}:{{ cockpit_port }}
+      ```
+
+      IdM users authenticate through Cockpit. Every current and future IdM
+      account receives Image Builder access through the nested
+      {{ idm_all_users_group }} -> {{ image_builder_access_group }} group mapping.
+
+      ## Open firewall ports
+
+      ```text
+      80/tcp
+      443/tcp
+      {{ cockpit_port }}/tcp

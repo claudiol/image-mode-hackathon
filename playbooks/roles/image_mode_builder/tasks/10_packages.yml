@@ -1,0 +1,196 @@
+---
+###############################################################################
+# Repositories and packages
+###############################################################################
+
+- name: Refresh DNF metadata
+  ansible.builtin.dnf:
+    update_cache: true
+
+- name: Install Image Mode development packages
+  ansible.builtin.dnf:
+    name: "{{ image_mode_core_packages }}"
+    state: present
+
+###############################################################################
+# Python yq
+###############################################################################
+
+- name: Install yq from Python Package Index
+  ansible.builtin.pip:
+    name: "{{ image_mode_yq_pip_package }}"
+    state: present
+    executable: pip3
+  when: image_mode_install_yq | bool
+
+- name: Create yq symbolic link
+  ansible.builtin.file:
+    src: /usr/local/bin/yq
+    dest: /usr/bin/yq
+    state: link
+    force: true
+  when: image_mode_install_yq | bool
+
+- name: Locate installed yq command
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - command -v yq
+  register: image_mode_yq_command_lookup
+  changed_when: false
+  when: image_mode_install_yq | bool
+
+- name: Set installed yq command path
+  ansible.builtin.set_fact:
+    image_mode_yq_command: >-
+      {{
+        image_mode_yq_command_lookup.stdout
+        | trim
+      }}
+  when:
+    - image_mode_install_yq | bool
+    - image_mode_yq_command_lookup.stdout | trim | length > 0
+
+- name: Verify yq installation
+  ansible.builtin.command:
+    argv:
+      - "{{ image_mode_yq_command }}"
+      - --version
+  register: image_mode_yq_version
+  changed_when: false
+  when: image_mode_install_yq | bool
+
+###############################################################################
+# AWS CLI v2
+###############################################################################
+
+- name: Determine AWS CLI archive architecture
+  ansible.builtin.set_fact:
+    image_mode_aws_cli_architecture: >-
+      {{
+        'aarch64'
+        if ansible_architecture in ['aarch64', 'arm64']
+        else 'x86_64'
+      }}
+  when: image_mode_install_aws_cli | default(true) | bool
+
+- name: Set AWS CLI installation variables
+  ansible.builtin.set_fact:
+    image_mode_aws_cli_archive_name: >-
+      awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
+    image_mode_aws_cli_archive_path: >-
+      /tmp/awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
+    image_mode_aws_cli_extract_directory: /tmp/aws-cli-install
+  when: image_mode_install_aws_cli | default(true) | bool
+
+- name: Check whether AWS CLI is already installed
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/aws
+      - --version
+  register: image_mode_aws_cli_existing_version
+  changed_when: false
+  failed_when: false
+  when: image_mode_install_aws_cli | default(true) | bool
+
+- name: Install or update AWS CLI v2
+  when:
+    - image_mode_install_aws_cli | default(true) | bool
+    - >-
+      image_mode_aws_cli_existing_version.rc | default(1) != 0
+      or image_mode_update_aws_cli | default(false) | bool
+  block:
+    - name: Remove previous AWS CLI installation workspace
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_cli_extract_directory }}"
+        state: absent
+
+    - name: Create AWS CLI installation workspace
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_cli_extract_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download AWS CLI v2 archive
+      ansible.builtin.get_url:
+        url: >-
+          https://awscli.amazonaws.com/{{ image_mode_aws_cli_archive_name }}
+        dest: "{{ image_mode_aws_cli_archive_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        force: true
+        timeout: 120
+
+    - name: Extract AWS CLI v2 archive
+      ansible.builtin.unarchive:
+        src: "{{ image_mode_aws_cli_archive_path }}"
+        dest: "{{ image_mode_aws_cli_extract_directory }}"
+        remote_src: true
+
+    - name: Run AWS CLI installer
+      ansible.builtin.command:
+        argv:
+          - "{{ image_mode_aws_cli_extract_directory }}/aws/install"
+          - --install-dir
+          - /usr/local/aws-cli
+          - --bin-dir
+          - /usr/local/bin
+          - --update
+      register: image_mode_aws_cli_install
+      changed_when: >-
+        image_mode_aws_cli_install.rc == 0
+        and
+        (
+          'You can now run' in image_mode_aws_cli_install.stdout
+          or
+          'Found same AWS CLI version' not in image_mode_aws_cli_install.stdout
+        )
+
+  always:
+    - name: Remove AWS CLI installation archive
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_cli_archive_path }}"
+        state: absent
+
+    - name: Remove AWS CLI extracted installation files
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_cli_extract_directory }}"
+        state: absent
+
+- name: Create system AWS CLI symbolic link
+  ansible.builtin.file:
+    src: /usr/local/bin/aws
+    dest: /usr/bin/aws
+    state: link
+    force: true
+  when: image_mode_install_aws_cli | default(true) | bool
+
+- name: Verify AWS CLI installation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/aws
+      - --version
+  register: image_mode_aws_cli_version
+  changed_when: false
+  when: image_mode_install_aws_cli | default(true) | bool
+
+###############################################################################
+# Git LFS
+###############################################################################
+
+- name: Enable Git LFS system-wide
+  ansible.builtin.command:
+    argv:
+      - git
+      - lfs
+      - install
+      - --system
+  register: git_lfs_install
+  changed_when: >-
+    ('Git LFS initialized' in git_lfs_install.stdout)
+    or
+    ('Git LFS initialized' in git_lfs_install.stderr)
