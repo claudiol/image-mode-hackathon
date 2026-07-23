@@ -1191,13 +1191,46 @@
       no_log: true
 
     - name: PHASE 10 | Run initial LDAP group synchronization
+    - name: PHASE 10 | Run initial LDAP group synchronization
       ansible.builtin.command:
         argv:
           - gitlab-rake
           - gitlab:ldap:group_sync
       register: gitlab_ldap_group_sync
       changed_when: false
-      no_log: false
+      failed_when:
+        - gitlab_ldap_group_sync.rc != 0
+        - >-
+          'LDAP GroupSync is not enabled.'
+          not in gitlab_ldap_group_sync.stdout
+      when: gitlab_ldap_group_sync_enabled | bool
+      no_log: true
+
+    - name: PHASE 10 | Report unavailable LDAP group synchronization
+      ansible.builtin.debug:
+        msg: >-
+          GitLab reported that LDAP GroupSync is not enabled. LDAP user
+          authentication remains enabled, but automatic IdM-to-GitLab group
+          membership and administrator synchronization require an active
+          GitLab Premium or Ultimate license.
+      when:
+        - gitlab_ldap_group_sync_enabled | bool
+        - gitlab_ldap_group_sync is defined
+        - >-
+          'LDAP GroupSync is not enabled.'
+          in
+          (
+            gitlab_ldap_group_sync.stdout
+            | default('')
+          )
+
+    - name: PHASE 10 | Report intentionally skipped LDAP group synchronization
+      ansible.builtin.debug:
+        msg: >-
+          LDAP group synchronization is disabled by
+          gitlab_ldap_group_sync_enabled=false. IdM users can still
+          authenticate and receive normal GitLab accounts.
+      when: not gitlab_ldap_group_sync_enabled | bool
 
     ###########################################################################
     # PHASE 11 | Validate public endpoints
