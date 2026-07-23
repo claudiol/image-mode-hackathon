@@ -89,8 +89,6 @@
     gitlab_repository_script_path: >-
       /var/tmp/gitlab-ee-repository.sh
 
-
-
     # Use the Terraform/AAP value when supplied; otherwise default to 5050.
     gitlab_registry_effective_port: >-
       {{
@@ -471,10 +469,10 @@
         that:
           - gitlab_idm_base_dn is match('^dc=[^,]+(?:,dc=[^,]+)+$')
           - gitlab_ldap_bind_dn is match(
-              '^uid=[^,]+,cn=users,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+            '^uid=[^,]+,cn=users,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
             )
           - gitlab_ldap_group_base is match(
-              '^cn=groups,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+            '^cn=groups,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
             )
           - "'\\\\1' not in gitlab_idm_base_dn"
           - "'\\\\1' not in gitlab_ldap_bind_dn"
@@ -684,7 +682,7 @@
           - -out
           - "{{ gitlab_tls_private_key_path }}"
       changed_when: true
-      no_log: true
+      no_log: false
 
     - name: PHASE 4 | Set decrypted private-key permissions
       ansible.builtin.file:
