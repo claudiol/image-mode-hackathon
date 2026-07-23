@@ -460,10 +460,7 @@ output "image_builder_servers" {
         ""
       )
 
-      url = (
-        "https://${local.flattened_servers[name].hostname}:"
-        "${var.image_builder_cockpit_port}"
-      )
+      url = "https://${local.flattened_servers[name].hostname}:${var.image_builder_cockpit_port}"
 
       instance_profile = aws_iam_instance_profile.image_builder.name
     }
@@ -485,15 +482,9 @@ output "gitlab_servers" {
         ""
       )
 
-      url = (
-        "${var.gitlab_external_url_scheme}://"
-        "${local.flattened_servers[name].hostname}"
-      )
+      url = "${var.gitlab_external_url_scheme}://${local.flattened_servers[name].hostname}"
 
-      registry_url = (
-        "${local.flattened_servers[name].hostname}:"
-        "${var.gitlab_registry_port}"
-      )
+      registry_url = "${local.flattened_servers[name].hostname}:${var.gitlab_registry_port}"
 
       instance_profile = aws_iam_instance_profile.gitlab_runtime.name
     }

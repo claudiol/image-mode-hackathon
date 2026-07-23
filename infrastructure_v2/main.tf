@@ -1868,11 +1868,8 @@ resource "aws_iam_instance_profile" "gitlab_runtime" {
 ############################################################
 
 resource "aws_s3_bucket" "image_mode_artifacts" {
-  bucket = (
-    "${var.environment_name}-image-mode-artifacts-"
-    "${data.aws_caller_identity.current.account_id}-"
-    "${var.aws_region}"
-  )
+  
+  bucket = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
   force_destroy = true
 
