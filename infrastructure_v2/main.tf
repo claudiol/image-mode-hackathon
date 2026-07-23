@@ -1700,7 +1700,6 @@ resource "aws_instance" "server" {
     aws_iam_role_policy.satellite_s3_read,
 
     aws_iam_instance_profile.gitlab_runtime,
-    aws_iam_role_policy.gitlab_runtime,
 
     aws_security_group.lab,
     aws_security_group.image_builder,
