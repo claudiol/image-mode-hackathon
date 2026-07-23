@@ -548,7 +548,7 @@
             - gitlab_ldap_bind_password_file.path is defined
           no_log: true
 
-    ###########################################################################
+     ###########################################################################
     # PHASE 4 | Validate and export Terraform-created ACM certificate
     ###########################################################################
 
@@ -610,36 +610,77 @@
         - path: "{{ gitlab_ssl_directory }}"
           mode: "0700"
 
+    - name: PHASE 4 | Remove stale ACM export artifacts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ gitlab_tls_export_json_path }}"
+        - "{{ gitlab_tls_passphrase_path }}"
+        - "{{ gitlab_tls_encrypted_private_key_path }}"
+        - "{{ gitlab_tls_private_key_path }}"
+      no_log: true
+
     - name: PHASE 4 | Generate temporary ACM export passphrase
       ansible.builtin.shell: |
         set -euo pipefail
         umask 077
 
         openssl rand \
-          -base64 \
-          {{ gitlab_acm_export_passphrase_bytes | int }} \
+          -hex \
+          {{ gitlab_acm_export_passphrase_bytes | int }} |
+        tr -d '\n' \
           > {{ gitlab_tls_passphrase_path | quote }}
-      args:
-        executable: /bin/bash
-      changed_when: false
-      no_log: true
 
-    - name: PHASE 4 | Export GitLab certificate from ACM
-      ansible.builtin.shell: |
-        set -euo pipefail
-        umask 077
+        test -s {{ gitlab_tls_passphrase_path | quote }}
 
-        aws acm export-certificate \
-          --certificate-arn {{ gitlab_acm_certificate_arn | quote }} \
-          --passphrase fileb://{{ gitlab_tls_passphrase_path | quote }} \
-          --region {{ aws_region | quote }} \
-          --output json \
-          > {{ gitlab_tls_export_json_path | quote }}
-
-        chmod 0600 {{ gitlab_tls_export_json_path | quote }}
+        chmod 0600 {{ gitlab_tls_passphrase_path | quote }}
       args:
         executable: /bin/bash
       changed_when: true
+      no_log: true
+
+    - name: PHASE 4 | Export GitLab certificate from ACM
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - export-certificate
+          - --certificate-arn
+          - "{{ gitlab_acm_certificate_arn }}"
+          - --passphrase
+          - "fileb://{{ gitlab_tls_passphrase_path }}"
+          - --region
+          - "{{ aws_region }}"
+          - --output
+          - json
+      register: gitlab_acm_export
+      changed_when: true
+      no_log: true
+
+    - name: PHASE 4 | Store ACM export response securely
+      ansible.builtin.copy:
+        content: "{{ gitlab_acm_export.stdout }}"
+        dest: "{{ gitlab_tls_export_json_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: PHASE 4 | Validate ACM export response
+      ansible.builtin.command:
+        argv:
+          - jq
+          - -e
+          - >-
+            .Certificate != null
+            and .Certificate != ""
+            and .CertificateChain != null
+            and .CertificateChain != ""
+            and .PrivateKey != null
+            and .PrivateKey != ""
+          - "{{ gitlab_tls_export_json_path }}"
+      changed_when: false
       no_log: true
 
     - name: PHASE 4 | Extract ACM certificate components
@@ -647,15 +688,15 @@
         set -euo pipefail
         umask 077
 
-        jq -r '.Certificate' \
+        jq -er '.Certificate' \
           {{ gitlab_tls_export_json_path | quote }} \
           > {{ gitlab_tls_certificate_path | quote }}
 
-        jq -r '.CertificateChain' \
+        jq -er '.CertificateChain' \
           {{ gitlab_tls_export_json_path | quote }} \
           > {{ gitlab_tls_chain_path | quote }}
 
-        jq -r '.PrivateKey' \
+        jq -er '.PrivateKey' \
           {{ gitlab_tls_export_json_path | quote }} \
           > {{ gitlab_tls_encrypted_private_key_path | quote }}
 
@@ -670,6 +711,47 @@
       changed_when: true
       no_log: true
 
+    - name: PHASE 4 | Inspect extracted ACM certificate
+      ansible.builtin.stat:
+        path: "{{ gitlab_tls_certificate_path }}"
+      register: gitlab_acm_extracted_certificate
+
+    - name: PHASE 4 | Inspect extracted ACM certificate chain
+      ansible.builtin.stat:
+        path: "{{ gitlab_tls_chain_path }}"
+      register: gitlab_acm_extracted_certificate_chain
+
+    - name: PHASE 4 | Inspect extracted encrypted ACM private key
+      ansible.builtin.stat:
+        path: "{{ gitlab_tls_encrypted_private_key_path }}"
+      register: gitlab_acm_extracted_encrypted_private_key
+
+    - name: PHASE 4 | Validate extracted ACM certificate components
+      ansible.builtin.assert:
+        that:
+          - gitlab_acm_extracted_certificate.stat.exists
+          - gitlab_acm_extracted_certificate.stat.isreg
+          - gitlab_acm_extracted_certificate.stat.size | int > 0
+          - gitlab_acm_extracted_certificate_chain.stat.exists
+          - gitlab_acm_extracted_certificate_chain.stat.isreg
+          - gitlab_acm_extracted_certificate_chain.stat.size | int > 0
+          - gitlab_acm_extracted_encrypted_private_key.stat.exists
+          - gitlab_acm_extracted_encrypted_private_key.stat.isreg
+          - gitlab_acm_extracted_encrypted_private_key.stat.size | int > 0
+        fail_msg: >-
+          ACM export did not return a usable certificate, certificate chain,
+          and encrypted private key for {{ gitlab_acm_certificate_arn }}.
+
+    - name: PHASE 4 | Validate exported certificate PEM format
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ gitlab_tls_certificate_path }}"
+          - -noout
+      changed_when: false
+
     - name: PHASE 4 | Decrypt ACM private key
       ansible.builtin.command:
         argv:
@@ -682,7 +764,19 @@
           - -out
           - "{{ gitlab_tls_private_key_path }}"
       changed_when: true
-      no_log: false
+      no_log: true
+
+    - name: PHASE 4 | Validate decrypted ACM private key
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -in
+          - "{{ gitlab_tls_private_key_path }}"
+          - -check
+          - -noout
+      changed_when: false
+      no_log: true
 
     - name: PHASE 4 | Set decrypted private-key permissions
       ansible.builtin.file:
@@ -694,8 +788,15 @@
     - name: PHASE 4 | Build full certificate chain
       ansible.builtin.shell: |
         set -euo pipefail
+        umask 077
 
         temporary_fullchain="$(mktemp)"
+
+        cleanup() {
+          rm -f "$temporary_fullchain"
+        }
+
+        trap cleanup EXIT
 
         cat \
           {{ gitlab_tls_certificate_path | quote }} \
@@ -708,11 +809,19 @@
           -m 0644 \
           "$temporary_fullchain" \
           {{ gitlab_tls_fullchain_path | quote }}
-
-        rm -f "$temporary_fullchain"
       args:
         executable: /bin/bash
       changed_when: true
+
+    - name: PHASE 4 | Validate full certificate chain file
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ gitlab_tls_fullchain_path }}"
+          - -noout
+      changed_when: false 
 
     ###########################################################################
     # PHASE 5 | Validate the exported certificate and private key
