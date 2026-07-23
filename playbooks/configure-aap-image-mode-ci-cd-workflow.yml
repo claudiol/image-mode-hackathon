@@ -91,6 +91,12 @@
         | default(secret_prefix ~ '/aws/ssh_private_key', true)
       }}
 
+    rhel_iam_credentials_secret_name_resolved: >-
+      {{
+        rhel_iam_credentials_secret_name
+        | default(secret_prefix ~ '/aws/rhel-iam', true)
+      }}
+
     ###########################################################################
     # Registry configuration
     ###########################################################################
@@ -747,6 +753,109 @@
         fail_msg: >-
           Red Hat registry credentials could not be retrieved from AWS Secrets
           Manager.
+      no_log: true
+
+
+    ###########################################################################
+    # Read AWS IAM service-account credentials
+    ###########################################################################
+
+    - name: Read AWS IAM service-account credential secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ rhel_iam_credentials_secret_name_resolved | trim }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: rhel_iam_credentials_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Parse AWS IAM service-account credential secret
+      ansible.builtin.set_fact:
+        rhel_iam_credentials: >-
+          {{
+            rhel_iam_credentials_secret_result.stdout
+            | string
+            | trim
+            | from_json
+          }}
+      no_log: true
+
+    - name: Validate AWS IAM service-account secret structure
+      ansible.builtin.assert:
+        that:
+          - rhel_iam_credentials is mapping
+          - >-
+            (
+              rhel_iam_credentials.access_key_id is defined
+              or
+              rhel_iam_credentials.aws_access_key_id is defined
+            )
+          - >-
+            (
+              rhel_iam_credentials.secret_access_key is defined
+              or
+              rhel_iam_credentials.aws_secret_access_key is defined
+            )
+        fail_msg: >-
+          The AWS Secrets Manager secret
+          '{{ rhel_iam_credentials_secret_name_resolved | trim }}'
+          must contain a JSON object with either access_key_id and
+          secret_access_key properties, or aws_access_key_id and
+          aws_secret_access_key properties.
+      no_log: true
+
+    - name: Resolve AWS IAM service-account credentials
+      ansible.builtin.set_fact:
+        image_mode_aws_access_key_id: >-
+          {{
+            rhel_iam_credentials.access_key_id
+            | default(
+                rhel_iam_credentials.aws_access_key_id
+                | default('', true),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        image_mode_aws_secret_access_key: >-
+          {{
+            rhel_iam_credentials.secret_access_key
+            | default(
+                rhel_iam_credentials.aws_secret_access_key
+                | default('', true),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        image_mode_aws_region: "{{ resolved_aws_region }}"
+      no_log: true
+
+    - name: Validate resolved AWS IAM service-account credentials
+      ansible.builtin.assert:
+        that:
+          - image_mode_aws_access_key_id | length > 0
+          - image_mode_aws_secret_access_key | length > 0
+          - image_mode_aws_region | length > 0
+          - image_mode_aws_access_key_id != "None"
+          - image_mode_aws_secret_access_key != "None"
+        fail_msg: >-
+          The AWS IAM service-account credentials could not be resolved from
+          AWS Secrets Manager secret
+          '{{ rhel_iam_credentials_secret_name_resolved | trim }}'.
       no_log: true
 
     ###########################################################################
