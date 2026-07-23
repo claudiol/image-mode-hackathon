@@ -160,6 +160,7 @@ export TF_VAR_redhat_org_id="123456"
 export TF_VAR_redhat_aap_activation_key="activation-key"
 export TF_VAR_redhat_registry_username="username"
 export TF_VAR_redhat_registry_password="password"
+export TF_VAR_ssh_allowed_cidr="your-ip-addr"
 ```
 
 **3. Configure the deployment**
