@@ -225,3 +225,70 @@ image_mode_yq_command: /usr/local/bin/yq
 
 root_container_auth_directory: /root/.config/containers
 root_container_auth_file: /root/.config/containers/auth.json
+
+
+
+###############################################################################
+#Default core packages
+###############################################################################
+image_mode_core_packages:
+
+  # Container tools
+  - podman
+  - buildah
+  - skopeo
+  - bootc
+
+  # Image Builder
+  - osbuild-composer
+  - composer-cli
+
+  # Cockpit
+  - cockpit
+  - cockpit-system
+  - cockpit-composer
+  - cockpit-podman
+  - cockpit-storaged
+  - cockpit-packagekit
+
+  # Registration
+  - insights-client
+  - rhc
+  - subscription-manager
+  - freeipa-client
+  - krb5-workstation
+
+  # Python
+  - python3
+  - python3-pip
+
+  # Development
+  - git
+  - git-lfs
+  - make
+  - jq
+  - rsync
+  - tar
+  - gzip
+  - unzip
+  - wget
+  - curl
+  - vim-enhanced
+  - bash-completion
+  - tree
+  - tmux
+
+  # Image utilities
+  - acl
+  - qemu-img
+  - xz
+  - squashfs-tools
+  - policycoreutils-python-utils
+  - openssl
+
+  # Networking
+  - firewalld
+  - bind-utils
+  - iproute
+  - net-tools
+  - lsof
