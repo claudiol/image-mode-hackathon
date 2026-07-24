@@ -200,7 +200,9 @@ variable "idm_users" {
     "claudiol",
     "pduncan",
     "cpranava",
-    "stripura"
+    "stripura",
+    "ablock",
+    "itewksbu"
   ]
 }
 
