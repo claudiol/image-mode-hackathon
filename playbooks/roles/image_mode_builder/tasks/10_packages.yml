@@ -61,6 +61,7 @@
   changed_when: false
   when: image_mode_install_yq | bool
 
+
 ###############################################################################
 # AWS CLI v2
 ###############################################################################
@@ -79,6 +80,8 @@
   ansible.builtin.set_fact:
     image_mode_aws_cli_archive_name: >-
       awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
+    image_mode_aws_cli_archive_url: >-
+      https://awscli.amazonaws.com/awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
     image_mode_aws_cli_archive_path: >-
       /tmp/awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
     image_mode_aws_cli_extract_directory: /tmp/aws-cli-install
@@ -106,6 +109,11 @@
         path: "{{ image_mode_aws_cli_extract_directory }}"
         state: absent
 
+    - name: Remove previous AWS CLI installation archive
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_cli_archive_path }}"
+        state: absent
+
     - name: Create AWS CLI installation workspace
       ansible.builtin.file:
         path: "{{ image_mode_aws_cli_extract_directory }}"
@@ -114,22 +122,87 @@
         group: root
         mode: "0755"
 
-    - name: Download AWS CLI v2 archive
-      ansible.builtin.get_url:
-        url: >-
-          https://awscli.amazonaws.com/{{ image_mode_aws_cli_archive_name }}
-        dest: "{{ image_mode_aws_cli_archive_path }}"
+    - name: Download AWS CLI v2 archive with curl
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --location
+          - --silent
+          - --show-error
+          - --retry
+          - "5"
+          - --retry-delay
+          - "5"
+          - --retry-all-errors
+          - --connect-timeout
+          - "30"
+          - --max-time
+          - "600"
+          - --output
+          - "{{ image_mode_aws_cli_archive_path }}"
+          - "{{ image_mode_aws_cli_archive_url }}"
+      register: image_mode_aws_cli_download
+      changed_when: image_mode_aws_cli_download.rc == 0
+      retries: 3
+      delay: 10
+      until: image_mode_aws_cli_download.rc == 0
+
+    - name: Set AWS CLI archive ownership and permissions
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_cli_archive_path }}"
+        state: file
         owner: root
         group: root
         mode: "0644"
-        force: true
-        timeout: 120
+
+    - name: Inspect downloaded AWS CLI archive
+      ansible.builtin.stat:
+        path: "{{ image_mode_aws_cli_archive_path }}"
+      register: image_mode_aws_cli_archive_stat
+
+    - name: Validate downloaded AWS CLI archive
+      ansible.builtin.assert:
+        that:
+          - image_mode_aws_cli_archive_stat.stat.exists
+          - image_mode_aws_cli_archive_stat.stat.isreg
+          - image_mode_aws_cli_archive_stat.stat.size | int > 1000000
+        fail_msg: >-
+          The AWS CLI archive download did not produce a valid file.
+          Downloaded path: {{ image_mode_aws_cli_archive_path }}.
+          Reported size:
+          {{ image_mode_aws_cli_archive_stat.stat.size | default(0) }} bytes.
+
+    - name: Test AWS CLI ZIP archive integrity
+      ansible.builtin.command:
+        argv:
+          - unzip
+          - -t
+          - "{{ image_mode_aws_cli_archive_path }}"
+      register: image_mode_aws_cli_archive_test
+      changed_when: false
+      failed_when: image_mode_aws_cli_archive_test.rc != 0
 
     - name: Extract AWS CLI v2 archive
       ansible.builtin.unarchive:
         src: "{{ image_mode_aws_cli_archive_path }}"
         dest: "{{ image_mode_aws_cli_extract_directory }}"
         remote_src: true
+
+    - name: Verify AWS CLI installer exists
+      ansible.builtin.stat:
+        path: "{{ image_mode_aws_cli_extract_directory }}/aws/install"
+      register: image_mode_aws_cli_installer_stat
+
+    - name: Assert AWS CLI installer was extracted
+      ansible.builtin.assert:
+        that:
+          - image_mode_aws_cli_installer_stat.stat.exists
+          - image_mode_aws_cli_installer_stat.stat.isreg
+          - image_mode_aws_cli_installer_stat.stat.executable
+        fail_msg: >-
+          The AWS CLI archive was extracted, but the installer was not found
+          at {{ image_mode_aws_cli_extract_directory }}/aws/install.
 
     - name: Run AWS CLI installer
       ansible.builtin.command:
@@ -145,9 +218,11 @@
         image_mode_aws_cli_install.rc == 0
         and
         (
-          'You can now run' in image_mode_aws_cli_install.stdout
+          'You can now run' in
+          (image_mode_aws_cli_install.stdout | default(''))
           or
-          'Found same AWS CLI version' not in image_mode_aws_cli_install.stdout
+          'Found same AWS CLI version' not in
+          (image_mode_aws_cli_install.stdout | default(''))
         )
 
   always:
@@ -160,6 +235,22 @@
       ansible.builtin.file:
         path: "{{ image_mode_aws_cli_extract_directory }}"
         state: absent
+
+- name: Verify AWS CLI binary exists
+  ansible.builtin.stat:
+    path: /usr/local/bin/aws
+  register: image_mode_aws_cli_binary_stat
+  when: image_mode_install_aws_cli | default(true) | bool
+
+- name: Assert AWS CLI binary exists
+  ansible.builtin.assert:
+    that:
+      - image_mode_aws_cli_binary_stat.stat.exists
+      - image_mode_aws_cli_binary_stat.stat.isreg
+        or image_mode_aws_cli_binary_stat.stat.islnk
+    fail_msg: >-
+      AWS CLI installation completed without creating /usr/local/bin/aws.
+  when: image_mode_install_aws_cli | default(true) | bool
 
 - name: Create system AWS CLI symbolic link
   ansible.builtin.file:
@@ -177,6 +268,7 @@
   register: image_mode_aws_cli_version
   changed_when: false
   when: image_mode_install_aws_cli | default(true) | bool
+
 
 ###############################################################################
 # Git LFS
