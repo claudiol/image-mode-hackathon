@@ -292,3 +292,38 @@ image_mode_core_packages:
   - iproute
   - net-tools
   - lsof
+
+###############################################################################
+# Workspace directory definitions
+###############################################################################
+
+image_mode_workspace_directories:
+  - path: "{{ image_mode_source_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_containerfiles_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_blueprints_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_build_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_output_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_artifacts_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_cache_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_registry_auth_directory }}"
+    mode: "2770"
+
+  - path: "{{ image_mode_logs_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_tmp_directory }}"
+    mode: "2775"
