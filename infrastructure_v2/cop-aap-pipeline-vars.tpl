@@ -61,9 +61,14 @@ automation_hub_token: >-
   }}
 
 ###############################################################################
-# Git credentials
+# CoP project source
 ###############################################################################
 
+# This is the repository that AAP uses for the CoP playbooks themselves.
+git_repository: "https://gitlab.com/philip860/rhel-image-mode-aap.git"
+git_repository_branch: "dev"
+
+# Leave this false if the repository above is publicly readable.
 configure_git_credentials: false
 
 git_username: ""
@@ -72,12 +77,44 @@ git_ssh_key: ""
 git_ssh_key_passphrase: ""
 
 ###############################################################################
-# Dynamically provisioned Quay build server
+# Dynamically provisioned GitLab service
 ###############################################################################
 
+gitlab_hostname: >-
+  {{
+    hostvars[groups['gitlab'][0]].gitlab_hostname
+    | default(groups['gitlab'][0], true)
+  }}
+
+gitlab_url: >-
+  {{
+    'https://' ~ gitlab_hostname
+  }}
+
+# GitLab user/group owning the application and SOE repositories.
+gitlab_namespace: >-
+  {{
+    lookup('env', 'GITLAB_NAMESPACE')
+  }}
+
+###############################################################################
+# Dynamically provisioned image-builder server
+###############################################################################
+
+# Terraform overrides this for each builder with --extra-vars. This default is
+# retained so the variables file can also be used directly with the inventory.
 server_hostname: >-
   {{
-    hostvars[groups['quay'][0]].ansible_host
+    hostvars[groups['image_builder'][0]].private_ip
+    | default(
+        hostvars[groups['image_builder'][0]].ansible_host,
+        true
+      )
+  }}
+
+server_name: >-
+  {{
+    groups['image_builder'][0]
   }}
 
 ###############################################################################
@@ -86,7 +123,7 @@ server_hostname: >-
 
 server_username: >-
   {{
-    hostvars[groups['quay'][0]].ansible_user
+    hostvars[groups['image_builder'][0]].ansible_user
   }}
 
 server_password: ""
@@ -95,7 +132,7 @@ server_ssh_key: >-
   {{
     lookup(
       'file',
-      hostvars[groups['quay'][0]].ansible_ssh_private_key_file
+      hostvars[groups['image_builder'][0]].ansible_ssh_private_key_file
     )
   }}
 
@@ -105,10 +142,14 @@ server_ssh_key_passphrase: ""
 # Dynamically provisioned Quay registry
 ###############################################################################
 
-custom_registry_url: >-
+quay_hostname: >-
   {{
     hostvars[groups['quay'][0]].quay_hostname
+    | default(groups['quay'][0], true)
   }}
+
+# Registry credentials generally expect a hostname, not an https:// URL.
+custom_registry_url: "{{ quay_hostname }}"
 
 custom_registry_username: >-
   {{
@@ -118,6 +159,13 @@ custom_registry_username: >-
 custom_registry_password: >-
   {{
     lookup('env', 'QUAY_PASSWORD')
+  }}
+
+# Namespace used when constructing complete container image references.
+quay_namespace: >-
+  {{
+    lookup('env', 'QUAY_NAMESPACE')
+    | default(custom_registry_username, true)
   }}
 
 ###############################################################################
