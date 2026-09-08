@@ -128,16 +128,26 @@ quay_hostname: >-
     | default(groups['quay'][0], true)
   }}
 
-sample_quay_repository_path: >-
+custom_registry_namespace: >-
   {{
-    lookup('env', 'SAMPLE_QUAY_REPOSITORY_PATH')
-    | default('image-mode/sample-rhel9', true)
+    lookup('env', 'SAMPLE_QUAY_NAMESPACE')
+    | default('image-mode', true)
+  }}
+
+sample_image_name: >-
+  {{
+    lookup('env', 'SAMPLE_IMAGE_NAME')
+    | default('sample-rhel9', true)
   }}
 
 # Complete, environment-specific Quay repository name without a tag.
 sample_quay_image: >-
   {{
-    quay_hostname ~ '/' ~ sample_quay_repository_path
+    quay_hostname
+    ~ '/'
+    ~ custom_registry_namespace
+    ~ '/'
+    ~ sample_image_name
   }}
 
 sample_image_tag: >-
@@ -178,15 +188,4 @@ server_ssh_key: >-
       'file',
       hostvars[groups['image_builder'][0]].ansible_ssh_private_key_file
     )
-  }}
-
-server_ssh_key_passphrase: ""
-
-###############################################################################
-# Dynamically provisioned Quay registry credentials
-###############################################################################
-
-custom_registry_url: >-
-  {{
-    quay_hostname
   }}
