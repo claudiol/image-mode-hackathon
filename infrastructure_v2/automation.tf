@@ -688,14 +688,21 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       chmod 600 "$COP_RUNTIME_VARS_FILE"
 
       jq -n \
+        --arg quay_login_username "$QUAY_USERNAME" \
+        --arg quay_login_password "$QUAY_PASSWORD" \
         --arg custom_registry_username "$QUAY_USERNAME" \
         --arg custom_registry_password "$QUAY_PASSWORD" \
         '{
+          quay_login_username: $quay_login_username,
+          quay_login_password: $quay_login_password,
           custom_registry_username: $custom_registry_username,
           custom_registry_password: $custom_registry_password
         }' > "$COP_RUNTIME_VARS_FILE"
 
-      if [ "$(jq -r '.custom_registry_username' "$COP_RUNTIME_VARS_FILE")" != \
+      if [ "$(jq -r '.quay_login_username' "$COP_RUNTIME_VARS_FILE")" != \
+           "image-mode-builder" ] ||
+         [ -z "$(jq -r '.quay_login_password' "$COP_RUNTIME_VARS_FILE")" ] ||
+         [ "$(jq -r '.custom_registry_username' "$COP_RUNTIME_VARS_FILE")" != \
            "image-mode-builder" ] ||
          [ -z "$(jq -r '.custom_registry_password' "$COP_RUNTIME_VARS_FILE")" ]; then
         echo "Unable to prepare required Quay credential variables." >&2
