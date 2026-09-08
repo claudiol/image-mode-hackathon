@@ -1,117 +1,54 @@
----
-###############################################################################
-# Red Hat Container Registry authentication
-###############################################################################
-
-redhat_registry_url: registry.redhat.io
-
-redhat_registry_username: >-
-  {{
-    lookup('env', 'REDHAT_REGISTRY_USERNAME')
-  }}
-
-redhat_registry_password: >-
-  {{
-    lookup('env', 'REDHAT_REGISTRY_PASSWORD')
-  }}
-
-###############################################################################
-# AAP Controller connection
-###############################################################################
-
-aap2_controller_url: >-
-  {{
-    lookup('env', 'AAP2_CONTROLLER_URL')
-  }}
-
-aap2_controller_username: >-
-  {{
-    lookup('env', 'AAP2_CONTROLLER_USERNAME')
-  }}
-
-aap2_controller_password: >-
-  {{
-    lookup('env', 'AAP2_CONTROLLER_PASSWORD')
-  }}
-
-aap2_organization: "Default"
-
-###############################################################################
-# Variables expected by infra.aap_configuration
-###############################################################################
-
-aap_hostname: "{{ aap2_controller_url }}"
-aap_username: "{{ aap2_controller_username }}"
-aap_password: "{{ aap2_controller_password }}"
-aap_validate_certs: false
-
-###############################################################################
-# Red Hat Automation Hub
-###############################################################################
-
-automation_hub_url: >-
-  https://console.redhat.com/api/automation-hub/content/published/
-
-automation_hub_auth_url: >-
-  https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
-
-automation_hub_token: >-
-  {{
-    lookup('env', 'AUTOMATION_HUB_TOKEN')
-  }}
-
-###############################################################################
-# CoP project source
-###############################################################################
-
-# This is the repository that AAP uses for the CoP playbooks themselves.
-git_repository: "https://gitlab.com/philip860/rhel-image-mode-aap.git"
-git_repository_branch: "dev"
-
-# Leave this false if the repository above is publicly readable.
-configure_git_credentials: false
-
-git_username: ""
-git_password: ""
-git_ssh_key: ""
-git_ssh_key_passphrase: ""
-
-###############################################################################
-# Dynamically provisioned GitLab service
-###############################################################################
-
+# Terraform writes gitlab_hostname on the host in the generated gitlab group.
 gitlab_hostname: >-
   {{
     hostvars[groups['gitlab'][0]].gitlab_hostname
     | default(groups['gitlab'][0], true)
   }}
-
 gitlab_url: >-
   {{
     'https://' ~ gitlab_hostname
   }}
-
-# GitLab user/group owning the application and SOE repositories.
-gitlab_namespace: >-
+sample_git_project_path: >-
   {{
-    lookup('env', 'GITLAB_NAMESPACE')
+    lookup('env', 'SAMPLE_GIT_PROJECT_PATH')
+  }}
+# Complete, environment-specific repository URL containing the Containerfile.
+sample_git_repository_url: >-
+  {{
+    gitlab_url ~ '/' ~ sample_git_project_path
+  }}
+
+###############################################################################
+# Dynamically provisioned Quay registry and sample image destination
+###############################################################################
+quay_hostname: >-
+  {{
+    hostvars[groups['quay'][0]].quay_hostname
+    | default(groups['quay'][0], true)
+  }}
+sample_quay_repository_path: >-
+  {{
+    lookup('env', 'SAMPLE_QUAY_REPOSITORY_PATH')
+  }}
+# Complete, environment-specific Quay repository name without a tag.
+sample_quay_image: >-
+  {{
+    quay_hostname ~ '/' ~ sample_quay_repository_path
+  }}
+sample_image_tag: >-
+  {{
+    lookup('env', 'SAMPLE_IMAGE_TAG')
   }}
 
 ###############################################################################
 # Dynamically provisioned image-builder server
 ###############################################################################
-
-# Terraform overrides this for each builder with --extra-vars. This default is
-# retained so the variables file can also be used directly with the inventory.
+# automation.tf overrides this for every selected image builder.
 server_hostname: >-
   {{
     hostvars[groups['image_builder'][0]].private_ip
-    | default(
-        hostvars[groups['image_builder'][0]].ansible_host,
-        true
-      )
+    | default(hostvars[groups['image_builder'][0]].ansible_host, true)
   }}
-
 server_name: >-
   {{
     groups['image_builder'][0]
@@ -120,14 +57,11 @@ server_name: >-
 ###############################################################################
 # SSH credentials inherited from the generated inventory
 ###############################################################################
-
 server_username: >-
   {{
     hostvars[groups['image_builder'][0]].ansible_user
   }}
-
 server_password: ""
-
 server_ssh_key: >-
   {{
     lookup(
@@ -135,53 +69,34 @@ server_ssh_key: >-
       hostvars[groups['image_builder'][0]].ansible_ssh_private_key_file
     )
   }}
-
 server_ssh_key_passphrase: ""
-
 ###############################################################################
-# Dynamically provisioned Quay registry
+# Dynamically provisioned Quay registry credentials
 ###############################################################################
-
-quay_hostname: >-
+custom_registry_url: >-
   {{
-    hostvars[groups['quay'][0]].quay_hostname
-    | default(groups['quay'][0], true)
+    quay_hostname
   }}
-
-# Registry credentials generally expect a hostname, not an https:// URL.
-custom_registry_url: "{{ quay_hostname }}"
-
 custom_registry_username: >-
   {{
     lookup('env', 'QUAY_USERNAME')
   }}
-
 custom_registry_password: >-
   {{
     lookup('env', 'QUAY_PASSWORD')
   }}
-
-# Namespace used when constructing complete container image references.
-quay_namespace: >-
-  {{
-    lookup('env', 'QUAY_NAMESPACE')
-    | default(custom_registry_username, true)
-  }}
-
+  
 ###############################################################################
 # AWS credentials used to push AMIs
 ###############################################################################
-
 aws_access_key: >-
   {{
     lookup('env', 'PIPELINE_AWS_ACCESS_KEY')
   }}
-
 aws_secret_key: >-
   {{
     lookup('env', 'PIPELINE_AWS_SECRET_KEY')
   }}
-
 aws_sts_token: >-
   {{
     lookup('env', 'PIPELINE_AWS_STS_TOKEN')
