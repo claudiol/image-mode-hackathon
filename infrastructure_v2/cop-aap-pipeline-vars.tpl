@@ -124,7 +124,8 @@ sample_git_repository_url: >-
 
 quay_hostname: >-
   {{
-    hostvars[groups['quay'][0]].quay_hostname
+    lookup('env', 'QUAY_REGISTRY_HOST')
+    | default(hostvars[groups['quay'][0]].quay_hostname, true)
     | default(groups['quay'][0], true)
   }}
 
