@@ -500,6 +500,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       BUILDERS_FILE=""
       QUAY_IDENTIFIERS_FILE=""
+      COP_RUNTIME_VARS_FILE=""
 
       get_secret() {
         aws secretsmanager get-secret-value \
@@ -515,6 +516,10 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
         if [ -n "$QUAY_IDENTIFIERS_FILE" ]; then
           rm -f "$QUAY_IDENTIFIERS_FILE"
+        fi
+
+        if [ -n "$COP_RUNTIME_VARS_FILE" ]; then
+          rm -f "$COP_RUNTIME_VARS_FILE"
         fi
 
         unset \
@@ -664,6 +669,34 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         exit 1
       fi
 
+      if [ -z "$QUAY_PASSWORD" ]; then
+        echo \
+          "Secret $QUAY_CREDENTIALS_SECRET contains an empty password." \
+          >&2
+        exit 1
+      fi
+
+      # Materialize required AAP custom credential inputs in a protected JSON
+      # file. Passing this file after the template gives these secret-derived
+      # values higher Ansible precedence than defaults in the copied template.
+      COP_RUNTIME_VARS_FILE="$(mktemp)"
+      chmod 600 "$COP_RUNTIME_VARS_FILE"
+
+      jq -n \
+        --arg custom_registry_username "$QUAY_USERNAME" \
+        --arg custom_registry_password "$QUAY_PASSWORD" \
+        '{
+          custom_registry_username: $custom_registry_username,
+          custom_registry_password: $custom_registry_password
+        }' > "$COP_RUNTIME_VARS_FILE"
+
+      if [ "$(jq -r '.custom_registry_username' "$COP_RUNTIME_VARS_FILE")" != \
+           "image-mode-builder" ] ||
+         [ -z "$(jq -r '.custom_registry_password' "$COP_RUNTIME_VARS_FILE")" ]; then
+        echo "Unable to prepare required Quay credential variables." >&2
+        exit 1
+      fi
+
       unset QUAY_CREDENTIALS_JSON
 
       export PIPELINE_AWS_ACCESS_KEY="$(
@@ -758,6 +791,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         ansible-playbook \
           -i "$COP_REPO_DIR/inventory/hosts" \
           --extra-vars "@$COP_VARS_FILE" \
+          --extra-vars "@$COP_RUNTIME_VARS_FILE" \
           --extra-vars "server_hostname=$BUILDER_PRIVATE_IP" \
           --extra-vars "server_name=$BUILDER_HOSTNAME" \
           "$COP_PLAYBOOK"
@@ -765,6 +799,9 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       rm -f "$BUILDERS_FILE"
       BUILDERS_FILE=""
+
+      rm -f "$COP_RUNTIME_VARS_FILE"
+      COP_RUNTIME_VARS_FILE=""
 
       echo "======================================"
       echo " Removing Stale Quay Inventory Hosts"
