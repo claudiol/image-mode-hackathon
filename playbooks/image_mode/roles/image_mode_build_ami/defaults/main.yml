@@ -144,7 +144,7 @@ image_mode_vmimport_role_name: "vmimport"
 
 automated_build: true
 
-image_mode_force_rebuild: false
+image_mode_force_rebuild: true
 image_mode_pull_base_image: true
 image_mode_push_container: true
 image_mode_validate_registry_logins: true
