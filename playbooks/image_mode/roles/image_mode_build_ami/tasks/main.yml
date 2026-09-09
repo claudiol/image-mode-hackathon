@@ -12,9 +12,17 @@
 - name: IMAGE MODE AMI | Locate an existing AMI
   ansible.builtin.import_tasks: existing_ami.yml
 
-- name: IMAGE MODE AMI | Prepare build workspace
+# Always regenerate source files during an automated run.
+- name: IMAGE MODE AMI | Prepare automated build workspace
   ansible.builtin.import_tasks: workspace.yml
-  when: image_mode_build_required | bool
+  when: automated_build | bool
+
+# Manual mode still needs workspace validation when a build is required.
+- name: IMAGE MODE AMI | Validate manual build workspace
+  ansible.builtin.import_tasks: workspace.yml
+  when:
+    - image_mode_build_required | bool
+    - not (automated_build | bool)
 
 - name: IMAGE MODE AMI | Build and push bootc container
   ansible.builtin.import_tasks: container.yml
@@ -24,13 +32,12 @@
   ansible.builtin.import_tasks: ami.yml
   when: image_mode_build_required | bool
 
-- name: IMAGE MODE AMI | Synchronize successful build source with GitLab
+# Publish regenerated source even when the existing AMI is reused.
+- name: IMAGE MODE AMI | Synchronize build source with GitLab
   ansible.builtin.import_tasks: git_sync.yml
   when:
-    - image_mode_build_required | bool
     - automated_build | bool
     - image_mode_git_sync_enabled | bool
-
 
 - name: IMAGE MODE AMI | Publish final result
   ansible.builtin.import_tasks: result.yml
