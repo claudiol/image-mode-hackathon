@@ -363,7 +363,7 @@ resource "terraform_data" "bootstrap_lab" {
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
       REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
-      BRANCH="add-gitlab-webhook"
+      BRANCH="dev"
 
       echo "Using inventory: $INVENTORY_FILE"
 
