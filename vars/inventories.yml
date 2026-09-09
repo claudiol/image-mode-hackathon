@@ -14,9 +14,7 @@ controller_inventories:
   - name: "Image Builders"
     description: "Terraform-generated hosts used to build Image Mode images"
     organization: "Image Mode Lab"
-    variables:
-
-      image_mode_image_tag: "{{ image_mode_image_tag }}"
+    variables: {}
 
   - name: "Image Mode Development"
     description: "Development Image Mode deployment hosts"
@@ -29,7 +27,6 @@ controller_inventories:
     organization: "Image Mode Lab"
     variables:
       image_mode_environment: production
-
 
   - name: Satellite Hosts Source
     description: Synchronize managed hosts from Red Hat Satellite 6
@@ -60,7 +57,3 @@ controller_inventories:
       idm_realm_name: "{{ idm_realm_name }}"
       idm_server_fqdn: "idm-1.{{ idm_domain_name }}"
       staging_inventory: true
-
-     
-      
-      image_mode_image_tag: "{{ image_mode_image_tag }}"
