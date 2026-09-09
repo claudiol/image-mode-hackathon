@@ -91,7 +91,7 @@
       register: gitlab_webhook_result
       changed_when: >-
         'GITLAB_WEBHOOK_RESULT=created:' in gitlab_webhook_result.stdout
-      no_log: true
+      no_log: false
 
     - name: Verify the GitLab project push webhook
       ansible.builtin.command:
