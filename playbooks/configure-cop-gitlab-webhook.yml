@@ -1,0 +1,195 @@
+---
+- name: Configure GitLab push webhook for the CoP AAP workflow
+  hosts: gitlab
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Validate required webhook configuration
+      ansible.builtin.assert:
+        that:
+          - cop_webhook_secret_name | default('') | length > 0
+          - gitlab_project_path | default('') | length > 0
+        fail_msg: >-
+          cop_webhook_secret_name and gitlab_project_path are required.
+
+    - name: Read AAP webhook data from AWS Secrets Manager
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ cop_webhook_secret_name }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: cop_webhook_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Parse AAP webhook data
+      ansible.builtin.set_fact:
+        cop_webhook_data: "{{ cop_webhook_secret_result.stdout | from_json }}"
+      no_log: true
+
+    - name: Validate AAP webhook data
+      ansible.builtin.assert:
+        that:
+          - cop_webhook_data.webhook_service == 'gitlab'
+          - cop_webhook_data.webhook_url | default('') | length > 0
+          - cop_webhook_data.webhook_key | default('') | length > 0
+          - cop_webhook_data.gitlab_project == gitlab_project_path
+        fail_msg: >-
+          The AWS secret does not contain valid AAP GitLab webhook data.
+      no_log: true
+
+  tasks:
+    - name: Create or update the GitLab project push webhook
+      block:
+        - name: Reconcile GitLab project webhook
+          ansible.builtin.command:
+            argv:
+              - gitlab-rails
+              - runner
+              - "-"
+            stdin: |
+              begin
+                require "uri"
+
+                project_path = ENV.fetch("GITLAB_PROJECT_PATH")
+                webhook_url = ENV.fetch("AAP_WEBHOOK_URL")
+                webhook_key = ENV.fetch("AAP_WEBHOOK_KEY")
+
+                webhook_host = URI.parse(webhook_url).host
+                raise("AAP webhook URL has no hostname") if webhook_host.nil?
+
+                settings = ApplicationSetting.current
+
+                if settings.respond_to?(:outbound_local_requests_whitelist)
+                  allowed_hosts = Array(
+                    settings.outbound_local_requests_whitelist
+                  )
+
+                  unless allowed_hosts.include?(webhook_host)
+                    settings.update!(
+                      outbound_local_requests_whitelist: (
+                        allowed_hosts + [webhook_host]
+                      ).uniq
+                    )
+                  end
+                else
+                  raise(
+                    "GitLab does not expose its outbound request allowlist"
+                  )
+                end
+
+                project = Project.find_by_full_path(project_path)
+                raise("GitLab project not found: #{project_path}") unless project
+
+                # The URL is encrypted, so compare through its model accessor.
+                matching_hooks = project.hooks.to_a.select do |candidate|
+                  candidate.url == webhook_url
+                end
+
+                matching_hooks.drop(1).each(&:destroy!) if matching_hooks.length > 1
+
+                hook = matching_hooks.first
+                created = hook.nil?
+                hook ||= project.hooks.new
+
+                hook.url = webhook_url
+                hook.token = webhook_key
+                hook.push_events = true
+                hook.tag_push_events = false
+                hook.enable_ssl_verification = true
+                hook.save!
+
+                action = created ? "created" : "updated"
+                puts("GITLAB_WEBHOOK_RESULT=#{action}:#{hook.id}")
+              rescue StandardError => error
+                warn("GITLAB_WEBHOOK_ERROR_CLASS=#{error.class}")
+                warn("GITLAB_WEBHOOK_ERROR_MESSAGE=#{error.message}")
+                exit(1)
+              end
+          environment:
+            GITLAB_PROJECT_PATH: "{{ gitlab_project_path }}"
+            AAP_WEBHOOK_URL: "{{ cop_webhook_data.webhook_url }}"
+            AAP_WEBHOOK_KEY: "{{ cop_webhook_data.webhook_key }}"
+          register: gitlab_webhook_result
+          changed_when: >-
+            'GITLAB_WEBHOOK_RESULT=created:' in gitlab_webhook_result.stdout
+          no_log: true
+
+      rescue:
+        - name: Report sanitized GitLab webhook failure
+          ansible.builtin.fail:
+            msg: >-
+              GitLab webhook configuration failed.
+              {{
+                gitlab_webhook_result.stderr
+                | default('No GitLab Rails error was returned.')
+                | regex_replace(
+                    cop_webhook_data.webhook_key
+                    | default('__WEBHOOK_KEY_NOT_AVAILABLE__'),
+                    '[REDACTED]'
+                  )
+              }}
+
+    - name: Verify the GitLab project push webhook
+      block:
+        - name: Query the configured GitLab webhook
+          ansible.builtin.command:
+            argv:
+              - gitlab-rails
+              - runner
+              - "-"
+            stdin: |
+              begin
+                project_path = ENV.fetch("GITLAB_PROJECT_PATH")
+                webhook_url = ENV.fetch("AAP_WEBHOOK_URL")
+
+                project = Project.find_by_full_path(project_path)
+                raise("GitLab project not found: #{project_path}") unless project
+
+                hooks = project.hooks.to_a.select do |candidate|
+                  candidate.url == webhook_url
+                end
+
+                unless hooks.length == 1
+                  raise("Expected one webhook, found #{hooks.length}")
+                end
+
+                hook = hooks.first
+                raise("Push events are not enabled") unless hook.push_events
+
+                puts("GITLAB_WEBHOOK_VERIFIED=#{hook.id}")
+              rescue StandardError => error
+                warn("GITLAB_WEBHOOK_ERROR_CLASS=#{error.class}")
+                warn("GITLAB_WEBHOOK_ERROR_MESSAGE=#{error.message}")
+                exit(1)
+              end
+          environment:
+            GITLAB_PROJECT_PATH: "{{ gitlab_project_path }}"
+            AAP_WEBHOOK_URL: "{{ cop_webhook_data.webhook_url }}"
+          register: gitlab_webhook_verification
+          changed_when: false
+          no_log: true
+
+      rescue:
+        - name: Report sanitized GitLab webhook verification failure
+          ansible.builtin.fail:
+            msg: >-
+              GitLab webhook verification failed.
+              {{
+                gitlab_webhook_verification.stderr
+                | default('No GitLab Rails error was returned.')
+              }}
+
+    - name: Report successful webhook configuration
+      ansible.builtin.debug:
+        msg: >-
+          GitLab push webhook is configured for {{ gitlab_project_path }}.

@@ -1,4 +1,8 @@
 ---
+###############################################################################
+# Prepare the Image Mode build workspace
+###############################################################################
+
 - name: IMAGE MODE AMI | Generate automated build workspace
   when: automated_build | bool
   block:
@@ -43,6 +47,74 @@
         group: root
         mode: "0644"
 
+    ###########################################################################
+    # Verify that Ansible populated the generated Containerfile
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Inspect rendered Containerfile
+      ansible.builtin.stat:
+        path: "{{ image_mode_containerfile_path }}"
+      register: image_mode_rendered_containerfile_stat
+
+    - name: IMAGE MODE AMI | Validate rendered Containerfile exists
+      ansible.builtin.assert:
+        that:
+          - image_mode_rendered_containerfile_stat.stat.exists
+          - image_mode_rendered_containerfile_stat.stat.isreg
+          - image_mode_rendered_containerfile_stat.stat.size | int > 0
+        fail_msg: >-
+          The rendered Containerfile was not created at
+          {{ image_mode_containerfile_path }}.
+
+    - name: IMAGE MODE AMI | Read rendered Containerfile
+      ansible.builtin.slurp:
+        src: "{{ image_mode_containerfile_path }}"
+      register: image_mode_rendered_containerfile
+
+    - name: IMAGE MODE AMI | Validate resolved Containerfile values
+      vars:
+        image_mode_rendered_containerfile_text: >-
+          {{
+            image_mode_rendered_containerfile.content
+            | b64decode
+          }}
+        image_mode_expected_base_arg: >-
+          ARG IMAGE_MODE_BASE_IMAGE={{ image_mode_base_image }}
+        image_mode_expected_release_arg: >-
+          ARG IMAGE_MODE_RHEL_RELEASE={{ image_mode_rhel_release }}
+        image_mode_expected_container_metadata: >-
+          CONTAINER_IMAGE={{ image_mode_image_reference }}
+        image_mode_expected_base_metadata: >-
+          BASE_IMAGE={{ image_mode_base_image }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            image_mode_expected_base_arg
+            in image_mode_rendered_containerfile_text
+          - >-
+            image_mode_expected_release_arg
+            in image_mode_rendered_containerfile_text
+          - >-
+            image_mode_expected_container_metadata
+            in image_mode_rendered_containerfile_text
+          - >-
+            image_mode_expected_base_metadata
+            in image_mode_rendered_containerfile_text
+          - >-
+            'FROM ${IMAGE_MODE_BASE_IMAGE}'
+            in image_mode_rendered_containerfile_text
+        fail_msg: >-
+          The Containerfile at {{ image_mode_containerfile_path }} was created,
+          but it does not contain the expected resolved values. Expected base
+          image {{ image_mode_base_image }}, RHEL release
+          {{ image_mode_rhel_release }}, and container image
+          {{ image_mode_image_reference }}.
+        success_msg: >-
+          The Containerfile was rendered successfully with base image
+          {{ image_mode_base_image }}, RHEL release
+          {{ image_mode_rhel_release }}, and container image
+          {{ image_mode_image_reference }}.
+
     - name: IMAGE MODE AMI | Render bootc-image-builder configuration
       ansible.builtin.template:
         src: config.toml.j2
@@ -51,6 +123,10 @@
         group: root
         mode: "0600"
       no_log: true
+
+###############################################################################
+# Validate an existing workspace in manual-build mode
+###############################################################################
 
 - name: IMAGE MODE AMI | Validate preserved manual-build workspace
   when: not (automated_build | bool)

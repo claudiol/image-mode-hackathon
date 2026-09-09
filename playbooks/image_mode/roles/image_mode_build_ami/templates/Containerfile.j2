@@ -6,7 +6,7 @@
 {% set image_mode_template_name = image_mode_template_leaf | regex_replace(':[^:]+$', '') %}
 {% set image_mode_template_version = image_mode_template_leaf | regex_replace('^.*:', '') %}
 
-ARG IMAGE_MODE_BASE_IMAGE
+ARG IMAGE_MODE_BASE_IMAGE={{ image_mode_base_image }}
 
 FROM ${IMAGE_MODE_BASE_IMAGE}
 
@@ -15,7 +15,7 @@ FROM ${IMAGE_MODE_BASE_IMAGE}
 ###############################################################################
 
 ARG IMAGE_MODE_BASE_IMAGE
-ARG IMAGE_MODE_RHEL_RELEASE
+ARG IMAGE_MODE_RHEL_RELEASE={{ image_mode_rhel_release }}
 
 ###############################################################################
 # Validate required build arguments

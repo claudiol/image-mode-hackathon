@@ -1,190 +1,90 @@
----
 ###############################################################################
-# Validate Image Mode build prerequisites
-###############################################################################
-
-###############################################################################
-# Build mode
+# Builder and target operating system
 ###############################################################################
 
-- name: IMAGE MODE AMI | Validate automated build setting
-  ansible.builtin.assert:
-    that:
-      - automated_build is defined
-      - (automated_build | string | lower) in ['true', 'false']
-    fail_msg: >-
-      automated_build must be true for an automated clean build or false for
-      a manual build that preserves the existing workspace.
-
-- name: IMAGE MODE AMI | Normalize automated build setting
-  ansible.builtin.set_fact:
-    automated_build: "{{ automated_build | bool }}"
-
-- name: IMAGE MODE AMI | Determine build type
-  ansible.builtin.set_fact:
-    image_mode_build_type: >-
-      {{
-        'AUTOMATED'
-        if automated_build
-        else 'MANUAL'
-      }}
-
-- name: IMAGE MODE AMI | Display build type
-  ansible.builtin.debug:
-    msg:
-      - "Build type: {{ image_mode_build_type }}"
-      - >-
-        Workspace behavior:
-        {{
-          'remove and regenerate the workspace from role templates'
-          if automated_build
-          else 'preserve and build the existing user-managed workspace'
-        }}
-      - >-
-        Git synchronization:
-        {{
-          'enabled when image_mode_git_sync_enabled is true'
-          if automated_build
-          else 'disabled for manual builds'
-        }}
-
-###############################################################################
-# Target operating system
-###############################################################################
-
-- name: IMAGE MODE AMI | Validate target operating system
+- name: IMAGE MODE AMI | Validate Image Builder operating system
   ansible.builtin.assert:
     that:
       - ansible_facts.os_family == "RedHat"
       - ansible_facts.distribution_major_version | int >= 9
     fail_msg: >-
-      This role requires a RHEL 9 or later Image Builder host.
+      This role requires a RHEL 9 or later Image Builder host. Detected
+      {{ ansible_facts.distribution | default('unknown') }}
+      {{ ansible_facts.distribution_version | default('unknown') }}.
 
-###############################################################################
-# Image configuration
-###############################################################################
-
-- name: IMAGE MODE AMI | Validate image variables
-  ansible.builtin.assert:
-    that:
-      - image_mode_environment_name | trim | length > 0
-      - image_mode_image_name | trim | length > 0
-      - image_mode_image_tag | trim | length > 0
-      - image_mode_quay_host | trim | length > 0
-      - image_mode_quay_organization | trim | length > 0
-      - image_mode_ssh_public_key | trim | length > 0
-      - >-
-        image_mode_ssh_public_key is match(
-          '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+) '
-        )
-      - image_mode_root_disk_size is match('^[1-9][0-9]* GiB$')
-    fail_msg: >-
-      Supply valid image identity values, image_mode_ssh_public_key, and a
-      root disk size such as "40 GiB".
-
-###############################################################################
-# AWS authentication
-###############################################################################
-
-- name: IMAGE MODE AMI | Validate AWS authentication configuration
-  ansible.builtin.assert:
-    that:
-      - image_mode_aws_region | trim | length > 0
-      - >-
-        (
-          image_mode_aws_access_key_id | trim | length > 0
-          and
-          image_mode_aws_secret_access_key | trim | length > 0
-        )
-        or
-        image_mode_aws_profile | trim | length > 0
-    fail_msg: >-
-      Attach the AAP AWS credential so AWS_ACCESS_KEY_ID,
-      AWS_SECRET_ACCESS_KEY and AWS_REGION are injected, or set
-      image_mode_aws_profile for a non-AAP CLI run.
-  no_log: true
-
-- name: IMAGE MODE AMI | Add optional AWS session token
+- name: IMAGE MODE AMI | Normalize RHEL version values
   ansible.builtin.set_fact:
-    image_mode_aws_environment: >-
-      {{
-        image_mode_aws_environment
-        | combine(
-            {
-              'AWS_SESSION_TOKEN': image_mode_aws_session_token
-            }
-          )
-      }}
-  when: image_mode_aws_session_token | trim | length > 0
-  no_log: true
+    image_mode_builder_major_version: >-
+      {{ ansible_facts.distribution_major_version | string }}
+    image_mode_requested_major_version: >-
+      {{ image_mode_rhel_major_version | string }}
+    image_mode_requested_release_major_version: >-
+      {{ image_mode_rhel_release.split('.')[0] | string }}
 
-- name: IMAGE MODE AMI | Add optional AWS profile
+- name: IMAGE MODE AMI | Validate configured RHEL major version
+  ansible.builtin.assert:
+    that:
+      - image_mode_requested_major_version in image_mode_base_images
+      - >-
+        image_mode_requested_release_major_version
+        ==
+        image_mode_requested_major_version
+    fail_msg: >-
+      The configured RHEL versions are inconsistent.
+      image_mode_rhel_major_version={{ image_mode_rhel_major_version }}
+      and image_mode_rhel_release={{ image_mode_rhel_release }}.
+
+- name: IMAGE MODE AMI | Resolve expected RHEL images
   ansible.builtin.set_fact:
-    image_mode_aws_environment: >-
+    image_mode_expected_base_image: >-
       {{
-        image_mode_aws_environment
-        | combine(
-            {
-              'AWS_PROFILE': image_mode_aws_profile,
-              'AWS_DEFAULT_PROFILE': image_mode_aws_profile,
-              'AWS_SDK_LOAD_CONFIG': '1'
-            }
-          )
+        image_mode_base_images[
+          image_mode_requested_major_version
+        ]
       }}
-  when: image_mode_aws_profile | trim | length > 0
-  no_log: true
+    image_mode_expected_bootc_builder_image: >-
+      registry.redhat.io/rhel{{ image_mode_requested_major_version
+      }}/bootc-image-builder:latest
 
-###############################################################################
-# Required commands
-###############################################################################
+- name: IMAGE MODE AMI | Display effective RHEL image selection
+  ansible.builtin.debug:
+    msg:
+      image_builder_os: >-
+        {{ ansible_facts.distribution }}
+        {{ ansible_facts.distribution_version }}
+      image_builder_major_version: "{{ image_mode_builder_major_version }}"
+      requested_rhel_major_version: "{{ image_mode_requested_major_version }}"
+      requested_rhel_release: "{{ image_mode_rhel_release }}"
+      configured_base_image: "{{ image_mode_base_image }}"
+      expected_base_image: "{{ image_mode_expected_base_image }}"
+      configured_builder_image: "{{ image_mode_bootc_builder_image }}"
+      expected_builder_image: "{{ image_mode_expected_bootc_builder_image }}"
 
-- name: IMAGE MODE AMI | Locate required commands
-  ansible.builtin.command:
-    argv:
-      - bash
-      - -lc
-      - "command -v {{ item }}"
-  loop:
-    - podman
-    - aws
-    - python3
-  register: image_mode_required_command_checks
-  changed_when: false
-  failed_when: false
-
-- name: IMAGE MODE AMI | Assert required commands are installed
+- name: IMAGE MODE AMI | Validate builder and target RHEL versions match
   ansible.builtin.assert:
     that:
       - >-
-        image_mode_required_command_checks.results
-        | selectattr('rc', 'ne', 0)
-        | list
-        | length == 0
+        image_mode_requested_major_version
+        ==
+        image_mode_builder_major_version
     fail_msg: >-
-      The Image Builder host must have podman, aws, and python3 installed.
+      The Image Builder host is RHEL
+      {{ image_mode_builder_major_version }}, but the requested target image is
+      RHEL {{ image_mode_requested_major_version }}. This workflow requires
+      the builder and target major versions to match.
 
-###############################################################################
-# Container registry authentication
-###############################################################################
-
-- name: IMAGE MODE AMI | Verify Red Hat registry authentication
-  ansible.builtin.command:
-    argv:
-      - podman
-      - login
-      - --get-login
-      - registry.redhat.io
-  changed_when: false
-  when: image_mode_validate_registry_logins | bool
-
-- name: IMAGE MODE AMI | Verify Quay authentication
-  ansible.builtin.command:
-    argv:
-      - podman
-      - login
-      - --get-login
-      - "{{ image_mode_quay_host }}"
-  changed_when: false
-  when:
-    - image_mode_validate_registry_logins | bool
-    - image_mode_push_container | bool
+- name: IMAGE MODE AMI | Validate selected RHEL container images
+  ansible.builtin.assert:
+    that:
+      - image_mode_base_image == image_mode_expected_base_image
+      - >-
+        image_mode_bootc_builder_image
+        ==
+        image_mode_expected_bootc_builder_image
+    fail_msg: >-
+      Incorrect RHEL container image selection. The requested target is RHEL
+      {{ image_mode_requested_major_version }}. Expected base image
+      {{ image_mode_expected_base_image }}, but received
+      {{ image_mode_base_image }}. Expected builder image
+      {{ image_mode_expected_bootc_builder_image }}, but received
+      {{ image_mode_bootc_builder_image }}.

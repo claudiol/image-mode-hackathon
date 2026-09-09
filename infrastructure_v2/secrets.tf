@@ -32,6 +32,12 @@ resource "local_sensitive_file" "lab_ssh_private_key" {
 ############################################################
 
 locals {
+  # Terraform manages only this secret container. The AAP-generated webhook
+  # URL and key are written at runtime and therefore never enter state.
+  cop_aap_webhook_secret_name = (
+    "${var.secret_prefix}/aap/webhooks/sample-rhel9-web"
+  )
+
   generated_secret_names = toset([
     "aap/postgresql_admin_password",
     "aap/gateway_admin_password",
@@ -107,7 +113,8 @@ locals {
       local.lab_ssh_private_key_secret_name,
       "${var.secret_prefix}/satellite/aws_access_key_id",
       "${var.secret_prefix}/satellite/aws_secret_access_key",
-      "${var.secret_prefix}/aws/rhel-iam"
+      "${var.secret_prefix}/aws/rhel-iam",
+      local.cop_aap_webhook_secret_name
     ]
   )
 }
@@ -226,6 +233,29 @@ resource "aws_secretsmanager_secret_version" "ssh_private_key" {
   depends_on = [
     aws_secretsmanager_secret.ssh_private_key
   ]
+}
+
+############################################################
+# CoP AAP Webhook Secret Container
+#
+# Do not add an aws_secretsmanager_secret_version resource for this secret.
+# AAP generates the value after the workflow is created. automation.tf writes
+# that value directly at runtime so it is not recorded in Terraform state.
+############################################################
+
+resource "aws_secretsmanager_secret" "cop_aap_webhook" {
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  name                    = local.cop_aap_webhook_secret_name
+  description             = "AAP GitLab webhook for image-mode/sample-rhel9-web"
+  recovery_window_in_days = 0
+
+  tags = {
+    Name        = local.cop_aap_webhook_secret_name
+    Environment = var.environment_name
+  }
 }
 
 ############################################################
