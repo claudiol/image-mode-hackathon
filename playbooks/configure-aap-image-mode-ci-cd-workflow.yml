@@ -148,29 +148,11 @@
       }}
 
     ###########################################################################
-    # Image Mode configuration
+    # Image Mode execution environment
+    #
+    # The CaC process intentionally does not select the RHEL target image.
+    # The build role detects the image-builder host version at runtime.
     ###########################################################################
-
-    rhel_version: >-
-      {{
-        lookup('ansible.builtin.env', 'RHEL_IMAGE_MODE_VERSION')
-        | default('10', true)
-        | string
-      }}
-
-    image_mode_base_image_map:
-      "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
-      "10": "registry.redhat.io/rhel10/rhel-bootc:latest"
-
-    quay_registry_repository_map:
-      "9": "rhel9-image-mode"
-      "10": "rhel10-image-mode"
-
-    image_mode_image_tag: >-
-      {{
-        lookup('ansible.builtin.env', 'IMAGE_MODE_IMAGE_TAG')
-        | default('dev', true)
-      }}
 
     image_mode_ee_repository: "image-mode-ee"
     image_mode_ee_tag: "latest"
@@ -1125,33 +1107,14 @@
       no_log: true
 
     ###########################################################################
-    # Resolve Image Mode images
+    # Resolve Image Mode execution environment
+    #
+    # Base image, target release, destination repository, and image tag are
+    # resolved by the build workflow after gathering facts from its target.
     ###########################################################################
 
-    - name: Validate selected RHEL Image Mode version
-      ansible.builtin.assert:
-        that:
-          - rhel_version in image_mode_base_image_map
-          - rhel_version in quay_registry_repository_map
-        fail_msg: >-
-          Unsupported RHEL Image Mode version '{{ rhel_version }}'.
-          Supported versions:
-          {{ image_mode_base_image_map.keys() | list | join(', ') }}.
-
-    - name: Resolve Image Mode image variables
+    - name: Resolve Image Mode execution environment
       ansible.builtin.set_fact:
-        image_mode_base_image: >-
-          {{ image_mode_base_image_map[rhel_version] }}
-
-        image_mode_registry_image: >-
-          {{
-            resolved_quay_hostname
-            ~ '/'
-            ~ quay_default_org
-            ~ '/'
-            ~ quay_registry_repository_map[rhel_version]
-          }}
-
         image_mode_ee_image: >-
           {{
             resolved_quay_hostname
@@ -1440,10 +1403,7 @@
                   ),
                   'aws_region': resolved_aws_region,
                   'aws_profile': '',
-                  'secret_prefix': secret_prefix,
-                  'image_mode_base_image': image_mode_base_image,
-                  'image_mode_registry_image': image_mode_registry_image,
-                  'image_mode_image_tag': image_mode_image_tag
+                  'secret_prefix': secret_prefix
                 }
               }
             ]
@@ -1532,11 +1492,9 @@
           - "Quay registry hostname: {{ resolved_quay_hostname }}"
           - "AWS region: {{ resolved_aws_region }}"
           - "AWS profile: {{ resolved_aws_profile }}"
-          - "RHEL Image Mode version: {{ rhel_version }}"
-          - "Base image: {{ image_mode_base_image }}"
           - >-
-            Destination image:
-            {{ image_mode_registry_image }}:{{ image_mode_image_tag }}
+            Image target selection: detected by the build role from the
+            image-builder host at runtime
           - "Execution environment: {{ image_mode_ee_image }}"
           - >-
             Infrastructure hosts:
