@@ -15,8 +15,7 @@ controller_inventories:
     description: "Terraform-generated hosts used to build Image Mode images"
     organization: "Image Mode Lab"
     variables:
-      image_mode_base_image: "{{ image_mode_base_image }}"
-      image_mode_registry_image: "{{ image_mode_registry_image }}"
+
       image_mode_image_tag: "{{ image_mode_image_tag }}"
 
   - name: "Image Mode Development"
@@ -62,6 +61,6 @@ controller_inventories:
       idm_server_fqdn: "idm-1.{{ idm_domain_name }}"
       staging_inventory: true
 
-      image_mode_base_image: "{{ image_mode_base_image }}"
-      image_mode_registry_image: "{{ image_mode_registry_image }}"
+     
+      
       image_mode_image_tag: "{{ image_mode_image_tag }}"
