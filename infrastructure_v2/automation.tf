@@ -984,9 +984,10 @@ resource "terraform_data" "configure_cop_gitlab_webhook" {
     command = <<-EOT
       set -euo pipefail
 
-      HACKATHON_REPO_DIR="${abspath(path.module)}/image-mode-hackathon"
+
+
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
-      WEBHOOK_PLAYBOOK="$HACKATHON_REPO_DIR/infrastructure_v2/playbooks/configure-cop-gitlab-webhook.yml"
+      WEBHOOK_PLAYBOOK="${abspath("${path.module}/../playbooks/configure-cop-gitlab-webhook.yml")}"
 
       WEBHOOK_SECRET_FILE=""
 
