@@ -7,9 +7,14 @@ resource "aws_vpc" "lab" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   tags = {
     Name        = "${var.environment_name}-vpc"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -19,6 +24,7 @@ resource "aws_internet_gateway" "lab" {
   tags = {
     Name        = "${var.environment_name}-igw"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -31,6 +37,7 @@ resource "aws_subnet" "public" {
   tags = {
     Name        = "${var.environment_name}-public-subnet-a"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -43,6 +50,7 @@ resource "aws_subnet" "resolver" {
   tags = {
     Name        = "${var.environment_name}-resolver-subnet-b"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -57,6 +65,7 @@ resource "aws_route_table" "public" {
   tags = {
     Name        = "${var.environment_name}-public-rt"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -138,6 +147,7 @@ resource "aws_security_group" "lab" {
   tags = {
     Name        = "${var.environment_name}-sg"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -169,6 +179,7 @@ resource "aws_security_group" "image_builder" {
   tags = {
     Name        = "${var.environment_name}-image-builder-sg"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -208,5 +219,6 @@ resource "aws_security_group" "gitlab" {
   tags = {
     Name        = "${var.environment_name}-gitlab-sg"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
