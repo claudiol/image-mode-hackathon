@@ -42,6 +42,13 @@
         | default('trusted-artifact-signer')
       }}
 
+    # Keycloak may still be starting when this play reaches Phase 3. These
+    # values allow up to ten minutes for the HTTPS listener and discovery
+    # document to become ready, while keeping every request bounded.
+    rhtas_oidc_readiness_retries: 40
+    rhtas_oidc_readiness_delay: 15
+    rhtas_oidc_request_timeout: 15
+
     ###########################################################################
     # AWS Secrets Manager paths
     #
@@ -302,15 +309,39 @@
       delay: 15
       until: rhtas_dns_lookup.rc == 0
 
-    - name: PHASE 3 | Verify the Keycloak OIDC discovery endpoint
+    - name: PHASE 3 | Wait for the Keycloak HTTPS listener
+      ansible.builtin.wait_for:
+        host: "{{ groups['keycloak'][0] }}"
+        port: 443
+        state: started
+        connect_timeout: 5
+        sleep: "{{ rhtas_oidc_readiness_delay }}"
+        timeout: >-
+          {{
+            (rhtas_oidc_readiness_retries | int)
+            * (rhtas_oidc_readiness_delay | int)
+          }}
+        msg: >-
+          Keycloak HTTPS did not become reachable at
+          {{ groups['keycloak'][0] }}:443 within the readiness window.
+      changed_when: false
+
+    - name: PHASE 3 | Wait for the Keycloak OIDC discovery endpoint
       ansible.builtin.uri:
         url: "{{ rhtas_oidc_issuer }}/.well-known/openid-configuration"
         method: GET
         return_content: true
         status_code: 200
         validate_certs: true
+        timeout: "{{ rhtas_oidc_request_timeout }}"
       register: rhtas_oidc_discovery
       changed_when: false
+      retries: "{{ rhtas_oidc_readiness_retries }}"
+      delay: "{{ rhtas_oidc_readiness_delay }}"
+      until:
+        - rhtas_oidc_discovery.status | default(-1) | int == 200
+        - rhtas_oidc_discovery.json is defined
+        - rhtas_oidc_discovery.json.issuer | default('') == rhtas_oidc_issuer
 
     - name: PHASE 3 | Validate Keycloak OIDC issuer
       ansible.builtin.assert:

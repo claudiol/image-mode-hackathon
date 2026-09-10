@@ -4,16 +4,17 @@
 
 resource "terraform_data" "preflight_cleanup" {
   triggers_replace = [
-    8
+    timestamp()
   ]
 
   input = {
-    cleanup_version  = 8
-    environment_name = var.environment_name
-    secret_prefix    = var.secret_prefix
-    aws_region       = var.aws_region
-    aws_profile      = var.aws_profile
-    key_pair_name    = "${var.environment_name}-ssh-key"
+    cleanup_version      = 9
+    environment_name     = var.environment_name
+    secret_prefix        = var.secret_prefix
+    aws_region           = var.aws_region
+    aws_profile          = var.aws_profile
+    key_pair_name        = "${var.environment_name}-ssh-key"
+    artifact_bucket_name = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
     aap_role_name    = "${var.environment_name}-aap-role"
     aap_profile_name = "${var.environment_name}-aap-instance-profile"
@@ -89,6 +90,8 @@ resource "terraform_data" "preflight_cleanup" {
       fi
 
       KEY_PAIR_NAME="${var.environment_name}-ssh-key"
+      ENVIRONMENT_NAME="${var.environment_name}"
+      ARTIFACT_BUCKET_NAME="${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
       AAP_ROLE_NAME="${var.environment_name}-aap-role"
       AAP_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
@@ -128,6 +131,129 @@ resource "terraform_data" "preflight_cleanup" {
 
       state_has() {
         terraform state list 2>/dev/null | grep -Fqx "$1"
+      }
+
+      state_contains_id() {
+        grep -Fq "\"$1\"" "$STATE_FILE"
+      }
+
+      fail_cleanup() {
+        echo "ERROR: $*" >&2
+        exit 1
+      }
+
+      STATE_FILE=$(mktemp "$${TMPDIR:-/tmp}/image-mode-lab-state.XXXXXX")
+      trap 'rm -f "$STATE_FILE"' EXIT
+      terraform state pull >"$STATE_FILE" 2>/dev/null || printf '{}' >"$STATE_FILE"
+
+      cleanup_artifact_bucket() {
+        if state_has 'aws_s3_bucket.image_mode_artifacts'; then
+          echo "Skipping artifact bucket because it is managed by Terraform state."
+          return
+        fi
+
+        if ! aws s3api head-bucket --bucket "$ARTIFACT_BUCKET_NAME" 2>/dev/null; then
+          return
+        fi
+
+        BUCKET_ENVIRONMENT=$(aws s3api get-bucket-tagging \
+          --bucket "$ARTIFACT_BUCKET_NAME" \
+          --query "TagSet[?Key=='Environment'].Value | [0]" \
+          --output text 2>/dev/null || true)
+        [ "$BUCKET_ENVIRONMENT" = "$ENVIRONMENT_NAME" ] ||
+          fail_cleanup "Refusing to delete unowned bucket $ARTIFACT_BUCKET_NAME"
+
+        echo "Deleting orphaned artifact bucket: $ARTIFACT_BUCKET_NAME"
+
+        UPLOADS=$(aws s3api list-multipart-uploads \
+          --bucket "$ARTIFACT_BUCKET_NAME" \
+          --query 'Uploads[].[Key,UploadId]' --output text 2>/dev/null || true)
+        if [ -n "$UPLOADS" ] && [ "$UPLOADS" != "None" ]; then
+          while IFS=$'\t' read -r OBJECT_KEY UPLOAD_ID; do
+            [ -n "$OBJECT_KEY" ] || continue
+            aws s3api abort-multipart-upload --bucket "$ARTIFACT_BUCKET_NAME" \
+              --key "$OBJECT_KEY" --upload-id "$UPLOAD_ID"
+          done <<< "$UPLOADS"
+        fi
+
+        while true; do
+          VERSIONS=$(aws s3api list-object-versions \
+            --bucket "$ARTIFACT_BUCKET_NAME" --max-items 1000 \
+            --query '[Versions[].[Key,VersionId],DeleteMarkers[].[Key,VersionId]][]' \
+            --output text)
+          [ -n "$VERSIONS" ] && [ "$VERSIONS" != "None" ] || break
+          while IFS=$'\t' read -r OBJECT_KEY VERSION_ID; do
+            [ -n "$OBJECT_KEY" ] || continue
+            aws s3api delete-object --bucket "$ARTIFACT_BUCKET_NAME" \
+              --key "$OBJECT_KEY" --version-id "$VERSION_ID" >/dev/null
+          done <<< "$VERSIONS"
+        done
+
+        aws s3api delete-bucket --bucket "$ARTIFACT_BUCKET_NAME"
+      }
+
+      cleanup_orphan_subnets() {
+        SUBNETS=$(aws ec2 describe-subnets \
+          --filters \
+            "Name=tag:Environment,Values=$ENVIRONMENT_NAME" \
+          --query 'Subnets[].[SubnetId,VpcId]' --output text)
+        [ -n "$SUBNETS" ] && [ "$SUBNETS" != "None" ] || return 0
+
+        while IFS=$'\t' read -r SUBNET_ID VPC_ID; do
+          [ -n "$SUBNET_ID" ] || continue
+          if state_contains_id "$SUBNET_ID"; then
+            echo "Skipping state-managed subnet: $SUBNET_ID"
+            continue
+          fi
+
+          echo "Cleaning orphaned subnet $SUBNET_ID in VPC $VPC_ID"
+
+          ENDPOINTS=$(aws ec2 describe-vpc-endpoints \
+            --filters "Name=subnet-id,Values=$SUBNET_ID" \
+            --query 'VpcEndpoints[].VpcEndpointId' --output text 2>/dev/null || true)
+          if [ -n "$ENDPOINTS" ] && [ "$ENDPOINTS" != "None" ]; then
+            aws ec2 delete-vpc-endpoints --vpc-endpoint-ids $ENDPOINTS >/dev/null
+          fi
+
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=subnet-id,Values=$SUBNET_ID" \
+              'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+            --query 'Reservations[].Instances[].InstanceId' --output text)
+          if [ -n "$INSTANCE_IDS" ] && [ "$INSTANCE_IDS" != "None" ]; then
+            aws ec2 terminate-instances --instance-ids $INSTANCE_IDS >/dev/null
+            aws ec2 wait instance-terminated --instance-ids $INSTANCE_IDS
+          fi
+
+          NAT_GATEWAY_IDS=$(aws ec2 describe-nat-gateways \
+            --filter "Name=subnet-id,Values=$SUBNET_ID" \
+              'Name=state,Values=pending,available,failed' \
+            --query 'NatGateways[].NatGatewayId' --output text)
+          for NAT_GATEWAY_ID in $NAT_GATEWAY_IDS; do
+            [ "$NAT_GATEWAY_ID" != "None" ] || continue
+            aws ec2 delete-nat-gateway --nat-gateway-id "$NAT_GATEWAY_ID" >/dev/null
+            aws ec2 wait nat-gateway-deleted --nat-gateway-ids "$NAT_GATEWAY_ID"
+          done
+
+          for ATTEMPT in $(seq 1 30); do
+            NETWORK_INTERFACE_IDS=$(aws ec2 describe-network-interfaces \
+              --filters "Name=subnet-id,Values=$SUBNET_ID" \
+              --query 'NetworkInterfaces[?Status==`available`].NetworkInterfaceId' \
+              --output text 2>/dev/null || true)
+            for NETWORK_INTERFACE_ID in $NETWORK_INTERFACE_IDS; do
+              [ "$NETWORK_INTERFACE_ID" != "None" ] || continue
+              aws ec2 delete-network-interface \
+                --network-interface-id "$NETWORK_INTERFACE_ID" >/dev/null 2>&1 || true
+            done
+            REMAINING=$(aws ec2 describe-network-interfaces \
+              --filters "Name=subnet-id,Values=$SUBNET_ID" \
+              --query 'length(NetworkInterfaces)' --output text)
+            [ "$REMAINING" = "0" ] && break
+            sleep 5
+          done
+
+          aws ec2 delete-subnet --subnet-id "$SUBNET_ID" ||
+            fail_cleanup "Unable to delete orphaned subnet $SUBNET_ID; dependent AWS resources remain"
+        done <<< "$SUBNETS"
       }
 
       #########################################################################
@@ -357,6 +483,10 @@ resource "terraform_data" "preflight_cleanup" {
       #########################################################################
       # EC2 key pair cleanup
       #########################################################################
+
+      echo "Checking orphaned network and S3 resources"
+      cleanup_orphan_subnets
+      cleanup_artifact_bucket
 
       echo "Checking EC2 key pair: $KEY_PAIR_NAME"
 
@@ -716,5 +846,3 @@ EOF_SECRETS
     EOT
   }
 }
-
-

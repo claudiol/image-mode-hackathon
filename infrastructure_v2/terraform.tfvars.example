@@ -270,6 +270,30 @@ servers = {
     root_volume   = 120
     extra_volume  = 500
   }
+
+
+  ##########################################################
+  # Keycloak
+  ##########################################################
+
+  keycloak = {
+    count         = 1
+    instance_type = "m6i.large"
+    root_volume   = 80
+    extra_volume  = 0
+  }
+
+
+  ##########################################################
+  # Red Hat Trusted Artifact Signer
+  ##########################################################
+
+  rhtas = {
+    count         = 1
+    instance_type = "m6i.xlarge"
+    root_volume   = 120
+    extra_volume  = 500
+  }
 }
 
 
@@ -285,9 +309,10 @@ servers = {
 #
 # <role>-<zero-based or one-based index used by Terraform>
 #
-# Keep Image Builder private unless direct public access is
-# required.
-#Servers here will be assigned elastic IPs, max of 5 per AWS account
+# Keep Image Builder, Keycloak, and RHTAS private unless
+# direct public access is required.
+# Servers here will be assigned Elastic IPs. The default
+# per-Region quota is commonly five per AWS account.
 
 
 public_server_names = [

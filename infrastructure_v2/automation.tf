@@ -86,6 +86,12 @@ locals {
 resource "local_file" "ansible_inventory" {
   filename = "${path.module}/inventory.ini"
 
+  # Do not generate or consume inventory until orphaned AWS resources from a
+  # failed deployment have been reconciled.
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
   content = templatefile("${path.module}/inventory.tpl", {
     aws_dns_resolver             = local.aws_dns_resolver
     ansible_ssh_private_key_file = local.ansible_ssh_private_key_file
@@ -339,6 +345,7 @@ resource "local_file" "ansible_inventory" {
 
 resource "terraform_data" "bootstrap_lab" {
   depends_on = [
+    terraform_data.preflight_cleanup,
     local_file.ansible_inventory,
     aws_route53_record.public_dns,
     aws_route53_record.rhtas_service
