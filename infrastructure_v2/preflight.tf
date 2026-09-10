@@ -196,9 +196,8 @@ resource "terraform_data" "preflight_cleanup" {
         SUBNETS=$(aws ec2 describe-subnets \
           --filters \
             "Name=tag:Environment,Values=$ENVIRONMENT_NAME" \
-            "Name=tag:Name,Values=$ENVIRONMENT_NAME-public-subnet-*,$ENVIRONMENT_NAME-private-subnet-*" \
           --query 'Subnets[].[SubnetId,VpcId]' --output text)
-        [ -n "$SUBNETS" ] && [ "$SUBNETS" != "None" ] || return
+        [ -n "$SUBNETS" ] && [ "$SUBNETS" != "None" ] || return 0
 
         while IFS=$'\t' read -r SUBNET_ID VPC_ID; do
           [ -n "$SUBNET_ID" ] || continue
