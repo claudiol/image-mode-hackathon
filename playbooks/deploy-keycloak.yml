@@ -278,7 +278,7 @@
       become: false
       register: keycloak_private_key_result
       changed_when: false
-      no_log: true
+      no_log: false
       tags: [keycloak, keycloak_tls]
 
     - name: Create the Keycloak TLS directory
