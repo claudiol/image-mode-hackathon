@@ -248,6 +248,9 @@
           - "{{ aws_profile }}"
           - --region
           - "{{ aws_region }}"
+          - --output
+          - json
+          - --no-cli-pager
           - acm
           - export-certificate
           - --certificate-arn
@@ -263,22 +266,52 @@
       no_log: true
       tags: [keycloak, keycloak_tls]
 
+    - name: Parse the exported ACM certificate response
+      ansible.builtin.set_fact:
+        keycloak_exported_certificate: >-
+          {{ keycloak_exported_certificate_result.stdout | from_json }}
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
+    - name: Validate the exported ACM certificate response
+      ansible.builtin.assert:
+        that:
+          - >-
+            keycloak_exported_certificate.Certificate
+            | default('')
+            | length > 0
+          - >-
+            keycloak_exported_certificate.CertificateChain
+            | default('')
+            | length > 0
+          - >-
+            keycloak_exported_certificate.PrivateKey
+            | default('')
+            | length > 0
+        fail_msg: >-
+          AWS ACM export did not return a certificate, certificate chain,
+          and encrypted private key. Verify the AWS profile, region,
+          certificate status, exportability, and acm:ExportCertificate
+          permission.
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
     - name: Decrypt the exported ACM private key
-      ansible.builtin.shell:
-        cmd: >-
-          set -o pipefail;
-          printf '%s' "$KEYCLOAK_ENCRYPTED_KEY" |
-          openssl pkey -passin env:KEYCLOAK_EXPORT_PASSPHRASE
-        executable: /bin/bash
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -passin
+          - env:KEYCLOAK_EXPORT_PASSPHRASE
+        stdin: "{{ keycloak_exported_certificate.PrivateKey }}"
+        stdin_add_newline: true
       environment:
-        KEYCLOAK_ENCRYPTED_KEY: >-
-          {{ (keycloak_exported_certificate_result.stdout | from_json).PrivateKey }}
         KEYCLOAK_EXPORT_PASSPHRASE: "{{ keycloak_acm_export_passphrase }}"
       delegate_to: localhost
       become: false
       register: keycloak_private_key_result
       changed_when: false
-      no_log: false
+      no_log: true
       tags: [keycloak, keycloak_tls]
 
     - name: Create the Keycloak TLS directory
@@ -293,8 +326,8 @@
     - name: Install the ACM certificate and chain
       ansible.builtin.copy:
         content: |-
-          {{ (keycloak_exported_certificate_result.stdout | from_json).Certificate }}
-          {{ (keycloak_exported_certificate_result.stdout | from_json).CertificateChain }}
+          {{ keycloak_exported_certificate.Certificate | trim }}
+          {{ keycloak_exported_certificate.CertificateChain | trim }}
         dest: "{{ keycloak_tls_certificate_file }}"
         owner: root
         group: "{{ keycloak_service_group }}"

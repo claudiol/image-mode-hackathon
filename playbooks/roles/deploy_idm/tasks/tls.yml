@@ -245,7 +245,21 @@
           - "{{ idm_public_tls_fqdn }}"
       delegate_to: localhost
       become: false
+      register: idm_exported_certificate_hostname_check
       changed_when: false
+      failed_when: false
+
+    - name: Assert exported ACM certificate covers the IdM hostname
+      ansible.builtin.assert:
+        that:
+          - idm_exported_certificate_hostname_check.rc == 0
+        fail_msg: >-
+          ACM certificate {{ idm_acm_certificate_arn }} does not cover
+          {{ idm_public_tls_fqdn }}, or the local OpenSSL implementation
+          does not support the x509 -checkhost option. OpenSSL stdout:
+          {{ idm_exported_certificate_hostname_check.stdout | default('') }}.
+          OpenSSL stderr:
+          {{ idm_exported_certificate_hostname_check.stderr | default('') }}.
 
     - name: Verify exported ACM certificate remains valid for at least 14 days
       ansible.builtin.command:
