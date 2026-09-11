@@ -361,6 +361,10 @@ resource "terraform_data" "bootstrap_lab" {
 
     environment = {
       RUN_DEPLOY_SERVICES = tostring(var.run_deploy_services)
+      AWS_PROFILE         = var.aws_profile
+      AWS_REGION          = var.aws_region
+      AWS_DEFAULT_REGION  = var.aws_region
+      AWS_PAGER           = ""
     }
 
     command = <<-EOT
@@ -463,8 +467,10 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
     working_dir = path.module
 
     environment = {
-      AWS_PROFILE = var.aws_profile
-      AWS_REGION  = var.aws_region
+      AWS_PROFILE        = var.aws_profile
+      AWS_REGION         = var.aws_region
+      AWS_DEFAULT_REGION = var.aws_region
+      AWS_PAGER          = ""
 
       AAP2_CONTROLLER_URL = local.primary_aap_url
 
@@ -968,8 +974,10 @@ resource "terraform_data" "configure_cop_gitlab_webhook" {
     working_dir = path.module
 
     environment = {
-      AWS_PROFILE = var.aws_profile
-      AWS_REGION  = var.aws_region
+      AWS_PROFILE        = var.aws_profile
+      AWS_REGION         = var.aws_region
+      AWS_DEFAULT_REGION = var.aws_region
+      AWS_PAGER          = ""
 
       AAP2_CONTROLLER_URL = local.primary_aap_url
 
